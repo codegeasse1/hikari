@@ -6776,10 +6776,10 @@ private fun Hero(
         ) {
             androidx.compose.animation.Crossfade(targetState = image.first, label = "heroTall") { img ->
                 PosterArt(
-                    model = img.first,
+                    model = img,
                     contentDescription = meta?.title,
                     style = rememberPosterStyle(),
-                    contentScale = if (img.second) ContentScale.Crop else ContentScale.Fit,
+                    contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -6855,11 +6855,11 @@ private fun Hero(
         ) {
             androidx.compose.animation.Crossfade(targetState = image.first, label = "heroSide") { img ->
                 PosterArt(
-                    model = img.first,
+                    model = img,
                     contentDescription = meta?.title,
                     style = rememberPosterStyle(),
                     contentScale = ContentScale.Crop,
-                    imageAlignment = if (img.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
+                    imageAlignment = if (image.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
                     modifier = Modifier.fillMaxSize(),
                     onImageError = { heroBackdropDead = true; tmdbHeaderDead = true },
                 )
@@ -6913,8 +6913,8 @@ private fun Hero(
         ) {
             androidx.compose.animation.Crossfade(targetState = image.first, label = "heroWide") { img ->
                 HeroArtwork(
-                    model = img.first,
-                    wide = img.second,
+                    model = img,
+                    wide = image.second,
                     modifier = Modifier.fillMaxSize(),
                     onFinalError = { heroBackdropDead = true; tmdbHeaderDead = true },
                 )
