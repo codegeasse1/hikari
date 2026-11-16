@@ -8879,12 +8879,22 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
             val epStill = ep.image?.takeIf { it.isNotBlank() }
+            val stillBlankOverlay = epStill.isNullOrBlank() && titleArts.none { !isThumbTmdb(it) }
+            if (stillBlankOverlay) {
+                frame.addView(TextView(this).apply {
+                    text = if (ep.season > 0 && ep.number > 0) "S" + ep.season + " E" + ep.number else ("Episode " + ep.number).takeIf { ep.number > 0 } ?: "Episode"
+                    dpText(13f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0xFF9AA5B5.toInt())
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+            }
             val still = if (epStill != null && !isThumbTmdb(epStill)) epStill
                 else titleArts.firstOrNull { !isThumbTmdb(it) } ?: epStill ?: fallbackPoster
             // Decode at row-thumb size, not full resolution (see cellModel).
             // If the still itself fails (dead image host), fall back to the
             // title art instead of leaving a black box.
-            runCatching {
+            if (!still.isNullOrBlank()) runCatching {
                 val errUrl = (titleArts + listOfNotNull(epStill)).firstOrNull { it != still && it.isNotBlank() }
             val errModel = errUrl?.let { PosterLoader.model(it) }
                 val stillModel = PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)
@@ -9303,6 +9313,8 @@ class PlayerActivity : ComponentActivity() {
             // Re-assert the target: a tap-away-then-pick race may have run
             // the scope dialog's cancel first (see askEpisodeScope).
             liveEpisode = ep
+            val oldStartMs = startPositionMs
+            val oldResumeMs = resumeHintMs
             val oldSources = sources
             val oldIndex = currentIndex
             val oldSe = intent.getIntExtra("histEpisodeSeason", 0)
@@ -9320,11 +9332,24 @@ class PlayerActivity : ComponentActivity() {
             committedServerKey = ""
             committedEpisodeKey = ""
             pickedByUser = false
-            chooserEmptyNote = null
+            chooserEmptyNote = if (playerSources.isNotEmpty() && playerSources.all { oldUrlSet.contains(it.url) || triedUrls.contains(it.url) })
+                "Same links as the previous episode — pick a server, or try All extensions."
+            else null
             notifySourcesChanged()
             intent.putExtra("histEpisodeSeason", ep.season)
             intent.putExtra("histEpisodeNumber", ep.number)
             intent.putExtra("histEpisodeName", ep.name.orEmpty())
+            // Wiring: label + history key + resume move at TAP, not at adopt.
+            applyLiveEpisode(ep)
+            startPositionMs = 0L
+            seekPending = false
+            resumeHintMs = 0L
+            resumeHintDurMs = 0L
+            refreshAttempts = 0
+            noSubsRetry = false
+            resetHeaderWalk()
+            triedUrls.clear()
+            lastSavedSourceIndex = -1
             startChooserShown = false
             // Detach the OLD episode's live session BEFORE the new chooser
             // opens: its collectors would otherwise keep appending the old
@@ -9342,6 +9367,8 @@ class PlayerActivity : ComponentActivity() {
             showServerChooser(startMode = true, forceHorizontal = true)
             episodeSwitchRestore = {
                 sources = oldSources
+                startPositionMs = oldStartMs
+                resumeHintMs = oldResumeMs
                 currentIndex = oldIndex
                 if (switchOldEp != null) applyLiveEpisode(switchOldEp)
                 intent.putExtra("histEpisodeSeason", oldSe)
@@ -9466,7 +9493,8 @@ class PlayerActivity : ComponentActivity() {
         // row (same provider + same name, else the same URL), it starts at
         // once instead of dropping to an unrelated mirror.
         val prev = sources.getOrNull(currentIndex)
-        sources = playerSources
+        val oldUrlSet = prev?.let { setOf(it.url) }.orEmpty()
+            sources = playerSources
         notifySourcesChanged()
         currentIndex = prev?.let { p ->
             val key = p.identityKey().takeIf { it.isNotBlank() && it != "u" }
@@ -9486,7 +9514,17 @@ class PlayerActivity : ComponentActivity() {
         if (serverChooserDialog?.isShowing == true) {
             // The episode-switch page is already open and filling live —
             // never stack a second chooser over it (see switchToEpisode).
-        } else if (fromAutoplay || !shouldAskServer()) {
+        } else if ((fromAutoplay || !shouldAskServer()) && run {
+                val u = playerSources.getOrNull(
+                    prev?.let { p ->
+                        val key = p.identityKey().takeIf { it.isNotBlank() && it != "u" }
+                        playerSources.indexOfFirst { q -> q.providerId == p.providerId && q.providerId.isNotBlank() && q.name == p.name && p.name.isNotBlank() }.takeIf { it >= 0 }
+                            ?: key?.let { k -> playerSources.indexOfFirst { it.identityKey() == k }.takeIf { it >= 0 } }
+                    }?.takeIf { it >= 0 } ?: 0
+                )?.url.orEmpty()
+                val autoUrlStale = fromAutoplay && u.isNotBlank() && (oldUrlSet.contains(u) || triedUrls.contains(u))
+                !autoUrlStale
+            }) {
             playSource(currentIndex)
         } else {
             startChooserShown = false
