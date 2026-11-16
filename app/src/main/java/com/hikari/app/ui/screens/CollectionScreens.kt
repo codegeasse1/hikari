@@ -4513,7 +4513,7 @@ fun TmdbGridScreen(
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
+                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84, landscapeAware = true)),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
@@ -4711,7 +4711,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             }
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
+            columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84, landscapeAware = true)),
             state = com.hikari.app.ui.components.keptGridState("colGrid:$collectionId", itemKeys = colKeys),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),

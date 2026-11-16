@@ -287,6 +287,13 @@ private fun MediaRowCinema(
                 }
             }
         }
+        // Settings -> Customize -> Poster cards: the landscape size (280dp at
+        // "Default"), never wider than the screen.
+        val cinemaScreenWidth = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+        val cinemaCardWidth = minOf(
+            (280f * com.hikari.app.ui.PosterSizing.landscapeFactor()).dp,
+            (cinemaScreenWidth - 32).coerceAtLeast(120).dp,
+        )
         LazyRow(
             state = if (keeperKey.isBlank()) androidx.compose.foundation.lazy.rememberLazyListState()
             else keptListState(keeperKey, itemKeys = rowKeys),
@@ -297,6 +304,7 @@ private fun MediaRowCinema(
                 com.hikari.app.tv.TvCinemaCard(
                     item = item,
                     onClick = { onClick(item) },
+                    cardWidth = cinemaCardWidth,
                     titleColor = MaterialTheme.colorScheme.onSurface,
                     subColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -901,7 +909,9 @@ fun PosterCard(
     heroNamespace: String = "",
 ) {
     val badge = rememberPosterScore(item, style)
-    val cardWidth = if (TvMode.current()) TvUi.posterWidth() else 120.dp
+    // 120dp on a phone / the screen-based width on TV, times the size chosen in
+    // Settings -> Customize -> Poster cards (1f at "Default").
+    val cardWidth = TvUi.posterWidth()
     val quickMenu = rememberQuickMenuState()
     val latestClick by rememberUpdatedState(onClick)
     val latestPlay by rememberUpdatedState(onQuickPlay)

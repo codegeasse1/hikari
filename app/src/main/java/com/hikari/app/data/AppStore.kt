@@ -479,6 +479,11 @@ class AppStore(private val ctx: Context) {
         /** Which shape catalogue cards take — see
          *  [com.hikari.app.ui.PosterTypes]. */
         val POSTER_TYPE = stringPreferencesKey("posterType")
+        /** Settings -> Customize -> Poster cards: how big portrait / landscape
+         *  cards are drawn ("small", "default", "large") - see
+         *  [com.hikari.app.ui.PosterSizes]. */
+        val POSTER_PORTRAIT_SIZE = stringPreferencesKey("posterPortraitSize")
+        val POSTER_LANDSCAPE_SIZE = stringPreferencesKey("posterLandscapeSize")
     /** Where a poster's edge light stands, as fractions of the card — see
      *  [com.hikari.app.ui.PosterEffects.LIT]. */
     val POSTER_GLOW_X = floatPreferencesKey("posterGlowX")
@@ -1366,6 +1371,44 @@ class AppStore(private val ctx: Context) {
         posterTypeMemory = com.hikari.app.ui.PosterTypes.normalize(key)
         write("POSTER_TYPE") {
             it[K.POSTER_TYPE] = com.hikari.app.ui.PosterTypes.normalize(key)
+        }
+    }
+
+    /** Settings -> Customize -> Poster cards: size of the portrait cards. */
+    @Volatile
+    var posterPortraitSizeMemory: String = com.hikari.app.ui.PosterSizes.DEFAULT
+
+    fun posterPortraitSizeFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.PosterSizes.normalize(it[K.POSTER_PORTRAIT_SIZE])
+                .also { v -> posterPortraitSizeMemory = v }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun posterPortraitSize(): String = posterPortraitSizeFlow().first()
+
+    suspend fun setPosterPortraitSize(key: String) {
+        posterPortraitSizeMemory = com.hikari.app.ui.PosterSizes.normalize(key)
+        write("POSTER_PORTRAIT_SIZE") {
+            it[K.POSTER_PORTRAIT_SIZE] = com.hikari.app.ui.PosterSizes.normalize(key)
+        }
+    }
+
+    /** Settings -> Customize -> Poster cards: size of the landscape cards. */
+    @Volatile
+    var posterLandscapeSizeMemory: String = com.hikari.app.ui.PosterSizes.DEFAULT
+
+    fun posterLandscapeSizeFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.PosterSizes.normalize(it[K.POSTER_LANDSCAPE_SIZE])
+                .also { v -> posterLandscapeSizeMemory = v }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun posterLandscapeSize(): String = posterLandscapeSizeFlow().first()
+
+    suspend fun setPosterLandscapeSize(key: String) {
+        posterLandscapeSizeMemory = com.hikari.app.ui.PosterSizes.normalize(key)
+        write("POSTER_LANDSCAPE_SIZE") {
+            it[K.POSTER_LANDSCAPE_SIZE] = com.hikari.app.ui.PosterSizes.normalize(key)
         }
     }
 

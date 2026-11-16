@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +37,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -123,7 +126,9 @@ object TvHomeMetrics {
         val h = LocalConfiguration.current.screenHeightDp
         val rowsArea = h - HEADER_BAR_DP - infoHeight().value
         val solved = (rowsArea - SHELF_CHROME_DP) / (1f + PEEK_FRACTION)
-        return solved.coerceIn(96f, 210f).dp
+        // Settings -> Customize -> Poster cards: the size chosen for the shape
+        // in use (1f at "Default").
+        return (solved.coerceIn(96f, 210f) * com.hikari.app.ui.PosterSizing.factor()).dp
     }
 }
 
@@ -581,6 +586,9 @@ fun TvExpandingMediaRow(
     val itemKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
     val rowState = keptListState(keeperKey, itemKeys = itemKeys)
     val cardHeight = TvHomeMetrics.cardHeight()
+    // Settings -> Customize -> Poster cards: Landscape draws the cards wide
+    // even at rest (the size is already part of cardHeight above).
+    val landscapeCards = com.hikari.app.ui.PosterSizing.landscape()
 
     // Tight shelf chrome (see TvHomeMetrics.SHELF_CHROME_DP): the title line is
     // a fixed 28dp strip, so the next shelf's title and poster tops fit on
@@ -639,6 +647,7 @@ fun TvExpandingMediaRow(
                     item = item,
                     scale = ts,
                     cardHeight = cardHeight,
+                    landscape = landscapeCards,
                     onFocus = { onItemFocus?.invoke(item) },
                     onClick = { onClick(item) },
                     onQuickPlay = onQuickPlay?.let { qp -> { qp(item) } },
@@ -656,13 +665,17 @@ private fun TvExpandingPosterCard(
     onFocus: () -> Unit,
     onClick: () -> Unit,
     onQuickPlay: (() -> Unit)?,
+    landscape: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
+    // Poster cards (Settings -> Customize): in landscape the card is wide at
+    // rest too, so "wide" is true whether or not the remote is on it.
+    val wide = focused || landscape
 
     // Poster-shaped at rest, landscape backdrop while focused; both derive
     // from the solved card height so they follow the screen size.
     val cardWidth by animateDpAsState(
-        targetValue = if (focused) {
+        targetValue = if (wide) {
             cardHeight * TvHomeMetrics.EXPANDED_ASPECT
         } else {
             cardHeight * TvHomeMetrics.CARD_ASPECT
@@ -720,15 +733,45 @@ private fun TvExpandingPosterCard(
             .tvPress(onClick = onClick, onHold = onQuickPlay)
             .clickable(onClick = onClick),
     ) {
-        PosterImage(
-            model = if (focused && expandedModel != null) expandedModel else portraitModel,
-            contentDescription = item.title,
-            contentScale = ContentScale.Crop,
-            alignment = if (focused) Artwork.CINEMA_ALIGNMENT else Alignment.Center,
-            modifier = Modifier.fillMaxSize(),
-        )
+        // Landscape at rest, title with no wide art at all: the poster is drawn
+        // whole on a blurred copy of itself (never a beheaded crop).
+        val restHero = if (landscape && !focused) Artwork.tvHeroModel(item) else null
+        val posterOnlyLandscape = restHero != null && !restHero.second &&
+            tmdbBackdrop.isNullOrBlank() && item.backdropUrl.isNullOrBlank()
+        if (posterOnlyLandscape) {
+            PosterImage(
+                model = restHero?.first ?: portraitModel,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(16.dp, BlurredEdgeTreatment.Unbounded),
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.32f))
+            )
+            PosterImage(
+                model = portraitModel,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxHeight()
+                    .aspectRatio(2f / 3f),
+            )
+        } else {
+            PosterImage(
+                model = if (wide && expandedModel != null) expandedModel else portraitModel,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                alignment = if (wide) Artwork.CINEMA_ALIGNMENT else Alignment.Center,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
-        if (focused) {
+        if (wide) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

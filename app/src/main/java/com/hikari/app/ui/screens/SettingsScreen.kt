@@ -591,6 +591,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         val sub = subKey?.let { settingsFolderByKey(it) }
         out += SettingsSearchEntry(key, title, path, folder, sub, sectionId, keywords)
     }
+    section("sec-poster-cards", "Poster cards", "Customize", "customize", null, null, "poster cards shape portrait landscape size small default large bigger smaller card rows grid tv phone backdrop customize")
     section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
     section("sec-server-screen-style", "Server screen style", "Customize", "customize", null, "customize.server_screen", "server screen style page list loading streams chips extension hero banner look classic new design customize")
     section("sec-cs3-recommendations", "Recommendations source", "Customize", "customize", null, "customize.cs3_recommendations", "recommendations recommended related similar tmdb plugin provider extension cloudstream cs3 site own source detail page customize")
@@ -637,6 +638,8 @@ fun SettingsScreen(nav: NavHostController) {
     // preview + one editor per button). Gestures & decoder is a full page too.
     var showPlayerStyle by remember { mutableStateOf(false) }
     var showPlayerGestures by remember { mutableStateOf(false) }
+    // Settings -> Customize -> Poster cards: shape + size, its own full page.
+    var showPosterCards by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
@@ -693,9 +696,10 @@ fun SettingsScreen(nav: NavHostController) {
 
     BackHandler(
         enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
-            showPair || showProfiles || showPlayerStyle || showPlayerGestures,
+            showPair || showProfiles || showPlayerStyle || showPlayerGestures || showPosterCards,
     ) {
         when {
+            showPosterCards -> showPosterCards = false
             showPlayerStyle -> showPlayerStyle = false
             showPlayerGestures -> showPlayerGestures = false
             showLogs -> showLogs = false
@@ -705,6 +709,12 @@ fun SettingsScreen(nav: NavHostController) {
             openSub != null -> openSub = null
             else -> if (!isTv) openFolder = null
         }
+    }
+
+    // Poster cards (Customize folder): a full screen with a pinned live preview.
+    if (showPosterCards) {
+        PosterCardsPage(app, onBack = { showPosterCards = false })
+        return
     }
 
     // Gestures & decoder (Customize folder) is a full screen as well.
@@ -1020,6 +1030,7 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
+                    item { SettingsCard { PosterCardsCard(onOpen = { showPosterCards = true }) } }
                     item { SettingsCard { ServerScreenStyleCard(app) } }
                     item { SettingsCard { Cs3RecommendationsCard(app) } }
                     item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
@@ -7938,6 +7949,28 @@ private fun AdBlockingCard(app: HikariApp) {
 
 
 // ---- Player controls & video enhance (Player folder) ----
+
+/** Opens the full-screen Poster cards page (Customize folder): shape + size. */
+@Composable
+private fun PosterCardsCard(onOpen: () -> Unit) {
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Poster cards"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Choose portrait or landscape posters and make them smaller or bigger, on phone and TV"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onOpen, shape = GlassShape) {
+            Text(tr("Customize poster cards"))
+        }
+    }
+}
 
 /** Opens the full-screen Player UI style editor (Customize folder). */
 @Composable

@@ -211,8 +211,10 @@ object TvRowMetrics {
    *  user's TV poster-size setting (see TvUi.posterWidth). */
   @Composable
   fun cardHeight(): Dp {
-    val pw = TvUi.posterWidth()
-    return (pw.value * 1.8f).coerceIn(96f, 230f).dp
+    val pw = TvUi.posterWidthBase()
+    // Settings -> Customize -> Poster cards: the size chosen for the shape in
+    // use (1f at "Default"), applied after the old clamp so Small really shrinks.
+    return ((pw.value * 1.8f).coerceIn(96f, 230f) * com.hikari.app.ui.PosterSizing.factor()).dp
   }
 }
 
@@ -229,12 +231,16 @@ fun TvExpandCard(
   onClick: () -> Unit,
   onFocusChange: (Boolean) -> Unit,
   modifier: Modifier = Modifier,
+  /** Settings -> Customize -> Poster cards -> Landscape: the card rests as the
+   *  wide 16:9 card (the shape it otherwise only takes while focused). */
+  landscape: Boolean = false,
 ) {
   var focused by remember { mutableStateOf(false) }
+  val wide = focused || landscape
   val posterWidth = cardHeight * (2f / 3f)
   val wideWidth = cardHeight * (16f / 9f)
   val width by animateDpAsState(
-    targetValue = if (focused) wideWidth else posterWidth,
+    targetValue = if (wide) wideWidth else posterWidth,
     animationSpec = tween(durationMillis = 240),
     label = "tvExpandWidth",
   )
@@ -269,7 +275,7 @@ fun TvExpandCard(
       modifier = Modifier.fillMaxSize(),
       contentScale = ContentScale.Crop,
     )
-    if (focused) {
+    if (wide) {
       val hero = Artwork.heroModel(item)
       val art = hero.first
       if (hero.second && art != null) {
@@ -426,6 +432,7 @@ fun TvCinemaRow(
         TvExpandCard(
           item = item,
           cardHeight = cardHeight,
+          landscape = !vertical,
           onClick = { onOpen(item) },
           onFocusChange = { has ->
             if (has) {

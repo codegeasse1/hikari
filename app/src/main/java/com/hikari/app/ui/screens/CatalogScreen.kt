@@ -510,7 +510,10 @@ fun CatalogScreen(
     val columns = if (isTvCatalog) {
         val usable = LocalConfiguration.current.screenWidthDp - com.hikari.app.tv.TvUi.RAIL_WIDTH.value - 40f
         ((usable + 14f) / ((tvCardMin?.value ?: 120f) + 14f)).toInt().coerceIn(3, 12)
-    } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
+    } else if (phoneCinema) {
+        // Settings -> Customize -> Poster cards: landscape size (2 columns at "Default").
+        com.hikari.app.ui.PosterSizes.landscapeColumns(com.hikari.app.ui.PosterSizing.landscapeKey())
+    } else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     LaunchedEffect(gridState) {
         snapshotFlow {
             val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1

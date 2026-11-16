@@ -934,7 +934,10 @@ fun SearchScreen(
                 }
                 val style = rememberPosterStyle()
                 val tvSearch = TvMode.current()
-                val searchCols = if (tvSearch) 6 else TvUi.resultsColumns()
+                val searchCols = if (tvSearch) {
+                    // Settings -> Customize -> Poster cards: bigger cards, fewer columns.
+                    com.hikari.app.ui.PosterSizing.scaledColumns(6, com.hikari.app.ui.PosterSizing.factor())
+                } else TvUi.resultsColumns()
                 val tvCell = if (tvSearch) {
                     val sw = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp
                     val avail = sw - com.hikari.app.tv.TvUi.RAIL_WIDTH - 20.dp - tvEdge * 2
@@ -1016,6 +1019,8 @@ fun SearchScreen(
                                 }
                             }
                             item(key = "row|$pid") {
+                                // Settings -> Customize -> Poster cards: 112dp at "Default".
+                                val searchCellWidth = (112f * com.hikari.app.ui.PosterSizing.factor()).dp
                                 LazyRow(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1024,7 +1029,7 @@ fun SearchScreen(
                                         PhoneSearchCell(
                                             item = item,
                                             onOpen = { openSearchItem(item) },
-                                            modifier = Modifier.width(112.dp),
+                                            modifier = Modifier.width(searchCellWidth),
                                             heroNamespace = "searchRow:$pid",
                                         )
                                     }

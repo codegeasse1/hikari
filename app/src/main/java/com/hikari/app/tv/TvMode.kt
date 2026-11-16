@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
+import com.hikari.app.ui.PosterSizing
 
 object TvMode {
     /** Follow whatever the device reports (the shipped default). */
@@ -170,8 +171,11 @@ object TvUi {
     fun gridMin(phoneDp: Int): androidx.compose.ui.unit.Dp =
         if (TvMode.isTv) maxOf(phoneDp, POSTER_WIDTH_DP).dp else phoneDp.dp
 
+    /** The poster width before the Poster cards size choice (Settings ->
+     *  Customize) is applied: 120dp on a phone, the screen-based width (and the
+     *  TV poster-size slider) on a television. */
     @Composable
-    fun posterWidth(): androidx.compose.ui.unit.Dp {
+    fun posterWidthBase(): androidx.compose.ui.unit.Dp {
         if (!TvMode.current()) return 120.dp
         val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
         val app = remember { runCatching { com.hikari.app.HikariApp.instance }.getOrNull() }
@@ -181,18 +185,32 @@ object TvUi {
         return (h * 0.15f * scale).coerceIn(40f, 150f).dp
     }
 
+    /** How wide a PORTRAIT poster is drawn: [posterWidthBase] times the size
+     *  chosen in Settings -> Customize -> Poster cards (1f at "Default", so
+     *  nothing changes until the user picks another size). */
+    @Composable
+    fun posterWidth(): androidx.compose.ui.unit.Dp =
+        (posterWidthBase().value * PosterSizing.portraitFactor()).dp
+
     /** [gridMin], but sized from the screen rather than a constant — see
      *  [posterWidth]. This is what a poster grid should use. */
     @Composable
-    fun gridMinFor(phoneDp: Int): androidx.compose.ui.unit.Dp =
-        if (TvMode.current()) maxOf(phoneDp.toFloat(), posterWidth().value).dp else phoneDp.dp
+    fun gridMinFor(phoneDp: Int, landscapeAware: Boolean = false): androidx.compose.ui.unit.Dp {
+        if (TvMode.current()) return maxOf(phoneDp.toFloat(), posterWidth().value).dp
+        // Settings -> Customize -> Poster cards: a bigger size means a wider
+        // cell, so the grid fits fewer, bigger cards (1f at "Default").
+        val sizeFactor = if (landscapeAware) PosterSizing.factor() else PosterSizing.portraitFactor()
+        return (phoneDp * sizeFactor).dp
+    }
 
     /** The same idea for a FIXED column count (the search results grid): as many
      *  columns as the screen can hold at [posterWidth], so a television gets the
      *  cells an adaptive grid would have given it. */
     @Composable
     fun gridColumns(phoneColumns: Int): Int {
-        if (!TvMode.current()) return phoneColumns
+        if (!TvMode.current()) {
+            return PosterSizing.scaledColumns(phoneColumns, PosterSizing.factor())
+        }
         val w = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
         val avail = (w - RAIL_WIDTH.value).coerceAtLeast(200f)
         return (avail / posterWidth().value).toInt().coerceIn(4, 8)
@@ -200,5 +218,5 @@ object TvUi {
 
     @Composable
     fun resultsColumns(): Int =
-        if (TvMode.current()) (gridColumns(4) + 2).coerceIn(4, 9) else 4
+        if (TvMode.current()) (gridColumns(4) + 2).coerceIn(4, 9) else gridColumns(4)
 }
