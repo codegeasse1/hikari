@@ -9332,9 +9332,7 @@ class PlayerActivity : ComponentActivity() {
             committedServerKey = ""
             committedEpisodeKey = ""
             pickedByUser = false
-            chooserEmptyNote = if (playerSources.isNotEmpty() && playerSources.all { oldUrlSet.contains(it.url) || triedUrls.contains(it.url) })
-                "Same links as the previous episode — pick a server, or try All extensions."
-            else null
+            chooserEmptyNote = null
             notifySourcesChanged()
             intent.putExtra("histEpisodeSeason", ep.season)
             intent.putExtra("histEpisodeNumber", ep.number)
@@ -9495,6 +9493,9 @@ class PlayerActivity : ComponentActivity() {
         val prev = sources.getOrNull(currentIndex)
         val oldUrlSet = prev?.let { setOf(it.url) }.orEmpty()
             sources = playerSources
+            chooserEmptyNote = if (playerSources.isNotEmpty() && playerSources.all { oldUrlSet.contains(it.url) })
+                "Same links as the previous episode — pick a server, or try All extensions."
+            else null
         notifySourcesChanged()
         currentIndex = prev?.let { p ->
             val key = p.identityKey().takeIf { it.isNotBlank() && it != "u" }
