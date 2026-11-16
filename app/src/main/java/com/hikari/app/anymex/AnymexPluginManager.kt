@@ -279,11 +279,15 @@ object AnymexPluginManager {
             val name = info?.name?.ifBlank { null } ?: plugin.name
             val prefix = if (isManga) "anymexm|" else "anymex|"
             val type = if (isManga) ProviderType.ANYMEX_MANGA else ProviderType.ANYMEX
-            val idKey = plugin.url.trim().ifBlank { name }
+            val rawKey = plugin.url.trim().ifBlank { name }
                 .substringAfter("://")
                 .replace(Regex("[^A-Za-z0-9_.-]"), "_")
                 .takeLast(72)
-                .ifBlank { Integer.toHexString(plugin.url.hashCode()) }
+            // Junk-key guard: a blank/symbol-only key (e.g. "____") can never
+            // load and pollutes the home feed — fall back to a stable hash.
+            val idKey = rawKey
+                .takeIf { it.trim { c -> c == '_' || c == '.' || c == '-' }.length >= 8 }
+                ?: Integer.toHexString(plugin.url.hashCode())
             val id = prefix + idKey
             val dir = moduleDir(context, id.removePrefix(prefix))
             runCatching { dir.mkdirs() }
