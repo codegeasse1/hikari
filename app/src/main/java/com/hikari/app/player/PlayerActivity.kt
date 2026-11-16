@@ -8947,7 +8947,7 @@ class PlayerActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    topMargin = (if (content.childCount == 0) 2 else 10 * density).toInt()
+                    topMargin = (if (content.childCount == 0) 2f else 10 * density).toInt()
                     bottomMargin = (4 * density).toInt()
                 })
             }

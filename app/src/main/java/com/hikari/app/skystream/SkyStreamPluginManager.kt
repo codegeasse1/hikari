@@ -110,7 +110,6 @@ object SkyStreamPluginManager {
             "SkyStream official",
             "The official SkyStream plugin repo (Akash's providers)",
         ),
-    ),
     )
 
     suspend fun seedDefaults(context: Context, store: AppStore) {
