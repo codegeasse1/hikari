@@ -42,9 +42,12 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     private val episodeCache = ConcurrentHashMap<String, List<Episode>>()
 
+    // AnymeX parity: Sora modules expose no browse endpoint — AnymeX fills
+    // Popular/Latest with search("One Piece"). The old "", "a", "the" seeds
+    // answer empty on most anime sites (hence "Browse returned nothing").
     private val catalogSeeds: List<Pair<String, List<String>>> = listOf(
-        "browse" to listOf("", "a", "the", "1", "2024", "2025"),
-        "popular" to listOf("popular", "top", "trending", "best"),
+        "browse" to listOf("One Piece", "a", "the", "1", "2024", "2025"),
+        "popular" to listOf("One Piece", "popular", "top", "trending", "best"),
         "movies" to listOf("movie", "film", "cinema"),
         "series" to listOf("series", "show", "drama", "episode"),
         "action" to listOf("action", "adventure", "war"),
@@ -78,7 +81,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             val tryOrder = listOf(idx) + ((idx + 1) until seeds.size) + ((idx - 1) downTo 0)
             for (i in tryOrder.distinct()) {
                 val q = seeds[i]
-                val payload = SoraRuntime.search(moduleFile, config.id, q)
+                val payload = SoraRuntime.search(moduleFile, config.id, q, page)
                 val data = dataOf(payload) ?: continue
                 for (item in toItems(data)) {
                     if (item.id in seen) continue
@@ -102,7 +105,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
             if (!moduleFile.exists()) return@withContext emptyList()
-            val payload = SoraRuntime.search(moduleFile, config.id, query)
+            val payload = SoraRuntime.search(moduleFile, config.id, query, page)
             val data = dataOf(payload) ?: run {
                 noteFailure(payload, "Search")
                 return@withContext emptyList()
@@ -120,6 +123,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     private fun toItems(data: Any?): List<MediaItem> {
         val arr = data as? JSONArray ?: return emptyList()
+        if (isErrorList(arr)) return emptyList()
         val out = ArrayList<MediaItem>(minOf(arr.length(), MAX_ITEMS))
         for (i in 0 until minOf(arr.length(), MAX_ITEMS)) {
             val o = arr.optJSONObject(i) ?: continue
@@ -142,6 +146,18 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             )
         }
         return out
+    }
+
+    // AnymeX parity (_isErrorPayload): a one-item error answer is failure,
+    // not content — never render "Error"/"Not Found" as a title row.
+    private val errorTitles = setOf("error", "not found", "notfound", "failed", "404")
+    private fun isErrorList(arr: JSONArray): Boolean {
+        if (arr.length() != 1) return false
+        val o = arr.optJSONObject(0) ?: return false
+        for (k in listOf("title", "id", "href", "name")) {
+            if (o.optString(k).trim().lowercase() in errorTitles) return true
+        }
+        return false
     }
 
     override suspend fun warmDetail(item: MediaItem) {
@@ -188,7 +204,9 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
                 val number = o.optInt("number", -1).takeIf { it > 0 }
                     ?: o.optInt("episode", -1).takeIf { it > 0 }
                     ?: o.optInt("ep", -1).takeIf { it > 0 }
-                    ?: o.optString("number").toIntOrNull()?.takeIf { it > 0 }
+                    ?: o.optInt("chapter", -1).takeIf { it > 0 }
+                    ?: o.optString("number").toFloatOrNull()?.toInt()?.takeIf { it > 0 }
+                    ?: o.optString("chapter").toFloatOrNull()?.toInt()?.takeIf { it > 0 }
                     ?: (out.size + 1)
                 val season = o.optInt("season", 0).takeIf { it > 0 } ?: 1
                 out += Episode(
@@ -201,6 +219,10 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
                 )
             }
             if (out.isEmpty()) return@withContext null
+            // AnymeX parity (reversed episode list): Sora modules list
+            // oldest-first — newest-first when the response is ascending;
+            // leave already-descending lists alone.
+            if (out.size > 1 && out.first().number < out.last().number) out.reverse()
             episodeCache[item.id] = out
             out
         }
@@ -371,11 +393,38 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     private fun episodesArray(data: Any?): JSONArray? {
         when (data) {
-            is JSONArray -> return data
+            is JSONArray -> return data.takeIf { !isErrorList(it) }
             is JSONObject -> {
                 for (k in listOf("episodes", "list", "results", "data", "chapters")) {
                     data.optJSONArray(k)?.let { return it }
                 }
+                // Grouped form (e.g. kanzen/shirox {lang: [[num, [{...}]]]}):
+                // AnymeX _collectEpisodes parity — flatten every group into
+                // one array so these modules list episodes instead of nothing.
+                val flat = JSONArray()
+                val keyIter = data.keys()
+                while (keyIter.hasNext()) {
+                    val group = data.opt(keyIter.next().toString()) as? JSONArray ?: continue
+                    for (i in 0 until group.length()) {
+                        val entry = group.opt(i)
+                        if (entry is JSONArray && entry.length() >= 2) {
+                            val num = entry.opt(0).toString().toFloatOrNull()?.toInt()
+                            val list = entry.optJSONArray(1) ?: continue
+                            for (j in 0 until list.length()) {
+                                val o = list.optJSONObject(j) ?: continue
+                                if (num != null && num > 0 && !o.has("number") &&
+                                    o.optString("number").isBlank()
+                                ) {
+                                    o.put("number", num)
+                                }
+                                flat.put(o)
+                            }
+                        } else if (entry is JSONObject) {
+                            flat.put(entry)
+                        }
+                    }
+                }
+                if (flat.length() > 0) return flat
             }
         }
         return null
