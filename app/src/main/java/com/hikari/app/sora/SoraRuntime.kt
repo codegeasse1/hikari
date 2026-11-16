@@ -254,8 +254,10 @@ object SoraRuntime {
 
     // ---- public API ----
 
-    suspend fun search(moduleFile: File, providerId: String, keyword: String): String =
-        run(moduleFile, providerId, "searchResults", JSONObject.quote(keyword).let { "[$it]" }, CATALOG_TIMEOUT_MS)
+    // AnymeX parity: SoraSourceMethods calls searchResults(query, page, filters).
+    // Modules that read the page/filters args misbehave under a 1-arg call.
+    suspend fun search(moduleFile: File, providerId: String, keyword: String, page: Int = 1): String =
+        run(moduleFile, providerId, "searchResults", "[" + JSONObject.quote(keyword) + ", " + page.coerceAtLeast(1) + ", []]", CATALOG_TIMEOUT_MS)
 
     suspend fun details(moduleFile: File, providerId: String, url: String): String =
         run(moduleFile, providerId, "extractDetails", "[${quote(url)}]", CATALOG_TIMEOUT_MS)
