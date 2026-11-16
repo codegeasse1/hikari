@@ -1815,7 +1815,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // feed (see the note in [homeRows]).
             manager.providers.value.filter {
                 it.config.enabled &&
-                    (allowManga || it.config.type != ProviderType.MANGA) && match(it) &&
+                    (allowManga || (it.config.type != ProviderType.MANGA && it.config.type != ProviderType.ANYMEX_MANGA && !com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(it.config.id))) && match(it) &&
                     (providerCatalogsEnabled ||
                         (allowDisabledProviderFallback && isTmdbHomeFallbackProvider(it)) ||
                         (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
