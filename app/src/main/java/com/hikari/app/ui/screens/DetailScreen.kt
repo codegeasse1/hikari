@@ -8574,6 +8574,7 @@ private fun EpisodeRow(
 }
 
 /** Nuvio parity: season 0 is shown as "Specials" (never "Season 0"). */
+@Composable
 private fun seasonTitle(season: Int): String =
     if (season <= 0) tr("Specials") else tr("Season %s").replace("%s", season.toString())
 
