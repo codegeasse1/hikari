@@ -6161,6 +6161,8 @@ class PlayerActivity : ComponentActivity() {
     /** In-player episode switches, newest wins: a slow search for an earlier
      *  pick must never overwrite a later one (see [switchToEpisode]). */
     private var episodeSwitchGen = 0
+    /** URLs adopted for the last episode: guards the same-link re-play (see adoptEpisodeStreams). */
+    private var lastEpisodeUrls: Set<String> = emptySet()
     /** Back-out restore for an in-player episode switch (see switchToEpisode):
      *  tapping another episode opens its server page instantly; backing out
      *  of that page before picking hands the player back to the episode (and
@@ -8802,16 +8804,26 @@ class PlayerActivity : ComponentActivity() {
             }
             // Remembered for Previous/Next/autoplay, so those never refetch.
             playerEpisodes = eps
-            showEpisodeThumbPanel(item, eps)
+            // Same source as the detail screen: TMDB episode stills (w780) with
+            // position fallback, so rows don't depend on provider thumbnails.
+            // Cached in TmdbStills.mem by tmdbId, so this is cheap after detail.
+            val stills = runCatching {
+                com.hikari.app.data.TmdbStills.stillsDataFor(item, eps.map { it.season }.toSet())
+            }.getOrDefault(emptyMap())
+            showEpisodeThumbPanel(item, eps, stills)
         }
     }
 
         /** Big-thumbnail episode picker (the reference Season sheet): a fixed box
      *  panel whose rows are 16:9 stills with a play badge on the left and the
-     *  episode number + name on the right. Stills come from the episode's own
-     *  image, falling back to the title art. Switching still goes through
+     *  episode number + name on the right. Stills come from TMDB (same as detail),
+     *  then the episode's own image, falling back to the title art. Switching still goes through
      *  [switchToEpisode], so Previous/Next and autoplay are untouched. */
-    private fun showEpisodeThumbPanel(item: AppMediaItem, eps: List<Episode>) {
+    private fun showEpisodeThumbPanel(
+        item: AppMediaItem,
+        eps: List<Episode>,
+        stills: Map<Int, com.hikari.app.data.TmdbStills.SeasonStills> = emptyMap(),
+    ) {
         val density = resources.displayMetrics.density
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         val liveId = liveEpisode?.id ?: historyEntry?.episodeId
@@ -8878,8 +8890,18 @@ class PlayerActivity : ComponentActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
+            // Detail parity: TMDB episode still first, provider thumbnail second,
+            // show art only as last resort. Detail builds this in tvEpStills;
+            // here we read the same TmdbStills source directly.
+            val seasonStills = stills[ep.season]
+            val tmdbStill = seasonStills?.byNumber?.get(ep.number)?.still?.takeIf { it.isNotBlank() }
+                ?: run {
+                    // Position fallback like detail: idx-th TMDB row for idx-th episode.
+                    val idx = eps.filter { it.season == ep.season }.sortedBy { it.number }.indexOfFirst { it.number == ep.number }
+                    if (idx >= 0) seasonStills?.ordered?.getOrNull(idx)?.still?.takeIf { it.isNotBlank() } else null
+                }
             val epStill = ep.image?.takeIf { it.isNotBlank() }
-            val stillBlankOverlay = epStill.isNullOrBlank() && titleArts.none { !isThumbTmdb(it) }
+            val stillBlankOverlay = tmdbStill.isNullOrBlank() && epStill.isNullOrBlank() && titleArts.none { !isThumbTmdb(it) }
             if (stillBlankOverlay) {
                 frame.addView(TextView(this).apply {
                     text = if (ep.season > 0 && ep.number > 0) "S" + ep.season + " E" + ep.number else ("Episode " + ep.number).takeIf { ep.number > 0 } ?: "Episode"
@@ -8889,8 +8911,10 @@ class PlayerActivity : ComponentActivity() {
                     setTextColor(0xFF9AA5B5.toInt())
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             }
-            val still = if (epStill != null && !isThumbTmdb(epStill)) epStill
-                else titleArts.firstOrNull { !isThumbTmdb(it) } ?: epStill ?: fallbackPoster
+            val still = tmdbStill?.takeIf { it.isNotBlank() }
+                ?: epStill?.takeIf { it.isNotBlank() }
+                ?: titleArts.firstOrNull { !isThumbTmdb(it) }
+                ?: epStill ?: fallbackPoster
             // Decode at row-thumb size, not full resolution (see cellModel).
             // If the still itself fails (dead image host), fall back to the
             // title art instead of leaving a black box.
@@ -9491,11 +9515,21 @@ class PlayerActivity : ComponentActivity() {
         // row (same provider + same name, else the same URL), it starts at
         // once instead of dropping to an unrelated mirror.
         val prev = sources.getOrNull(currentIndex)
-        val oldUrlSet = prev?.let { setOf(it.url) }.orEmpty()
+        val oldUrlSet = sources.map { it.url }.toSet()
+        val prevSingle = prev?.let { setOf(it.url) }.orEmpty()
+        val newUrlSet = playerSources.map { it.url }.toSet()
+        val sameLinks = playerSources.isNotEmpty() && newUrlSet.isNotEmpty() && ((newUrlSet - oldUrlSet).isEmpty() || (lastEpisodeUrls.isNotEmpty() && (newUrlSet - lastEpisodeUrls).isEmpty()) || playerSources.isNotEmpty() && playerSources.all { prevSingle.contains(it.url) })
+        if (sameLinks) {
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "same links as previous episode for S" + ep.season + "E" + ep.number + " (" + playerSources.size + " server(s)) — forcing chooser, not auto-playing"
+            )
+        }
             sources = playerSources
-            chooserEmptyNote = if (playerSources.isNotEmpty() && playerSources.all { oldUrlSet.contains(it.url) })
+            chooserEmptyNote = if (sameLinks)
                 "Same links as the previous episode — pick a server, or try All extensions."
             else null
+        lastEpisodeUrls = oldUrlSet
         notifySourcesChanged()
         currentIndex = prev?.let { p ->
             val key = p.identityKey().takeIf { it.isNotBlank() && it != "u" }
@@ -9515,7 +9549,7 @@ class PlayerActivity : ComponentActivity() {
         if (serverChooserDialog?.isShowing == true) {
             // The episode-switch page is already open and filling live —
             // never stack a second chooser over it (see switchToEpisode).
-        } else if ((fromAutoplay || !shouldAskServer()) && run {
+        } else if (!sameLinks && (fromAutoplay || !shouldAskServer()) && run {
                 val u = playerSources.getOrNull(
                     prev?.let { p ->
                         val key = p.identityKey().takeIf { it.isNotBlank() && it != "u" }
@@ -9523,7 +9557,7 @@ class PlayerActivity : ComponentActivity() {
                             ?: key?.let { k -> playerSources.indexOfFirst { it.identityKey() == k }.takeIf { it >= 0 } }
                     }?.takeIf { it >= 0 } ?: 0
                 )?.url.orEmpty()
-                val autoUrlStale = fromAutoplay && u.isNotBlank() && (oldUrlSet.contains(u) || triedUrls.contains(u))
+                val autoUrlStale = u.isNotBlank() && (oldUrlSet.contains(u) || triedUrls.contains(u) || lastEpisodeUrls.contains(u))
                 !autoUrlStale
             }) {
             playSource(currentIndex)
@@ -14531,6 +14565,7 @@ class PlayerActivity : ComponentActivity() {
         com.hikari.app.data.Logs.log(
             "Player",
             "play tap server ${index + 1}/${sources.size} \"${src.name}\" prov=${src.providerId} " +
+                "ep=S${liveEpisode?.season ?: 0}E${liveEpisode?.number ?: 0} " +
                 "m3u8=${src.isM3u8} mpd=${src.isMpd} torrent=${src.isTorrent} local=${src.local} " +
                 "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")} " +
                 "urlLen=${src.url.length} pickedByUser=$pickedByUser hdrVar=$headerVariant uaVar=$uaVariant",
@@ -15301,6 +15336,7 @@ class PlayerActivity : ComponentActivity() {
         com.hikari.app.data.Logs.log(
             "Player",
             "play start server ${index + 1}/${sources.size} \"${src.name}\" " +
+                "ep=S${liveEpisode?.season ?: 0}E${liveEpisode?.number ?: 0} " +
                 "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")} " +
                 "m3u8=${src.isM3u8} mpd=${src.isMpd} cs3=${src.providerId.startsWith("cs3|")} " +
                 "hdrVar=$headerVariant uaVar=$uaVariant mime=${mainMimeOf(src) ?: "-"}",
