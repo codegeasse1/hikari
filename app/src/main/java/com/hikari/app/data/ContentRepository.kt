@@ -4242,10 +4242,8 @@ class ContentRepository(private val manager: ProviderManager) {
 
     private suspend fun metaForInner(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
-        val keyFamily = manager.byId(item.providerId)?.config?.type
         val metaKey = MetaCache.metaKey(item.uniqueId) +
-            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else "" +
-            runCatching { MetaSources.fingerprint(item, keyFamily) }.getOrDefault("")
+            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         MetaCache.cachedMeta(metaKey)?.let { cached ->
             if (!cached.overview.isNullOrBlank()) {
                 synchronized(metaCache) { metaCache[item.uniqueId] = cached }
@@ -4256,11 +4254,6 @@ class ContentRepository(private val manager: ProviderManager) {
         if (originProvider != null) {
             runCatching { originProvider.warmDetail(item) }
         }
-        // External-metadata switch for this title's engine family (see
-        // MetaSources): off = the extension's own site metadata only.
-        val engineFamily = originProvider?.config?.type
-        val externalOn = engineFamily != null &&
-            runCatching { MetaSources.familyEnabled(engineFamily) }.getOrDefault(true)
         var result = originProvider
             ?.let {
                 withTimeoutOrNull(metaForTimeoutMs(it)) {
@@ -4268,8 +4261,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             }
             ?: item
-        if (result.backdropUrl != null && result.overview != null && !externalOn) {
-            com.hikari.app.data.Logs.log("Meta", "detail meta: origin \"${item.title.take(60)}\" complete, external off — as-is")
+        if (result.backdropUrl != null && result.overview != null) {
             val t = translateItem(result)
             synchronized(metaCache) { metaCache[item.uniqueId] = t }
             MetaCache.putMeta(metaKey, t)
@@ -4282,20 +4274,7 @@ class ContentRepository(private val manager: ProviderManager) {
             MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
-        // Nuvio-style metadata-addon leg (Aio first, then installed metadata
-        // addons): fills what the origin left bare — and corrects a stale
-        // origin overview, since the addon answer outranks it. Skipped when
-        // this family is external-off (origin stays untouched).
-        if (externalOn) {
-            val metaAddons = manager.providers.value.filterIsInstance<StremioAddon>()
-                .filter { it.config.enabled && it.config.id != item.providerId }
-            val before = result
-            result = runCatching { MetaSources.applyExternal(result, metaAddons) }.getOrDefault(result)
-            if (result != before) {
-                com.hikari.app.data.Logs.log("Meta", "detail meta: external addon enriched \"${item.title.take(60)}\"")
-            }
-        }
-        val others = if (TrackerAnimeResolver.isTrackerAnime(result) || !externalOn) emptyList()
+        val others = if (TrackerAnimeResolver.isTrackerAnime(result)) emptyList()
         else manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
@@ -4375,14 +4354,7 @@ class ContentRepository(private val manager: ProviderManager) {
     ): List<Episode>? = com.hikari.app.providers.ProviderGate.interactive {
         val got = episodesForInner(item, onPartial)
             ?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
-        // Addon-leg thumbnails (Aio, then installed metadata addons): a dead
-        // image CDN must not black out the list — ids are never touched.
-        val thumbs = if (!got.isNullOrEmpty()) {
-            val metaAddons = manager.providers.value.filterIsInstance<StremioAddon>()
-                .filter { it.config.enabled }
-            runCatching { MetaSources.fillEpisodeImages(item, got, metaAddons) }.getOrDefault(got)
-        } else got
-        if (!thumbs.isNullOrEmpty()) return@interactive thumbs
+        if (!got.isNullOrEmpty()) return@interactive got
         val trk = TrackerAnimeResolver.trackerEpisodes(item)
             ?: TrackerAnimeResolver.fallbackEpisodes(item)
         if (trk != null) restoreAnimeSeasons(item, trk) else null
