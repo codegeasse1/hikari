@@ -262,27 +262,69 @@ object Artwork {
         if (!inFlight.add(key)) return
         executor.execute {
             try {
-                // The lookup is suspending; this worker is a plain thread, so
-                // bridge into it. Blocking a daemon artwork thread is fine.
-                //
-                // A LIVE TV CHANNEL never reaches TMDB (see [IptvMark]): a
-                // channel has no TMDB entry, so the title match returned an
-                // unrelated film's poster — which is what put film artwork on
-                // IPTV rows. Its tile is drawn locally, offline, from the
-                // channel's own name instead ([IptvArt]).
-                // A saved TORRENT rides on an IPTV-type row but is not a
-                // live channel: it reaches TMDB like anything else, so a
-                // magnet named e.g. "Digger 2026" resolves real artwork
-                // instead of wearing a "MAG/LIVE" tile.
-                val res = if (IptvMark.of(item) && item.rawType != "torrent") {
-                    // A saved network stream is a file, not a live channel: its local
-                    // tile skips the LIVE marker (see [IptvArt]).
-                    runCatching { IptvArt.tile(item, live = item.rawType != "stream")?.let { Pair<String?, String?>(it, null) } }
-                        .getOrNull()
-                } else {
-                    runCatching {
-                        runBlocking {
-                            val art = TmdbMeta.artwork(item)
+                fetchAndStore(key, item, immediateBump = false)
+            } finally {
+                inFlight.remove(key)
+            }
+        }
+    }
+
+    /** Detail-hero fast lane: the header is already on screen, so its lookup
+     *  skips the shared pool and repaints the moment it lands instead of
+     *  popping in after the grid coalesce. */
+    private val heroExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "hikari-artwork-hero").apply {
+            isDaemon = true
+            priority = Thread.MAX_PRIORITY
+        }
+    }
+
+    /** Resolve [item]'s art on the hero lane. Safe to call on every detail
+     *  open: memory hits return immediately, misses single-flight. */
+    fun prefetchHero(item: MediaItem) {
+        val key = runCatching { keyOf(item) }.getOrNull() ?: return
+        loadOnce()
+        if (runCatching { keysFor(item) }.getOrNull().orEmpty().any { k ->
+            memory[k]?.let { e -> !e.poster.isNullOrBlank() || !e.backdrop.isNullOrBlank() } == true
+        }) return
+        if (!inFlight.add(key)) return
+        heroExecutor.execute {
+            try {
+                fetchAndStore(key, item, immediateBump = true)
+            } finally {
+                inFlight.remove(key)
+            }
+        }
+    }
+
+    private fun bumpRevisionImmediate() {
+        val now = System.currentTimeMillis()
+        lastBump.set(now)
+        revision.value = revisionCounter.incrementAndGet()
+    }
+
+    private fun fetchAndStore(key: String, item: MediaItem, immediateBump: Boolean) {
+        // The lookup is suspending; this worker is a plain thread, so
+        // bridge into it. Blocking a daemon artwork thread is fine.
+        //
+        // A LIVE TV CHANNEL never reaches TMDB (see [IptvMark]): a
+        // channel has no TMDB entry, so the title match returned an
+        // unrelated film's poster — which is what put film artwork on
+        // IPTV rows. Its tile is drawn locally, offline, from the
+        // channel's own name instead ([IptvArt]).
+        // A saved TORRENT rides on an IPTV-type row but is not a
+        // live channel: it reaches TMDB like anything else, so a
+        // magnet named e.g. "Digger 2026" resolves real artwork
+        // instead of wearing a "MAG/LIVE" tile.
+        val res = if (IptvMark.of(item) && item.rawType != "torrent") {
+            // A saved network stream is a file, not a live channel: its local
+            // tile skips the LIVE marker (see [IptvArt]).
+            runCatching { IptvArt.tile(item, live = item.rawType != "stream")?.let { Pair<String?, String?>(it, null) } }
+                .getOrNull()
+        } else {
+            runCatching {
+                runBlocking {
+                    val art = TmdbMeta.artwork(item)
                     val shots = TmdbScreenshots.backdropsFor(item)
                     val poster = art?.first
                         ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
@@ -292,28 +334,24 @@ object Artwork {
                         ?: TmdbScreenshots.firstCached(item.uniqueId)
                         ?: TmdbScreenshots.allCached(item.uniqueId).firstOrNull()
                         ?: siblingBackdropCached(item)
-                            if (poster == null && backdrop == null) null
-                            else poster to backdrop
-                        }
-                    }.getOrNull()
+                    if (poster == null && backdrop == null) null
+                    else poster to backdrop
                 }
-                memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
-                runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
-                    if (k == key) return@forEach
-                    val cur = memory[k]
-                    val merged = Entry(
-                        res?.first ?: cur?.poster,
-                        res?.second ?: cur?.backdrop,
-                        System.currentTimeMillis(),
-                    )
-                    if (merged.poster != null || merged.backdrop != null) memory[k] = merged
-                }
-                saveCache()
-                bumpRevision()
-            } finally {
-                inFlight.remove(key)
-            }
+            }.getOrNull()
         }
+        memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
+        runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
+            if (k == key) return@forEach
+            val cur = memory[k]
+            val merged = Entry(
+                res?.first ?: cur?.poster,
+                res?.second ?: cur?.backdrop,
+                System.currentTimeMillis(),
+            )
+            if (merged.poster != null || merged.backdrop != null) memory[k] = merged
+        }
+        saveCache()
+        if (immediateBump) bumpRevisionImmediate() else bumpRevision()
     }
 
     /** Detail-header art cached under a sibling type's id: row ids carry

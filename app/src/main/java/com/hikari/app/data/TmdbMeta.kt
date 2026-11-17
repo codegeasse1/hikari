@@ -330,11 +330,11 @@ object TmdbMeta {
 
     /** TMDB's "similar" titles for [item] (same genre/vibe). */
     suspend fun similar(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
+        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
 
     /** TMDB's "recommendations" for [item] (what people watched next). */
     suspend fun related(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
+        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
 
     private suspend fun shelf(item: MediaItem, kind: String, limit: Int): List<MediaItem> {
         // Anime pick: TMDB's shelves would list the mistranslated title's
@@ -443,7 +443,11 @@ object TmdbMeta {
                 overview = a.overview.takeIf { it.isNotBlank() },
             )
         }
-        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return animeFallback()
+        // TMDB off (master or per-kind toggle) means no TMDB network at all:
+        // the anime/TVDB fallbacks below still answer, TMDB simply doesn't.
+        val tmdbAllowed = runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true)
+        val resolved = if (tmdbAllowed) runCatching { TmdbResolver.resolve(item) }.getOrNull() else null
+        if (resolved == null) return animeFallback()
         val seg = segment(resolved.mediaType)
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"
         // `videos` is answered in the app's chosen TMDB language TOO, and that
@@ -714,6 +718,8 @@ object TmdbMeta {
     }
 
     suspend fun titles(item: MediaItem): Pair<String, String>? {
+        // TMDB off: titles stay as the extension released them.
+        if (!runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true)) return null
         val key = item.originalTitle + "\u0001" + item.title + "\u0001" + item.type.name
         synchronized(titleCache) { titleCache[key] }?.let { return it }
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null

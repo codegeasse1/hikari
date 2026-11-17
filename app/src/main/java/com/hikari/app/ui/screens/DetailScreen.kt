@@ -6722,6 +6722,11 @@ private fun Hero(
     style: String = DetailHeroStyles.WIDE,
 ) {
     var heroBackdropDead by remember(meta?.uniqueId) { mutableStateOf(false) }
+    // The hero is on screen now: resolve its art on the priority lane so it
+    // lands before first paint instead of popping in half a second later.
+    LaunchedEffect(meta?.uniqueId) {
+        meta?.let { runCatching { Artwork.prefetchHero(it) } }
+    }
     // The plural TMDB backdrops first (what TV's banner shows): a dead
     // override falls back to the normal model below, never black.
     var tmdbHeaderDead by remember(meta?.uniqueId) { mutableStateOf(false) }
@@ -6828,31 +6833,14 @@ private fun Hero(
                     .fillMaxHeight(0.86f)
                     .aspectRatio(2f / 3f)
             ) {
-            // Poster slot never shows the backdrop: while the poster is null
-            // (tokenized data-uri still decoding) keep a fixed placeholder so
-            // the layout never re-measures, and backdrop rotation never
-            // crossfades this slot (the ghost poster in the bug report).
-            val posterOnly = posterModel
-            if (posterOnly != null) {
-                androidx.compose.animation.Crossfade(targetState = posterOnly, label = "heroPoster") { pm ->
-                    PosterArt(
-                        model = pm,
-                        contentDescription = meta?.title,
-                        style = rememberPosterStyle(),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .flightTarget(heroKey),
-                    )
-                }
-            } else {
-                Box(
-                    Modifier
+            androidx.compose.animation.Crossfade(targetState = posterModel ?: image.first, label = "heroPoster") { pm ->
+                PosterArt(
+                    model = pm,
+                    contentDescription = meta?.title,
+                    style = rememberPosterStyle(),
+                    modifier = Modifier
                         .fillMaxSize()
-                        .flightTarget(heroKey)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                        )
+                        .flightTarget(heroKey),
                 )
             }
             }
@@ -6903,27 +6891,14 @@ private fun Hero(
                     .fillMaxHeight(0.78f)
                     .aspectRatio(2f / 3f)
             ) {
-            val sidePosterOnly = posterModel
-            if (sidePosterOnly != null) {
-                androidx.compose.animation.Crossfade(targetState = sidePosterOnly, label = "heroSidePoster") { pm ->
-                    PosterArt(
-                        model = pm,
-                        contentDescription = null,
-                        style = rememberPosterStyle(),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .flightTarget(heroKey),
-                    )
-                }
-            } else {
-                Box(
-                    Modifier
+            androidx.compose.animation.Crossfade(targetState = posterModel ?: image.first, label = "heroSidePoster") { pm ->
+                PosterArt(
+                    model = pm,
+                    contentDescription = null,
+                    style = rememberPosterStyle(),
+                    modifier = Modifier
                         .fillMaxSize()
-                        .flightTarget(heroKey)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                        )
+                        .flightTarget(heroKey),
                 )
             }
             }
@@ -6941,7 +6916,10 @@ private fun Hero(
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
         ) {
-            androidx.compose.animation.Crossfade(targetState = image.first, label = "heroWide") { img ->
+            // While the wide art is still resolving, hold the already-loaded
+            // poster instead of a flat box — one smooth crossfade to the art
+            // instead of blank-then-pop.
+            androidx.compose.animation.Crossfade(targetState = image.first ?: posterModel, label = "heroWide") { img ->
                 HeroArtwork(
                     model = img,
                     wide = image.second,
