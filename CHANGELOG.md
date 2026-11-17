@@ -1,7 +1,8 @@
 
+
 ## 0.12.116
 
-- Real Nuvio-style metadata addons: detail descriptions and art now come from AioMetadata first, then every installed Stremio metadata addon (Cinemeta and friends), then TMDB — a dead backend falls through instead of blanking the page, and a wrong origin overview gets corrected instead of sticking
+- Real Nuvio-style metadata addons: detail descriptions and art come from AioMetadata first, then every installed Stremio metadata addon (Cinemeta and friends), then TMDB — a dead backend falls through instead of blanking the page, and a wrong origin overview gets corrected instead of sticking
 - Metadata sources section shows the live addon order (Aio first when its endpoint is set, installed metadata addons next) plus per-category switches: CloudStream, Stremio, Nuvio, Hikari, SkyStream, Aniyomi, Anymex, Vega, Sora, ZanGetSu, Fork, IPTV, CS3 and Universal can each keep pure extension site metadata or take the external pipeline; TMDB off now truly means no TMDB network
 - Detail hero stops flashing: art resolves on a priority lane the moment the page opens and the wide band holds the poster until the backdrop lands — one smooth crossfade instead of blank-then-pop
 - Player episode lists survive a dead image CDN: missing thumbnails are refilled from the addon legs (Aio, then installed metadata addons) without touching episode ids or playback
