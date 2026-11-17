@@ -29,9 +29,11 @@ import java.util.concurrent.ConcurrentHashMap
  * [TmdbMeta] and `ContentRepository.episodesForInner`, which consult this
  * object first):
  *
- *   1. AioMetadata (when configured — see [configure])
- *   2. TMDB (existing behaviour, unchanged)
- *   3. Extension/provider data (existing fallbacks, unchanged)
+ *   1. AioMetadata (when configured — see [configure]; first by user order
+ *      in the metadata-addon pipeline, see [MetaSources])
+ *   2. Installed metadata addons (Cinemeta and friends, provider order)
+ *   3. TMDB (existing behaviour, unchanged)
+ *   4. Extension/provider data (existing fallbacks, unchanged)
  *
  * A miss or a timeout at any earlier leg falls through to the next one, so a
  * dead/misconfigured Aio backend can never blank a page — it just costs one
@@ -363,6 +365,16 @@ object AioMetadata {
         val backdrop = str(o, "background")
         if (poster == null && backdrop == null) return null
         return poster to backdrop
+    }
+
+    /**
+     * Aio's raw `/meta` document for [item] (unconfigured / miss / mismatch ->
+     * null). Backs the metadata-addon pipeline (see [MetaSources]): text
+     * fields are trusted by the same gate as every other leg ([fetchRaw]).
+     */
+    suspend fun meta(item: MediaItem): JSONObject? {
+        if (!enabledFor(item)) return null
+        return fetchRaw(item, "meta")
     }
 
     /**

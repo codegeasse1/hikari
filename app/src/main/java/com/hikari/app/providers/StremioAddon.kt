@@ -661,6 +661,72 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return false
     }
 
+    /** Nuvio-style `meta` support: the manifest's `resources` entry named
+     *  `meta` whose `types` carry [typeSeg] and whose `idPrefixes` accept
+     *  [id]. A manifest with no `resources` at all is assumed to do the usual
+     *  addon job (see [hasResource]). */
+    suspend fun supportsMeta(typeSeg: String, id: String): Boolean {
+        val m = loadManifest() ?: return false
+        val resources = m.optJSONArray("resources") ?: return metaDefaults(m, typeSeg, id)
+        if (resources.length() == 0) return metaDefaults(m, typeSeg, id)
+        for (i in 0 until resources.length()) {
+            val r = resources.opt(i) ?: continue
+            val name = if (r is String) r else (r as? JSONObject)?.optString("name").orEmpty()
+            if (!name.equals("meta", ignoreCase = true)) continue
+            val types = if (r is JSONObject) metaStrList(r, "types") else metaTypes(m)
+            val prefixes = if (r is JSONObject) metaStrList(r, "idPrefixes") else metaPrefixes(m)
+            if ((types.isEmpty() || types.any { it.equals(typeSeg, ignoreCase = true) }) &&
+                (prefixes.isEmpty() || prefixes.any { id.startsWith(it) })
+            ) return true
+        }
+        return false
+    }
+
+    /** Whether this addon declares a `meta` resource at all — for the
+     *  Metadata sources list. Reads the cached manifest, loading it once
+     *  when this session has not browsed the addon yet. */
+    suspend fun declaresMeta(): Boolean {
+        val m = manifest ?: loadManifest() ?: return false
+        val resources = m.optJSONArray("resources") ?: return true
+        if (resources.length() == 0) return true
+        for (i in 0 until resources.length()) {
+            val r = resources.opt(i) ?: continue
+            val name = if (r is String) r else (r as? JSONObject)?.optString("name").orEmpty()
+            if (name.equals("meta", ignoreCase = true)) return true
+        }
+        return false
+    }
+
+    private fun metaStrList(o: JSONObject, key: String): List<String> =
+        o.optJSONArray(key)?.let { a ->
+            (0 until a.length()).mapNotNull { a.optString(it).takeIf { s -> s.isNotBlank() } }
+        } ?: emptyList()
+
+    private fun metaTypes(m: JSONObject): List<String> = metaStrList(m, "types")
+
+    private fun metaPrefixes(m: JSONObject): List<String> = metaStrList(m, "idPrefixes")
+
+    private fun metaDefaults(m: JSONObject, typeSeg: String, id: String): Boolean {
+        val types = metaTypes(m)
+        val prefixes = metaPrefixes(m)
+        return (types.isEmpty() || types.any { it.equals(typeSeg, ignoreCase = true) }) &&
+            (prefixes.isEmpty() || prefixes.any { id.startsWith(it) })
+    }
+
+    /** This addon's raw `/meta` document for [typeSeg]/[id], or null. Tried
+     *  spellings mirror [getEpisodes]: the row's own segment first, then the
+     *  canonical ones an addon usually serves under. */
+    suspend fun fetchMetaDoc(typeSeg: String, id: String): JSONObject? {
+        val segs = (listOf(typeSeg) + listOf("movie", "series", "tv", "anime")).distinct()
+        for (seg in segs) {
+            if (!supportsMeta(seg, id)) continue
+            val json = getMetaJson(resUrl("meta", seg, id)) ?: continue
+            val doc = json.optJSONObject("meta") ?: json.optJSONArray("meta")?.optJSONObject(0)
+            if (doc != null) return doc
+        }
+        return null
+    }
+
     private fun acceptsPrefix(prefix: String): Boolean {
         val m = manifest ?: return false
         m.optJSONArray("idPrefixes")?.let { arr ->

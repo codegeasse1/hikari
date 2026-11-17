@@ -6653,6 +6653,75 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             )
 
         }
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Metadata addons"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        if (!LocalHideHelp.current) Text(
+            tr("AioMetadata answers first when its endpoint is set above. Every installed Stremio metadata addon (Cinemeta and friends) is asked next, in Extensions order, then TMDB. Install addons in Extensions and they join automatically."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "● " + tr("AioMetadata") + " — " + if (savedAioUrl.isNotBlank()) tr("first") else tr("not configured"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        var metaCapable by remember { mutableStateOf<List<String>?>(null) }
+        LaunchedEffect(installed) {
+            metaCapable = installed
+                .filter { it.config.enabled && it.config.type == ProviderType.STREMIO }
+                .filter { p ->
+                    (p as? com.hikari.app.providers.StremioAddon)?.let {
+                        runCatching { it.declaresMeta() }.getOrDefault(false)
+                    } == true
+                }
+                .map { it.config.name.ifBlank { it.config.id } }
+        }
+        val capable = metaCapable
+        if (capable == null) {
+            Text(
+                tr("Checking installed addons…"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        } else if (capable.isEmpty()) {
+            Text(
+                tr("No installed Stremio addon declares metadata — add Cinemeta from Extensions to get descriptions here."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        } else {
+            capable.forEach { name ->
+                Text(
+                    "• " + name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Apply external metadata to"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        if (!LocalHideHelp.current) Text(
+            tr("Off keeps that category on its extension's own site metadata only. On lets Aio, your metadata addons and TMDB fill what the site left bare."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val extFam by remember { app.store.metaFamilyExternalFlow() }.collectAsState(initial = com.hikari.app.data.MetaSources.EXTERNAL_FAMILY_NAMES.toSet())
+        for (t in com.hikari.app.data.MetaSources.EXTERNAL_FAMILIES) {
+            SettingsToggle(
+                label = t.groupLabel,
+                supporting = t.name,
+                checked = t.name in extFam,
+                onCheckedChange = { v ->
+                    scope.launch {
+                        runCatching {
+                            app.store.setMetaFamilyExternal(if (v) extFam + t.name else extFam - t.name)
+                        }
+                    }
+                },
+            )
+        }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(onClick = { modulesOpen = true }, shape = GlassShape) {
             Text(tr("TMDB modules"))

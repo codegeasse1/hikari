@@ -400,6 +400,10 @@ class AppStore(private val ctx: Context) {
         /** AioMetadata backend endpoint + key (Settings -> Integrations -> Metadata sources). Blank endpoint = Aio legs skip. */
         val AIO_BASE_URL = stringPreferencesKey("aioBaseUrl")
         val AIO_API_KEY = stringPreferencesKey("aioApiKey")
+        /** Engine families external metadata (Aio/TMDB/addons) may override.
+         *  Absent = every family on. Off for a family = its titles keep pure
+         *  extension site metadata (see [MetaSources]). */
+        val META_FAMILY_EXTERNAL = stringSetPreferencesKey("metaFamilyExternal")
         /** Provider ids shown with extension-own metadata only: no TMDB /
          *  anime blank-filling, no episode renaming, no TMDB shelves. */
         val NATIVE_PROVIDERS = stringSetPreferencesKey("nativeMetadataProviders")
@@ -845,6 +849,13 @@ class AppStore(private val ctx: Context) {
     fun aioApiKeyFlow(): Flow<String> = store.data.map { it[K.AIO_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun aioApiKey(): String = aioApiKeyFlow().first()
     suspend fun setAioApiKey(value: String) { write("AIO_API_KEY") { it[K.AIO_API_KEY] = value } }
+    fun metaFamilyExternalFlow(): Flow<Set<String>> =
+        store.data.map { prefs ->
+            if (prefs.contains(K.META_FAMILY_EXTERNAL)) prefs[K.META_FAMILY_EXTERNAL].orEmpty()
+            else MetaSources.EXTERNAL_FAMILY_NAMES.toSet()
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun metaFamilyExternal(): Set<String> = metaFamilyExternalFlow().first()
+    suspend fun setMetaFamilyExternal(names: Set<String>) { write("META_FAMILY_EXTERNAL") { it[K.META_FAMILY_EXTERNAL] = names.toSet() } }
     fun nativeProvidersFlow(): Flow<Set<String>> =
         store.data.map { it[K.NATIVE_PROVIDERS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun nativeProviders(): Set<String> = nativeProvidersFlow().first()
