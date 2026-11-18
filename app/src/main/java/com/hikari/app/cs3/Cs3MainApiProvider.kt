@@ -12,6 +12,7 @@ import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.providers.StallResettable
 import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.LoadResponse
@@ -43,7 +44,7 @@ import org.json.JSONObject
  * Adapts a loaded CloudStream MainAPI to Hikari's ContentProvider contract so
  * .cs3 plugins appear in Home/Search/Detail/Player like any other provider.
  */
-class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider {
+class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider, StallResettable {
 
     companion object {
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -237,6 +238,26 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private var loadedApi: MainAPI? = null
     @Volatile
     private var apiResolved = false
+
+    /**
+     * Drops the cached plugin instance so the next call re-resolves it from
+     * the freshly reloaded runtime (see [Cs3PluginManager.reload]).
+     *
+     * Without this, [ExtensionRecovery] reloaded the plugin file but this
+     * provider kept calling the OLD, wedged MainAPI object forever: the
+     * "stall broken (fresh lock + fresh runtime)" line fired while every
+     * later loadLinks still queued into the stuck instance — the reported
+     * "CloudStream plays it, Hikari never shows a server" wedge. CloudStream
+     * never reuses a dead instance either (its repository drops the whole
+     * API object on failure); this is the same guarantee.
+     */
+    override fun resetForStall() {
+        synchronized(this) {
+            loadedApi = null
+            apiResolved = false
+        }
+        loadCache.clear()
+    }
 
     private val api: MainAPI?
         get() {
@@ -1629,10 +1650,16 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private suspend fun loadResponse(id: String): LoadResponse? {
         cachedLoad(id)?.let { return it }
         val a = api ?: return null
-        // Some providers' load() walks many pages (e.g. PimpBunny model pages
-        // paginate up to 50) — cap it so the detail screen can never hang.
+        // CloudStream parity: APIRepository.load() waits out the plugin's own
+        // loadTimeoutMs (default 2 minutes, clamped 5s–8min — see
+        // APIRepository.getTimeout). A fixed 45s cap timed out slow-but-working
+        // providers (e.g. Cinefreak series pages) while CloudStream played
+        // them. Same clamp, same default; the detail screen still cannot hang
+        // (withTimeoutOrNull always returns).
+        val loadBudget = runCatching { a.loadTimeoutMs }
+            .getOrNull()?.coerceIn(5_000L, 480_000L) ?: 120_000L
         val r = try {
-            withTimeoutOrNull(com.hikari.app.net.NetTuning.timeout(45_000)) {
+            withTimeoutOrNull(loadBudget) {
                 val first = tryLoad(a, id)
                 // Providers like iStreamFlare build a JSON video-id string and
                 // fill its `url` field during load(); a hollow one (url:null,

@@ -1,4 +1,10 @@
 
+## 0.12.119
+
+- CloudStream parity for slow extractors: every loadLinks attempt now gets the plugin's full declared budget (default 2 min, up to 8 min) instead of 10s retries that could never finish — the Cinefreak case (subs arrived, video links need longer) plays like the CloudStream app instead of wedging, then sitting out 30 minutes
+- Stall recovery actually replaces the stuck instance: CloudStream providers now drop their cached MainAPI object (and load cache) when the runtime is reloaded, so "breaking the stall" hands later calls a fresh object instead of the same wedged one
+- Episode detail (load) honors the plugin's own timeout (default 2 min, clamped 5s-8min) instead of a fixed 45s, and the background re-ask of the title's own extension gets its declared budget (capped at the player's 150s wait) instead of 45s — same waits CloudStream itself uses
+
 ## 0.12.118
 
 - Metadata addon toggles actually switch: Settings now reloads the provider list after save, so off stays off instead of snapping back

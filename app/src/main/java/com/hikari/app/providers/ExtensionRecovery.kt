@@ -77,6 +77,16 @@ object ExtensionRecovery {
                             com.hikari.app.cs3.Cs3PluginManager.reload(app, f)
                         }
                     }
+                    // The reloaded runtime is useless while the provider still
+                    // holds the wedged MainAPI object: drop it (and its load
+                    // cache) so the next call resolves the fresh instance.
+                    // This is the half of the stall recovery that made
+                    // "breaking the stall (fresh lock + fresh runtime)" a
+                    // no-op for CloudStream extensions (Cinefreak and kin):
+                    // the lock was fresh, the object was still the stuck one.
+                    runCatching {
+                        (app.providers.byId(config.id) as? StallResettable)?.resetForStall()
+                    }
                 }
                 ProviderType.ANIYOMI -> {
                     runCatching {
@@ -152,6 +162,9 @@ object ExtensionRecovery {
                         if (f.isFile) {
                             com.hikari.app.cs3.Cs3PluginManager.reload(app, f)
                         }
+                    }
+                    runCatching {
+                        (app.providers.byId(config.id) as? StallResettable)?.resetForStall()
                     }
                 }
                 ProviderType.ANIYOMI -> {

@@ -1296,7 +1296,15 @@ class ContentRepository(private val manager: ProviderManager) {
                 )
                 return got
             }
-            val nextBudget = if (timedOut || took > 5) minOf(budgetMs, 10_000L) else attemptBudgetMs
+            // CloudStream parity: APIRepository.loadLinks() waits out the
+            // plugin's FULL loadLinks budget on EVERY attempt (default 2 min,
+            // up to 8 min — see Cs3MainApiProvider.effectivePluginTimeoutMs).
+            // Downgrading retries to 10s made a slow-but-working provider
+            // (Cinefreak's extractor chain) fail every retry while CloudStream
+            // played it on the same build: attempt 1 timed out honestly at
+            // the full budget, attempts 2+ could never succeed in 10s, and
+            // two such silences sat the provider out for 30 minutes.
+            val nextBudget = attemptBudgetMs
             com.hikari.app.data.Logs.log(
                 "Provider",
                 p.config.name.ifBlank { p.config.id } + " [" + p.config.type.groupLabel + "]" +
@@ -3438,12 +3446,26 @@ class ContentRepository(private val manager: ProviderManager) {
         val repo = p.config.name.ifBlank { id }
         tally.primaryRunning[id] = repo
         bumpCrossStatus()
+        // CloudStream parity for the ORIGIN extension: the player holds the
+        // screen for up to 150s waiting on this very provider, but the
+        // background re-ask cut it off at 45s while CloudStream waits out its
+        // full loadLinks budget (default 2 min). Give a CloudStream provider
+        // its own declared budget here (capped at the player's 150s wait);
+        // every other engine keeps the sweep discipline.
+        val directBudget = if (p is Cs3MainApiProvider) {
+            maxOf(
+                SWEEP_REPO_BUDGET_MS,
+                runCatching { p.effectivePluginTimeoutMs() }
+                    .getOrDefault(SWEEP_REPO_BUDGET_MS)
+                    .coerceAtMost(150_000L),
+            )
+        } else SWEEP_REPO_BUDGET_MS
         val got = if (p.config.type == ProviderType.NUVIO) {
             com.hikari.app.nuvio.NuvioRuntime.withBackgroundSlot {
-                detached(SWEEP_REPO_BUDGET_MS) { fetchStreams(p, item, episode) }
+                detached(directBudget) { fetchStreams(p, item, episode) }
             }
         } else {
-            detached(SWEEP_REPO_BUDGET_MS) { fetchStreams(p, item, episode) }
+            detached(directBudget) { fetchStreams(p, item, episode) }
         }
         try {
             if (got == null) {
@@ -3451,7 +3473,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 com.hikari.app.data.Logs.log(
                     "Search",
                     "sweep \"${item.title}\" → $repo (" + p.config.type.groupLabel +
-                        "): no answer within ${SWEEP_REPO_BUDGET_MS / 1000}s — moving on " +
+                        "): no answer within ${directBudget / 1000}s — moving on " +
                         "(it will be asked again)",
                 )
                 return false
