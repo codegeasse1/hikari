@@ -4243,9 +4243,12 @@ class ContentRepository(private val manager: ProviderManager) {
     private suspend fun metaForInner(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
         val keyFamily = manager.byId(item.providerId)?.config?.type
+        val addonsKey = manager.providers.value
+            .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+            .joinToString("|") { it.config.id + ":" + it.config.enabled }
         val metaKey = MetaCache.metaKey(item.uniqueId) +
             if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else "" +
-            runCatching { MetaSources.fingerprint(item, keyFamily) }.getOrDefault("")
+            runCatching { MetaSources.fingerprint(item, keyFamily, addonsKey) }.getOrDefault("")
         MetaCache.cachedMeta(metaKey)?.let { cached ->
             if (!cached.overview.isNullOrBlank()) {
                 synchronized(metaCache) { metaCache[item.uniqueId] = cached }

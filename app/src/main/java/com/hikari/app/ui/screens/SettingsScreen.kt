@@ -6656,7 +6656,7 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
         Spacer(Modifier.height(14.dp))
         Text(tr("Metadata addons"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         if (!LocalHideHelp.current) Text(
-            tr("AioMetadata answers first when its endpoint is set above. Every installed Stremio metadata addon (Cinemeta and friends) is asked next, in Extensions order, then TMDB. Install addons in Extensions and they join automatically."),
+            tr("AioMetadata answers first when its endpoint is set above. Every enabled Stremio addon below is asked next, in Extensions order, then TMDB. Toggle an addon off and it is never consulted; reorder in Extensions to change priority."),
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(6.dp))
@@ -6665,39 +6665,50 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        var metaCapable by remember { mutableStateOf<List<String>?>(null) }
+        var addonMetaRows by remember { mutableStateOf<List<Triple<String, String, Boolean>>?>(null) }
         LaunchedEffect(installed) {
-            metaCapable = installed
-                .filter { it.config.enabled && it.config.type == ProviderType.STREMIO }
-                .filter { p ->
-                    (p as? com.hikari.app.providers.StremioAddon)?.let {
+            addonMetaRows = installed
+                .filter { it.config.type == ProviderType.STREMIO }
+                .sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
+                .map { p ->
+                    val declares = (p as? com.hikari.app.providers.StremioAddon)?.let {
                         runCatching { it.declaresMeta() }.getOrDefault(false)
                     } == true
+                    Triple(
+                        p.config.id,
+                        p.config.name.ifBlank { p.config.id },
+                        declares,
+                    )
                 }
-                .map { it.config.name.ifBlank { it.config.id } }
         }
-        val capable = metaCapable
-        if (capable == null) {
+        val rows = addonMetaRows
+        val enabledById = remember(installed) {
+            installed.associate { it.config.id to it.config.enabled }
+        }
+        if (rows == null) {
             Text(
                 tr("Checking installed addons…"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
             )
-        } else if (capable.isEmpty()) {
+        } else if (rows.isEmpty()) {
             Text(
-                tr("No installed Stremio addon declares metadata — add Cinemeta from Extensions to get descriptions here."),
+                tr("No installed Stremio addon — add Cinemeta from Extensions to get descriptions here."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
             )
         } else {
-            capable.forEach { name ->
-                Text(
-                    "• " + name,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
+            rows.forEach { (id, name, declares) ->
+                SettingsToggle(
+                    label = name,
+                    supporting = if (declares) tr("Metadata addon — on: answers catalogs + detail")
+                    else tr("No metadata resource — on: answers catalogs + streams"),
+                    checked = enabledById[id] != false,
+                    onCheckedChange = { on ->
+                        scope.launch { runCatching { app.store.setEnabled(id, on) } }
+                    },
                 )
             }
         }

@@ -71,8 +71,10 @@ object MetaSources {
 
     /** Cache fingerprint of every switch that changes what the pipeline may
      *  return. Baked into the detail cache key so toggling a source
-     *  re-resolves instead of serving the old source's text. */
-    suspend fun fingerprint(item: MediaItem, family: ProviderType?): String {
+     *  re-resolves instead of serving the old source's text. [addonsKey] is
+     *  the installed Stremio providers' `id:enabled` list in order — toggling
+     *  one addon, or reordering Extensions, must invalidate too. */
+    suspend fun fingerprint(item: MediaItem, family: ProviderType?, addonsKey: String = ""): String {
         val s = HikariApp.instance.store
         val bits = StringBuilder()
         bits.append(if (runCatching { s.tmdbEnabled() }.getOrDefault(true)) "t1" else "t0")
@@ -83,6 +85,7 @@ object MetaSources {
         bits.append(runCatching { s.aioBaseUrl() }.getOrDefault("").hashCode().toString(36))
         bits.append(family?.name ?: "?")
         bits.append(runCatching { s.metaFamilyExternal() }.getOrDefault(emptySet()).hashCode().toString(36))
+        bits.append(addonsKey.hashCode().toString(36))
         return "|ms" + bits.toString().hashCode().toString(36)
     }
 
@@ -141,8 +144,90 @@ object MetaSources {
             out
         }
 
-    private suspend fun trustedPatch(addon: StremioAddon, item: MediaItem): MetaPatch? {
-        for (id in metaIdCandidates(item)) {
+    /**
+     * The winning full `/meta` document for the detail shelves (cast,
+     * production, trailers, similar): Aio first, then installed metadata
+     * addons in provider order, first trusted hit wins. Returns the source
+     * name, the doc, and the winning addon's provider id ("" for Aio).
+     * Never throws; null means no addon answered.
+     */
+    suspend fun winningDoc(
+        item: MediaItem,
+        addons: List<StremioAddon>,
+    ): Triple<String, JSONObject, String>? = withContext(Dispatchers.IO) {
+        runCatching {
+            withTimeoutOrNull(2_500L) { AioMetadata.meta(item) }
+        }.getOrNull()?.let { doc ->
+            if (isTrustedDoc(item, doc)) return@withContext Triple("AioMetadata", doc, "")
+        }
+        val base = item
+        runCatching {
+            coroutineScope {
+                val jobs = addons.map { addon ->
+                    async {
+                        withTimeoutOrNull(3_000L) {
+                            for (id in metaIdCandidates(base)) {
+                                val doc = addon.fetchMetaDoc(typeSegs(base).first(), id)
+                                    ?: continue
+                                if (isTrustedDoc(base, doc)) return@withTimeoutOrNull doc
+                            }
+                            null
+                        }
+                    }
+                }
+                for (i in addons.indices) {
+                    val doc = runCatching { jobs[i].await() }.getOrNull()
+                    if (doc != null) {
+                        jobs.forEach { runCatching { it.cancel() } }
+                        val a = addons[i]
+                        return@withContext Triple(
+                            a.config.name.ifBlank { a.config.id },
+                            doc,
+                            a.config.id,
+                        )
+                    }
+                }
+                jobs.forEach { runCatching { it.cancel() } }
+                null
+            }
+        }.getOrNull()
+    }
+
+    /** Detail shelves from the addon legs: cast, director, trailers,
+     *  production, runtime, IMDb id — works with TMDB off, because the doc
+     *  itself (Aio aggregates TMDB server-side) already carries them. */
+    suspend fun addonExtras(item: MediaItem, addons: List<StremioAddon>): TitleExtras? {
+        val (_, doc, _) = runCatching { winningDoc(item, addons) }.getOrNull() ?: return null
+        return runCatching { AddonMetaDetails.toExtras(AddonMetaDetails.parse(doc)) }.getOrNull()
+    }
+
+    /** Recommendation/similar entries carried inside the winning addon doc
+     *  (Aio serves these; plain Cinemeta usually does not). */
+    suspend fun addonSimilar(
+        item: MediaItem,
+        addons: List<StremioAddon>,
+        limit: Int = 18,
+    ): List<MediaItem> {
+        val (_, doc, providerId) = runCatching { winningDoc(item, addons) }.getOrNull()
+            ?: return emptyList()
+        return runCatching {
+            AddonMetaDetails.similar(
+                doc,
+                item,
+                providerId.ifBlank { item.providerId },
+                limit,
+            )
+        }.getOrDefault(emptyList())
+    }
+
+    /** Title logo from the addon legs (Aio/Cinemeta `logo`), for the detail
+     *  hero when TMDB — the usual logo source — is off. */
+    suspend fun addonLogo(item: MediaItem, addons: List<StremioAddon>): String? {
+        val (_, doc, _) = runCatching { winningDoc(item, addons) }.getOrNull() ?: return null
+        return runCatching { AddonMetaDetails.parse(doc).logo }.getOrNull()
+    }
+
+    private suspend fun trustedPatch(addon: StremioAddon, item: MediaItem): MetaPatch? {        for (id in metaIdCandidates(item)) {
             val doc = addon.fetchMetaDoc(typeSegs(item).first(), id) ?: continue
             patchFromDoc(
                 doc,
@@ -174,8 +259,10 @@ object MetaSources {
         if (digits.isNotEmpty() && (explicit || backed)) {
             out += "tmdb:$digits"
             val kind = if (item.type == MediaType.MOVIE) "movie" else "tv"
-            runCatching { withTimeoutOrNull(2_000L) { TmdbBrowse.imdbId(digits, kind) } }
-                .getOrNull()?.takeIf { it.isNotBlank() }?.let { out += it }
+            if (runCatching { tmdbOn(item) }.getOrDefault(true)) {
+                runCatching { withTimeoutOrNull(2_000L) { TmdbBrowse.imdbId(digits, kind) } }
+                    .getOrNull()?.takeIf { it.isNotBlank() }?.let { out += it }
+            }
         }
         return out.toList().take(3)
     }

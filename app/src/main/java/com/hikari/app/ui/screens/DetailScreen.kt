@@ -586,6 +586,57 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _extras = MutableStateFlow<TitleExtras?>(null)
     val extras: StateFlow<TitleExtras?> = _extras.asStateFlow()
 
+    /** Title logo from the addon legs (Aio/Cinemeta `logo`), for the detail
+     *  hero when TMDB — the usual logo source — is off. */
+    private val _addonLogo = MutableStateFlow<String?>(null)
+    val addonLogo: StateFlow<String?> = _addonLogo.asStateFlow()
+
+    /** Addon-first merge for the detail shelves: the winning addon doc's
+     *  cast/director/trailers/production win (they are the user's chosen
+     *  source order); TMDB fills whatever the addon left bare — cast photos,
+     *  certifications, collection, and any row the addon lacks entirely.
+     *  Either side may be null (TMDB off / no addon answered). */
+    private fun mergeShelfExtras(addon: TitleExtras?, tmdb: TitleExtras?): TitleExtras? {
+        if (addon == null) return tmdb
+        if (tmdb == null) return addon
+        val addonCast = addon.cast.takeIf { it.isNotEmpty() }
+        val mergedCast = addonCast?.map { member ->
+            if (!member.profileUrl.isNullOrBlank()) member
+            else tmdb.cast.firstOrNull {
+                it.name.equals(member.name, ignoreCase = true) && !it.profileUrl.isNullOrBlank()
+            }?.let { member.copy(profileUrl = it.profileUrl) } ?: member
+        } ?: tmdb.cast
+        val aDet = addon.details
+        val tDet = tmdb.details
+        val mergedDetails = if (aDet == null) tDet else if (tDet == null) aDet else TitleDetails(
+            status = tDet.status ?: aDet.status,
+            runtimeMinutes = tDet.runtimeMinutes ?: aDet.runtimeMinutes,
+            year = tDet.year ?: aDet.year,
+            rating = tDet.rating ?: aDet.rating,
+            voteCount = tDet.voteCount ?: aDet.voteCount,
+            certification = tDet.certification ?: aDet.certification,
+            country = tDet.country ?: aDet.country,
+            language = tDet.language ?: aDet.language,
+            releaseDate = tDet.releaseDate ?: aDet.releaseDate,
+            director = tDet.director ?: aDet.director,
+            writers = tDet.writers.ifEmpty { aDet.writers },
+            imdbId = tDet.imdbId ?: aDet.imdbId,
+            genres = tDet.genres.ifEmpty { aDet.genres },
+        )
+        return TitleExtras(
+            details = mergedDetails,
+            cast = mergedCast,
+            trailers = addon.trailers.takeIf { it.isNotEmpty() } ?: tmdb.trailers,
+            castIsCharacters = if (addonCast != null) false else tmdb.castIsCharacters,
+            localizedTitle = tmdb.localizedTitle ?: addon.localizedTitle,
+            originalTitle = tmdb.originalTitle?.takeIf { it.isNotBlank() }
+                ?: addon.originalTitle,
+            overview = tmdb.overview ?: addon.overview,
+            companies = addon.companies.takeIf { it.isNotEmpty() } ?: tmdb.companies,
+            collection = tmdb.collection,
+        )
+    }
+
     private val _ratings = MutableStateFlow<List<TitleRating>>(emptyList())
     val ratings: StateFlow<List<TitleRating>> = _ratings.asStateFlow()
 
@@ -1042,11 +1093,35 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) {
             val tmdbOk = tmdbSectionsAllowed(item)
             if (shelvesGen == shelvesGeneration) _tmdbSectionsOk.value = tmdbOk
+            // External-metadata switch for this title's engine family: off
+            // means the addon legs stay untouched (origin site metadata only).
+            val engineFamily = manager.byId(item.providerId)?.config?.type
+            val externalOn = engineFamily != null && runCatching {
+                com.hikari.app.data.MetaSources.familyEnabled(engineFamily)
+            }.getOrDefault(true)
+            val metaAddons = manager.providers.value
+                .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                .filter { it.config.enabled && it.config.id != item.providerId }
             // Extras first: they are ONE TMDB call (credits+videos+certifications)
             // and carry the details block, so the page fills in fastest this way.
+            // The addon legs answer in parallel: Aio's meta doc already carries
+            // cast/director/trailers/production inline (it aggregates TMDB
+            // server-side), so shelves fill even with TMDB off.
             val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item) }.getOrNull() else null
+            val addonEx = if (externalOn && !fastPass) {
+                runCatching {
+                    com.hikari.app.data.MetaSources.addonExtras(item, metaAddons)
+                }.getOrDefault(null)
+            } else null
+            if (shelvesGen == shelvesGeneration) _addonLogo.value =
+                if (externalOn && !fastPass) {
+                    runCatching {
+                        com.hikari.app.data.MetaSources.addonLogo(item, metaAddons)
+                    }.getOrDefault(null)
+                } else null
+            val merged = mergeShelfExtras(addonEx, ex)
             if (shelvesGen != shelvesGeneration) return@withContext
-            _extras.value = ex
+            _extras.value = merged
             runCatching {
                 Ratings.load(
                     item,
@@ -1095,7 +1170,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _relatedFromPlugin.value = false
             val rel = if (tmdbOk) runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _related.value = rel
-            val sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
+            var sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
+            // Addon recommendations (Aio serves these inside its meta doc):
+            // fill the Similar row when TMDB is off or answered nothing.
+            if (sim.isEmpty() && externalOn && !fastPass) {
+                sim = runCatching {
+                    com.hikari.app.data.MetaSources.addonSimilar(item, metaAddons)
+                }.getOrDefault(emptyList())
+            }
             if (shelvesGen == shelvesGeneration) _similar.value = sim
             if (recSrc == "both") {
                 // Plugin titles the TMDB lists already cover add nothing.
@@ -1513,6 +1595,7 @@ fun DetailScreen(
     val extras by vm.extras.collectAsState()
     val ratings by vm.ratings.collectAsState()
     val tmdbSectionsOk by vm.tmdbSectionsOk.collectAsState()
+    val addonLogo by vm.addonLogo.collectAsState()
     val m = meta
     val activeProviderId by vm.activeProviderId.collectAsState()
     val livePid = activeProviderId.ifBlank { providerId }
@@ -3870,9 +3953,10 @@ fun DetailScreen(
         }
     }
     val detailList = com.hikari.app.ui.components.keptListState("detail:$providerId|$mediaId")
-    LaunchedEffect(m?.uniqueId, tmdbSectionsOk) {
+    LaunchedEffect(m?.uniqueId, tmdbSectionsOk, addonLogo) {
         val item = m ?: return@LaunchedEffect
-        heroLogo = if (tmdbSectionsOk) runCatching { TmdbMeta.logo(item) }.getOrNull() else null
+        heroLogo = (if (tmdbSectionsOk) runCatching { TmdbMeta.logo(item) }.getOrNull() else null)
+            ?: addonLogo
     }
     val tvHeroImage = m?.let { if (isTvLayout) Artwork.tvHeroModel(it) else Artwork.heroModel(it) }
         ?: (PosterLoader.model(posterUrl) to false)

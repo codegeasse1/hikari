@@ -594,6 +594,9 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     private suspend fun tmdbFallbackMeta(item: MediaItem): MediaItem {
         if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
+        // TMDB off (master or per-kind toggle) means no TMDB network at all:
+        // the addon legs in MetaSources still get their chance via metaForInner.
+        if (!runCatching { com.hikari.app.data.MetaSources.tmdbOn(item) }.getOrDefault(true)) return item
         val tmdb = tmdbIdOf(item.id) ?: return item
         if (tmdb == item.id) return item
         val full = runCatching { TmdbBrowse.meta(item.copy(id = tmdb)) }.getOrNull() ?: return item
