@@ -9,10 +9,10 @@ import org.json.JSONObject
  * networks, runtime, IMDb id/rating — every field [MetaSources] used to drop
  * on the floor.
  *
- * AioMetadata's backend already aggregates TMDB server-side, so its meta docs
- * carry these fields inline — which is why Nuvio shows cast/production from
- * "Aio" with no extra fetch. This parser reads the same doc instead of
- * requiring TMDB to be on.
+ * AioMetadata's backend aggregates TMDB server-side for text fields, so its
+ * meta docs carry cast/trailers inline with no extra fetch. Studios rarely
+ * ride the Stremio doc — the Production row is backfilled from TMDB (see
+ * mergeShelfExtras), which is why a TMDB miss reads as "Aio has no Production".
  *
  * Shapes are lenient on purpose (unknown shapes are a miss, never a crash):
  * - `cast`: `[{name, character, photo}]`, `["Name", …]` or `"A, B"`; plus
@@ -288,30 +288,82 @@ object AddonMetaDetails {
 
     private fun companiesOf(doc: JSONObject): List<CompanyRef> {
         val out = ArrayList<CompanyRef>(10)
+        fun addOne(name: String, id: String, logo: String?, isNetwork: Boolean) {
+            if (out.size >= 10) return
+            val n = name.trim()
+            if (n.isBlank() || n == "null") return
+            val key = id.trim().ifBlank { n.lowercase() }
+            if (out.any { it.id == key && it.isNetwork == isNetwork }) return
+            val logoUrl = logo?.trim()
+                ?.takeIf { it.isNotBlank() && it != "null" }
+                ?.let { fullLogo(it) }
+            out.add(CompanyRef(id = key, name = n, logoUrl = logoUrl, isNetwork = isNetwork))
+        }
         fun add(arr: JSONArray?, isNetwork: Boolean) {
             for (i in 0 until (arr?.length() ?: 0)) {
                 if (out.size >= 10) return
-                val o = arr?.optJSONObject(i) ?: continue
+                val o = arr?.optJSONObject(i)
+                if (o == null) {
+                    // Some addons emit plain name strings.
+                    val s = arr?.optString(i)?.trim().orEmpty()
+                    if (s.isNotBlank() && s != "null") addOne(s, s.lowercase(), null, isNetwork)
+                    continue
+                }
                 val name = o.optString("name").trim()
+                    .ifBlank { o.optString("title").trim() }
                 if (name.isBlank() || name == "null") continue
                 val id = o.optString("id").trim().ifBlank { name.lowercase() }
-                if (out.any { it.id == id && it.isNetwork == isNetwork }) continue
-                val logo = (o.optString("logo").trim()
+                val logo = o.optString("logo").trim()
                     .takeIf { it.isNotBlank() && it != "null" }
                     ?: o.optString("logo_path").trim()
-                        .takeIf { it.isNotBlank() && it != "null" })
-                    ?.let { fullLogo(it) }
-                out.add(CompanyRef(id = id, name = name, logoUrl = logo, isNetwork = isNetwork))
+                        .takeIf { it.isNotBlank() && it != "null" }
+                    ?: o.optString("logoPath").trim()
+                        .takeIf { it.isNotBlank() && it != "null" }
+                    ?: o.optString("icon").trim()
+                        .takeIf { it.isNotBlank() && it != "null" }
+                addOne(name, id, logo, isNetwork)
             }
+        }
+        // Plain string lists ("production": "A24, Plan B" or ["A24"]).
+        fun addStrings(raw: String?, isNetwork: Boolean) {
+            raw?.split(",")?.forEach { addOne(it, it.trim().lowercase(), null, isNetwork) }
         }
         add(
             doc.optJSONArray("production_companies")
                 ?: doc.optJSONArray("productionCompanies")
                 ?: doc.optJSONArray("production")
-                ?: doc.optJSONArray("studios"),
+                ?: doc.optJSONArray("studios")
+                ?: doc.optJSONArray("companies")
+                ?: doc.optJSONArray("production_companies_list"),
             isNetwork = false,
         )
+        // app_extras carriers some backends use.
+        runCatching { doc.optJSONObject("app_extras") }.getOrNull()?.let { ex ->
+            add(ex.optJSONArray("production_companies"), isNetwork = false)
+            add(ex.optJSONArray("studios"), isNetwork = false)
+            add(ex.optJSONArray("companies"), isNetwork = false)
+            add(ex.optJSONArray("networks"), isNetwork = true)
+        }
+        // Object-form production: {"production": {"companies": [...]}}.
+        runCatching { doc.optJSONObject("production") }.getOrNull()?.let { p ->
+            add(p.optJSONArray("companies"), isNetwork = false)
+            add(p.optJSONArray("studios"), isNetwork = false)
+        }
         add(doc.optJSONArray("networks"), isNetwork = true)
+        add(doc.optJSONArray("network"), isNetwork = true)
+        // String / CSV fallbacks.
+        if (out.isEmpty()) {
+            addStrings(doc.optString("production_company").takeIf { it.isNotBlank() }, false)
+            addStrings(doc.optString("studio").takeIf { it.isNotBlank() }, false)
+            addStrings(doc.optString("network").takeIf { doc.optJSONArray("networks") == null && it.isNotBlank() }, true)
+        }
+        // links[] with studio/network/production categories (Nuvio-style).
+        runCatching { linksOf(doc) }.getOrNull()?.forEach { link ->
+            val c = link.category.lowercase()
+            if (c.contains("studio") || c.contains("company") || c.contains("production") || c.contains("network")) {
+                addOne(link.name, link.name.lowercase(), null, c.contains("network"))
+            }
+        }
         return out
     }
 

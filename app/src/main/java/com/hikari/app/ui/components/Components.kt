@@ -662,7 +662,11 @@ object HeroFlight {
 
     fun arrive(key: String, rect: Rect) {
         val l = leg ?: return
-        if (l.key != key || target != null || key.isBlank()) return
+        if (key.isBlank() || target != null) return
+        // Home/search rows arm with a row-namespaced key ("Row/Provider:uid") while
+        // the detail hero reports the bare uniqueId — suffix-match so the flight
+        // lands instead of holding 600ms on the grid card (the "stuck poster").
+        if (l.key != key && !l.key.endsWith(":" + key)) return
         target = key to rect
     }
 
@@ -722,16 +726,17 @@ fun HeroFlightLayer() {
         if (target == null) {
             // The detail hero has not laid out yet: hold the snapshot where
             // the card was. A safety clears a flight whose target never
-            // arrives (a navigation that went elsewhere instead).
+            // arrives (a navigation that went elsewhere instead). Short hold:
+            // a namespaced-key miss used to freeze the grid poster for 600ms.
             FlightImage(leg.model, leg.src)
             LaunchedEffect(leg) {
-                delay(600L)
+                delay(250L)
                 HeroFlight.clear()
             }
         } else {
             val p = remember(leg) { Animatable(0f) }
             LaunchedEffect(leg) {
-                p.animateTo(1f, tween(durationMillis = 280))
+                p.animateTo(1f, tween(durationMillis = 220))
                 HeroFlight.clear()
             }
             FlightImage(leg.model, lerpRect(leg.src, target.second, p.value))

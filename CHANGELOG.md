@@ -1,4 +1,11 @@
 
+## 0.12.118
+
+- Metadata addon toggles actually switch: Settings now reloads the provider list after save, so off stays off instead of snapping back
+- Detail poster flight lands: row-namespaced keys suffix-match the bare detail key, wide/tall heroes report their rect too, and the safety hold drops 600ms to 250ms — no more stuck grid poster
+- Production row fills by union: addon studios plus TMDB backfill (deduped) instead of either/or, with wider Stremio shapes (app_extras, links, string lists); Aio text still fills with TMDB off, studios backfill when TMDB answers
+- Player episode thumbs never black: the S/E tile always paints behind the still, so a dead CDN or missing thumb shows a labeled tile instead of a black box
+
 ## 0.12.117
 
 - Universal detail shelves from your metadata addons: Cast, Production, Trailers and Similar now fill from the winning addon doc (Aio first, then enabled Stremio addons in Extensions order) — Aio aggregates TMDB server-side, so its doc already carries cast/director/trailers/production and they show even with TMDB off; TMDB still backfills cast photos, certifications, collections and anything the addon lacks

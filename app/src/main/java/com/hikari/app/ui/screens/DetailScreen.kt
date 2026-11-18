@@ -632,7 +632,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             originalTitle = tmdb.originalTitle?.takeIf { it.isNotBlank() }
                 ?: addon.originalTitle,
             overview = tmdb.overview ?: addon.overview,
-            companies = addon.companies.takeIf { it.isNotEmpty() } ?: tmdb.companies,
+            // Union, not either/or: a Stremio meta doc rarely carries studios
+            // (Aio aggregates TMDB server-side for text, not for company rows),
+            // so addon-only would drop TMDB's Production row and TMDB-only
+            // would drop an addon-only studio. Addon first, TMDB fills gaps.
+            companies = (addon.companies + tmdb.companies)
+                .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
+                .take(10),
             collection = tmdb.collection,
         )
     }
@@ -1104,9 +1110,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 .filter { it.config.enabled && it.config.id != item.providerId }
             // Extras first: they are ONE TMDB call (credits+videos+certifications)
             // and carry the details block, so the page fills in fastest this way.
-            // The addon legs answer in parallel: Aio's meta doc already carries
-            // cast/director/trailers/production inline (it aggregates TMDB
-            // server-side), so shelves fill even with TMDB off.
+            // The addon legs answer in parallel: Aio's meta doc carries
+            // cast/trailers inline, so shelves fill even with TMDB off; studios
+            // rarely ride the Stremio doc, so TMDB backfills the Production row.
             val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item) }.getOrNull() else null
             val addonEx = if (externalOn && !fastPass) {
                 runCatching {
@@ -6862,6 +6868,7 @@ private fun Hero(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(3f / 4f)
+                .flightTarget(heroKey)
         ) {
             androidx.compose.animation.Crossfade(targetState = image.first, label = "heroTall") { img ->
                 PosterArt(
@@ -6999,6 +7006,7 @@ private fun Hero(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
+                .flightTarget(heroKey)
         ) {
             // While the wide art is still resolving, hold the already-loaded
             // poster instead of a flat box — one smooth crossfade to the art

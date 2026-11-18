@@ -6707,7 +6707,12 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
                     else tr("No metadata resource — on: answers catalogs + streams"),
                     checked = enabledById[id] != false,
                     onCheckedChange = { on ->
-                        scope.launch { runCatching { app.store.setEnabled(id, on) } }
+                        scope.launch {
+                            runCatching { app.store.setEnabled(id, on) }
+                            // The switch list reads the in-memory provider list —
+                            // without a refresh the toggle saves but the UI snaps back.
+                            runCatching { app.providers.refresh() }
+                        }
                     },
                 )
             }
