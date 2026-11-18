@@ -155,10 +155,11 @@ object MetaSources {
         item: MediaItem,
         addons: List<StremioAddon>,
     ): Triple<String, JSONObject, String>? = withContext(Dispatchers.IO) {
-        runCatching {
+        val aioDoc = runCatching {
             withTimeoutOrNull(2_500L) { AioMetadata.meta(item) }
-        }.getOrNull()?.let { doc ->
-            if (isTrustedDoc(item, doc)) return@withContext Triple("AioMetadata", doc, "")
+        }.getOrNull()
+        if (aioDoc != null && isTrustedDoc(item, aioDoc)) {
+            return@withContext Triple("AioMetadata", aioDoc, "")
         }
         val base = item
         runCatching {
@@ -175,20 +176,21 @@ object MetaSources {
                         }
                     }
                 }
+                var win: Triple<String, JSONObject, String>? = null
                 for (i in addons.indices) {
                     val doc = runCatching { jobs[i].await() }.getOrNull()
                     if (doc != null) {
-                        jobs.forEach { runCatching { it.cancel() } }
                         val a = addons[i]
-                        return@withContext Triple(
+                        win = Triple(
                             a.config.name.ifBlank { a.config.id },
                             doc,
                             a.config.id,
                         )
+                        break
                     }
                 }
                 jobs.forEach { runCatching { it.cancel() } }
-                null
+                win
             }
         }.getOrNull()
     }
