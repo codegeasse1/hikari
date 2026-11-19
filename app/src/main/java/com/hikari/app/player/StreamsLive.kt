@@ -43,6 +43,21 @@ object StreamsLive {
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
         sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
 
+    /** Create this tap's session up front. The search appends into it; the
+     *  player subscribes to it. Sessions are never created implicitly
+     *  anymore (see [append]): a closed page's late servers must not
+     *  resurrect its session and its "still searching" state. */
+    fun begin(id: String) {
+        sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
+    }
+
+    /** Read the session WITHOUT creating it (unlike [flow]): after [abandon]
+     *  there is nothing to read, and a read must not bring it back. */
+    fun peek(id: String): List<StreamSource> = sessions[id]?.value.orEmpty()
+
+    /** True while this tap's session is still alive (see [abandon]). */
+    fun isActive(id: String): Boolean = sessions.containsKey(id)
+
     // Backpressure cap: a big title's sweep can offer hundreds of servers
     // across retries; an unbounded session list pins them all (plus their
     // headers/art) until the player closes. 250 keeps every realistic title
@@ -51,7 +66,11 @@ object StreamsLive {
 
     fun append(id: String, sources: List<StreamSource>) {
         if (sources.isEmpty()) return
-        val flow = sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
+        // No resurrection: once [abandon]/[remove] drops a closed page's
+        // session, its late servers die with it instead of recreating the
+        // session (which would wedge serverPageOpen on forever). The tap
+        // creates its session up front via [begin].
+        val flow = sessions[id] ?: return
         flow.update { (it + sources).distinctBy { s -> s.infoHash ?: s.url }.take(SESSION_SERVER_CAP) }
     }
 
@@ -107,6 +126,29 @@ object StreamsLive {
         val owner = sweepOwners[id]
         if (owner != null) {
             // Remember disabled: next Play re-searches live from zero.
+            runCatching { ContentRepository.forgetLiveServers(owner.first, owner.second) }
+        }
+        sessions.remove(id)
+        episodes.remove(id)
+        dones.remove(id)
+        refreshes.remove(id)
+        statuses.remove(id)
+        originSettled.remove(id)
+        sweepKeys.remove(id)
+        sweepOwners.remove(id)
+        if (sessions.isEmpty()) com.hikari.app.data.SearchScope.serverPageOpen = false
+    }
+
+    /** Full stop: the server page closed without playback (or the player
+     *  closed). Unlike [remove], this releases NOTHING and pauses nothing:
+     *  the sweep job is cancelled, its pending work is dropped, and the
+     *  session is gone — no late server may resurrect it (see [append]).
+     *  The next Play re-searches live from zero. */
+    fun abandon(id: String?) {
+        if (id == null) return
+        val owner = sweepOwners[id]
+        if (owner != null) {
+            runCatching { ContentRepository.abandonSweepFor(owner.first, owner.second) }
             runCatching { ContentRepository.forgetLiveServers(owner.first, owner.second) }
         }
         sessions.remove(id)

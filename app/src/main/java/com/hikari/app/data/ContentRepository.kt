@@ -623,6 +623,24 @@ class ContentRepository(private val manager: ProviderManager) {
             )
         }
 
+        /** Full stop for a closed server page (see [StreamsLive.abandon]):
+         *  the sweep job is cancelled AND its pending work is dropped, and
+         *  any held keys go with it — nothing resumes on the next Play.
+         *  Unlike [cancelSweepFor], this never yields to a player-held key:
+         *  it is only called when no player is (or will be) playing. */
+        fun abandonSweepFor(item: MediaItem, episode: Episode?) {
+            val key = streamsRememberedKey(item, episode)
+            heldSweepKeys.remove(key)
+            heldSweeps.remove(key)
+            sweeps[key]?.job?.cancel()
+            sweeps.remove(key)
+            pendingWork.remove(key)
+            Logs.log(
+                "Search",
+                "sweep for \"${item.title.take(60)}\" abandoned — its server page closed without playback",
+            )
+        }
+
         /** Start whatever [holdSweepFor] held back for this key. Safe to call
          *  twice, and safe to call for a key that was never actually held. */
         fun releaseHeldSweepKey(key: String?) {
@@ -4605,7 +4623,7 @@ class ContentRepository(private val manager: ProviderManager) {
         isOrigin: Boolean,
     ): Episode? {
         if (episode == null || !isOrigin) return episode
-        if (!isSiteScraperOrigin(item)) return episode
+        if (!ownsEpisodeNumbering(item)) return episode
         return try {
             val own = withTimeoutOrNull(20_000L) { p.getEpisodes(item) }.orEmpty()
             if (own.isEmpty()) return episode
@@ -4639,6 +4657,22 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.FORK_VIDEO -> true
             else -> false
         }
+
+    /** Origins whose own episode list owns the numbering (see
+     *  [episodesForInner]): the site-scrapers above, plus Stremio/Nuvio
+     *  addon rows and tracker rows. Their ids are the only playable ones,
+     *  so Aio/TMDB may fill names/photos later ([withRealEpisodeNames] keeps
+     *  numbers) but must never REPLACE the list — replacing it is the
+     *  wrong-episode case (a foreign layout maps episode N to the wrong
+     *  video, or fails to play at all). */
+    private fun ownsEpisodeNumbering(item: MediaItem): Boolean {
+        if (isSiteScraperOrigin(item)) return true
+        if (TrackerAnimeResolver.isTrackerAnime(item)) return true
+        return when (manager.byId(item.providerId)?.config?.type) {
+            ProviderType.STREMIO, ProviderType.NUVIO -> true
+            else -> false
+        }
+    }
 
     private fun isTmdbSyntheticList(item: MediaItem, eps: List<Episode>): Boolean {
         if (eps.isEmpty()) return false
@@ -4721,12 +4755,16 @@ class ContentRepository(private val manager: ProviderManager) {
         if (cachedPoisoned) runCatching { MetaCache.evictEpisodes(selKey) }
         val cachedSeasoned = if (cachedPoisoned) null else cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { publish(it) }
-        // AioMetadata FIRST for non-scraper engines (same gate as the TMDB
-        // shortcut below): when Aio already holds this title's episode list it
-        // wins over TMDB's — the reported wrong-episodes case. Miss or timeout
-        // (1.5s) -> TMDB shortcut -> extension borrow sweep below. Scraper
-        // origins keep origin-wins (their ids are the only playable ones).
-        if (!scraperOrigin && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        // AioMetadata FIRST only when the origin does NOT own the numbering
+        // (same gate as the TMDB shortcut below): when Aio already holds this
+        // title's episode list it wins over TMDB's — the reported
+        // wrong-episodes case. Miss or timeout (1.5s) -> TMDB shortcut ->
+        // extension borrow sweep below. Origins that own their numbering
+        // (site-scrapers, Stremio/Nuvio addons, tracker rows — see
+        // [ownsEpisodeNumbering]) skip both shortcuts: their own ids are the
+        // only playable ones, and a foreign list is exactly the "right list,
+        // wrong episode plays" report.
+        if (!ownsEpisodeNumbering(item) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val aioEps = runCatching {
                 withTimeoutOrNull(1_500) { AioMetadata.episodes(item) }
             }.getOrNull()
@@ -4738,7 +4776,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 return@withContext finishEpisodes(item, selKey, epsKey, aioNamed, publish)
             }
         }
-        if (!scraperOrigin && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        if (!ownsEpisodeNumbering(item) && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
             fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
             val tmdbId = if (TrackerAnimeResolver.isTrackerAnime(item)) {

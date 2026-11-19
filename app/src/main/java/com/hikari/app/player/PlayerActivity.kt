@@ -8892,23 +8892,33 @@ class PlayerActivity : ComponentActivity() {
             // Reorder: tile first, still on top. The ImageView was added before
             // the tile above, so bring it front — otherwise the tile hides the art.
             frame.bringChildToFront(iv)
-            val still = if (epStill != null && !isThumbTmdb(epStill)) epStill
-                else titleArts.firstOrNull { !isThumbTmdb(it) } ?: epStill ?: fallbackPoster
-            // Decode at row-thumb size, not full resolution (see cellModel).
-            // If the still itself fails (dead image host), fall back to the
-            // title art instead of leaving a black box.
-            if (!still.isNullOrBlank()) runCatching {
-                val errUrl = (titleArts + listOfNotNull(epStill)).firstOrNull { it != still && it.isNotBlank() }
-            val errModel = errUrl?.let { PosterLoader.model(it) }
-                val stillModel = PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)
-                if (stillModel is ImageRequest && errModel != null) {
-                    iv.load(stillModel.newBuilder().apply { error(errModel) }.build())
-                } else if (errModel != null) {
-                    iv.load(stillModel) { error(errModel) }
-                } else {
-                    iv.load(stillModel)
+            // The episode's own image, as-is — TMDB included, exactly what the
+            // detail screen's episode list shows. Title art is only the
+            // fallback when the episode carries no image at all.
+            val still = epStill ?: titleArts.firstOrNull() ?: fallbackPoster
+            // Detail-screen parity on failure too: a still that fails (slow
+            // DNS/TLS warm-up, memory pressure) is retried twice instead of
+            // leaving the S/E tile bare forever.
+            fun loadThumb(attempt: Int) {
+                if (still.isNullOrBlank()) return
+                if (attempt > 0 && !iv.isAttachedToWindow) return
+                runCatching {
+                    val errUrl = (titleArts + listOfNotNull(epStill))
+                        .firstOrNull { it != still && it.isNotBlank() }
+                    val errModel = errUrl?.let { PosterLoader.model(it) }
+                    val base = (PosterLoader.cellModel(still, thumbW, thumbH)
+                        ?: PosterLoader.model(still))?.let {
+                        (it as? ImageRequest)?.newBuilder()
+                            ?: ImageRequest.Builder(this@PlayerActivity).data(it)
+                    } ?: return@runCatching
+                    if (errModel != null) base.error(errModel)
+                    base.listener(onError = { _, _ ->
+                        if (attempt < 2) iv.postDelayed({ loadThumb(attempt + 1) }, 1500)
+                    })
+                    iv.load(base.build())
                 }
             }
+            loadThumb(0)
             frame.addView(
                 TextView(this).apply {
                     text = "▶"
@@ -9355,11 +9365,13 @@ class PlayerActivity : ComponentActivity() {
             // Detach the OLD episode's live session BEFORE the new chooser
             // opens: its collectors would otherwise keep appending the old
             // episode's servers — and syncFromSession would pull them — into
-            // the new episode's page.
+            // the new episode's page. The old session is abandoned outright:
+            // its background search ends with the page, like a closed player.
             liveStreamsJob?.cancel()
             liveStreamsJob = null
             liveStatusJob?.cancel()
             liveStatusJob = null
+            StreamsLive.abandon(liveSessionId)
             liveSessionId = null
             // Horizontal in-player page for the NEW episode's servers (like
             // the Source pill reopen mid-playback): no portrait kick, no trip
@@ -9471,11 +9483,14 @@ class PlayerActivity : ComponentActivity() {
         // back (see [com.hikari.app.data.TitleQuality]).
         runCatching { com.hikari.app.data.TitleQuality.remember(item, playerSources.map { it.toStreamSource() }) }
         // The origin session's servers belong to the episode we just left —
-        // stop appending them, and stop restoring its remembered server.
+        // stop appending them, and stop restoring its remembered server. The
+        // old session is abandoned outright: its background search ends with
+        // the page, like a closed player.
         liveStreamsJob?.cancel()
         liveStreamsJob = null
         liveStatusJob?.cancel()
         liveStatusJob = null
+        StreamsLive.abandon(liveSessionId)
         liveSessionId = null
         // Adopt the new episode (top-bar episode line + watch-history key).
         applyLiveEpisode(ep)
@@ -9920,7 +9935,7 @@ class PlayerActivity : ComponentActivity() {
         fun syncFromSession() {
             val id = liveSessionId ?: return
             if (!dialog.isShowing) return
-            val current = runCatching { StreamsLive.flow(id).value }.getOrDefault(emptyList())
+            val current = runCatching { StreamsLive.peek(id) }.getOrDefault(emptyList())
             if (current.isEmpty()) return
             val hadBefore = sources.size
             val have = HashSet<String>(hadBefore + current.size)
@@ -11333,7 +11348,7 @@ class PlayerActivity : ComponentActivity() {
         fun syncFromSession() {
             val id = liveSessionId ?: return
             if (!dialog.isShowing) return
-            val current = runCatching { StreamsLive.flow(id).value }.getOrDefault(emptyList())
+            val current = runCatching { StreamsLive.peek(id) }.getOrDefault(emptyList())
             if (current.isEmpty()) return
             val have = HashSet<String>(sources.size + current.size)
             for (s in sources) have.add(s.identityKey())
@@ -19949,13 +19964,14 @@ class PlayerActivity : ComponentActivity() {
         liveStatusJob?.cancel()
         liveStatusJob = null
         stopLoadingTicker()
-        // holdSweep: the user left the player, so the title's background search
-        // is stopped and held rather than released — a fresh nuvio sweep (one
-        // QuickJS engine per provider) starting the instant this player is
-        // destroyed is exactly the "still laggy for a few seconds after going
-        // back" report. It resumes the next time this title plays.
+        // Full stop on the way out (see StreamsLive.abandon): the title's
+        // background search ends with the player — sweep cancelled, pending
+        // work dropped, session gone. A rotation (configuration change)
+        // keeps the old pause-and-hold instead, so the recreated player
+        // rejoins the same search instead of starting over.
         intent.getStringExtra("streamsLiveId")?.let {
-            StreamsLive.remove(it, holdSweep = true)
+            if (isChangingConfigurations) StreamsLive.remove(it, holdSweep = true)
+            else StreamsLive.abandon(it)
         }
         saveTask?.let { saveHandler.removeCallbacks(it) }
         saveTask = null

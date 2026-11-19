@@ -444,6 +444,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         cancelPrefetch()
+        liveSearchJob?.cancel()
+        liveSearchJob = null
         // Back-out without Play: stop the title's background sweep too, or it
         // keeps asking ~100 providers behind the home screen (the ANR freeze).
         // Skipped while a launched player holds the key (see holdSweepKeys).
@@ -636,8 +638,17 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // (Aio aggregates TMDB server-side for text, not for company rows),
             // so addon-only would drop TMDB's Production row and TMDB-only
             // would drop an addon-only studio. Addon first, TMDB fills gaps.
+            // Logos the same way, per company: when the winning row has no
+            // logo, TMDB's logo for the same company name fills it in (logo
+            // only — names, order and the rest stay exactly as they are).
             companies = (addon.companies + tmdb.companies)
                 .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
+                .map { c ->
+                    if (!c.logoUrl.isNullOrBlank()) c
+                    else tmdb.companies.firstOrNull {
+                        it.name.equals(c.name, ignoreCase = true) && !it.logoUrl.isNullOrBlank()
+                    }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
+                }
                 .take(10),
             collection = tmdb.collection,
         )
@@ -658,6 +669,27 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     @Volatile
     var liveSink: (suspend (List<StreamSource>) -> Unit)? = null
+
+    /** The in-flight Play-tap server search (see openStreams): cancelled when
+     *  its server page closes without playback, when the player takes over,
+     *  and when the screen itself goes away — so no abandoned tap keeps
+     *  searching (or resurrecting a dead session) behind the UI. */
+    @Volatile
+    var liveSearchJob: Job? = null
+
+    /** Full stop for a server page closed without playback: the tap's search
+     *  coroutine is cancelled, the late-server sink is detached, the title's
+     *  background sweep is abandoned, and the live session is dropped. The
+     *  next Play re-searches live from zero. No-op when a player is up
+     *  (callers guard with playerLaunched) — a playing title keeps its
+     *  background search so other servers can still be picked. */
+    fun abandonLiveSearch(sid: String, item: MediaItem?, episode: Episode?) {
+        liveSearchJob?.cancel()
+        liveSearchJob = null
+        liveSink = null
+        if (item != null) ContentRepository.abandonSweepFor(item, episode)
+        StreamsLive.abandon(sid)
+    }
 
     /** How many addons were asked for sources on the last lookup. */
     private val _searchedProviders = MutableStateFlow(0)
@@ -1896,6 +1928,10 @@ fun DetailScreen(
         // removed session and make the next play appear to be searching the wrong
         // session.
         vm.liveSink = null
+        // The tap's search served its purpose (or was abandoned with the
+        // player): nothing of it may keep running behind the screen.
+        vm.liveSearchJob?.cancel()
+        vm.liveSearchJob = null
         playerLaunched = false
         showLoadingBanner = false
     }
@@ -2046,6 +2082,15 @@ fun DetailScreen(
         val sid = UUID.randomUUID().toString()
         sessionId = sid
         com.hikari.app.data.SearchScope.serverPageOpen = true
+        // The session exists from the tap: late servers land in it, and a
+        // closed page's session is never recreated (see StreamsLive.append).
+        StreamsLive.begin(sid)
+        // A previous tap's search must not keep running behind this one (a
+        // tap per episode otherwise stacks full searches that outlive their
+        // pages). A launched player is unaffected: it holds its own session
+        // and sweep, and its return cancels this job (see playerLauncher).
+        vm.liveSearchJob?.cancel()
+        vm.liveSearchJob = null
         vm.resetLiveStreams()
         // Local once-only flag: playback launches exactly ONCE per tap (here —
         // the immediate launch below — or later from the feed as the first
@@ -2120,7 +2165,7 @@ fun DetailScreen(
             }
         }
         var searchedEpisode: Episode? = ep
-        app.appScope.launch {
+        vm.liveSearchJob = app.appScope.launch {
             try {
                 val searchable = providers.count { it.config.enabled }
                 val exceptionN = if (com.hikari.app.data.SearchScope.allExtensions) 0
@@ -2517,7 +2562,7 @@ fun DetailScreen(
                         ) {
                             delay(1_000)
                         }
-                        val total = StreamsLive.flow(sid).value.size
+                        val total = StreamsLive.peek(sid).size
                         if (total > 0) {
                             StreamsLive.setStatus(
                                 sid,
@@ -2554,7 +2599,7 @@ fun DetailScreen(
                             }
                             if (System.currentTimeMillis() - quietSince >= STREAMS_QUIET_MS) break
                         }
-                        val total = StreamsLive.flow(sid).value.size
+                        val total = StreamsLive.peek(sid).size
                         if (total > 0) {
                             StreamsLive.setStatus(
                                 sid,
@@ -5751,7 +5796,17 @@ fun DetailScreen(
     }
 
     if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }) {
+        ModalBottomSheet(onDismissRequest = {
+            showSheet = false
+            // Backed out of the server page without playing: the whole
+            // search stops here — pass, sweep and pending work. A launched
+            // player hides the sheet on its own way up (never through this
+            // path), so a playing title keeps its background search for
+            // picking other servers.
+            if (!playerLaunched && sessionId.isNotBlank()) {
+                vm.abandonLiveSearch(sessionId, m, selectedEp)
+            }
+        }) {
             Text(
                 selectedEp?.let { if (it.season > 1) "S${it.season} E${it.number}" else "Episode ${it.number}" }
                     ?: tr("Playback sources"),

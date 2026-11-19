@@ -1,4 +1,11 @@
 
+## 0.12.120
+
+- Episode list + numbering now come from the title's own extension for Stremio, Nuvio and tracker rows too (already true for CloudStream, Hikari, Universal, SkyStream, Aniyomi, Vega, Sora, Anymex, ZanGetSu and Fork): Aio/TMDB no longer replace these lists, so a foreign layout can't map an episode to the wrong video — they stay as fallback and fill episode names/photos only, and the detail metadata pipeline is untouched
+- Server page close now stops the whole server search: backing out of the sheet/chooser without playing cancels the pass, the background sweep and its pending work — the search only keeps running while the player is open (for picking other servers) and stops fully when the player closes, so nothing keeps loading behind a closed page
+- Production row backfills missing logos from TMDB: when the addon-supplied company has no logo, TMDB's logo for the same company fills in (logo only — names and order unchanged)
+- Player episode sheet shows the episode's own image as-is, TMDB stills included (same as the detail episode list), with retries on failure instead of leaving the S/E tile bare
+
 ## 0.12.119
 
 - CloudStream parity for slow extractors: every loadLinks attempt now gets the plugin's full declared budget (default 2 min, up to 8 min) instead of 10s retries that could never finish — the Cinefreak case (subs arrived, video links need longer) plays like the CloudStream app instead of wedging, then sitting out 30 minutes
