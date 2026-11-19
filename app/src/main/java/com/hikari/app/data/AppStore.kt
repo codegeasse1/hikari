@@ -737,7 +737,7 @@ class AppStore(private val ctx: Context) {
 
     fun tmdbEnabledFlow(): Flow<Boolean> = store.data.map { it[K.TMDB_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun tmdbEnabled(): Boolean = tmdbEnabledFlow().first()
-    suspend fun setTmdbEnabled(value: Boolean) { write("TMDB_ENABLED") { it[K.TMDB_ENABLED] = value } }
+    suspend fun setTmdbEnabled(value: Boolean) { write("TMDB_ENABLED") { it[K.TMDB_ENABLED] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
 
     fun tmdbModuleFlow(name: String): Flow<Boolean> = store.data.map { prefs ->
         when (name) {
@@ -773,6 +773,7 @@ class AppStore(private val ctx: Context) {
                 "collections" -> prefs[K.TMDB_MODULE_COLLECTIONS] = value
             }
         }
+        runCatching { MetaCache.bumpSourcesEpoch() }
     }
 
     fun mdbEnabledFlow(): Flow<Boolean> = store.data.map { it[K.MDB_ENABLED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -821,13 +822,13 @@ class AppStore(private val ctx: Context) {
     suspend fun setAnimeAnilist(value: Boolean) { write("ANIME_ANILIST") { it[K.ANIME_ANILIST] = value } }
     fun animeTmdbFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeTmdb(): Boolean = animeTmdbFlow().first()
-    suspend fun setAnimeTmdb(value: Boolean) { write("ANIME_TMDB") { it[K.ANIME_TMDB] = value } }
+    suspend fun setAnimeTmdb(value: Boolean) { write("ANIME_TMDB") { it[K.ANIME_TMDB] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun animeSimklAppIdFlow(): Flow<String> = store.data.map { it[K.ANIME_SIMKL_APP_ID] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeSimklAppId(): String = animeSimklAppIdFlow().first()
     suspend fun setAnimeSimklAppId(value: String) { write("ANIME_SIMKL_APP_ID") { it[K.ANIME_SIMKL_APP_ID] = value } }
     fun animeAioFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeAio(): Boolean = animeAioFlow().first()
-    suspend fun setAnimeAio(value: Boolean) { write("ANIME_AIO") { it[K.ANIME_AIO] = value } }
+    suspend fun setAnimeAio(value: Boolean) { write("ANIME_AIO") { it[K.ANIME_AIO] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun mangaAnilistFlow(): Flow<Boolean> = store.data.map { it[K.MANGA_ANILIST] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun mangaAnilist(): Boolean = mangaAnilistFlow().first()
     suspend fun setMangaAnilist(value: Boolean) { write("MANGA_ANILIST") { it[K.MANGA_ANILIST] = value } }
@@ -839,13 +840,13 @@ class AppStore(private val ctx: Context) {
     suspend fun setPornhwaApiKey(value: String) { write("PORNHWA_API_KEY") { it[K.PORNHWA_API_KEY] = value } }
     fun videoTmdbFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoTmdb(): Boolean = videoTmdbFlow().first()
-    suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value } }
+    suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun videoAioFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoAio(): Boolean = videoAioFlow().first()
-    suspend fun setVideoAio(value: Boolean) { write("VIDEO_AIO") { it[K.VIDEO_AIO] = value } }
+    suspend fun setVideoAio(value: Boolean) { write("VIDEO_AIO") { it[K.VIDEO_AIO] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun aioBaseUrlFlow(): Flow<String> = store.data.map { it[K.AIO_BASE_URL].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun aioBaseUrl(): String = aioBaseUrlFlow().first()
-    suspend fun setAioBaseUrl(value: String) { write("AIO_BASE_URL") { it[K.AIO_BASE_URL] = value } }
+    suspend fun setAioBaseUrl(value: String) { write("AIO_BASE_URL") { it[K.AIO_BASE_URL] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun aioApiKeyFlow(): Flow<String> = store.data.map { it[K.AIO_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun aioApiKey(): String = aioApiKeyFlow().first()
     suspend fun setAioApiKey(value: String) { write("AIO_API_KEY") { it[K.AIO_API_KEY] = value } }
@@ -855,7 +856,7 @@ class AppStore(private val ctx: Context) {
             else MetaSources.EXTERNAL_FAMILY_NAMES.toSet()
         }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun metaFamilyExternal(): Set<String> = metaFamilyExternalFlow().first()
-    suspend fun setMetaFamilyExternal(names: Set<String>) { write("META_FAMILY_EXTERNAL") { it[K.META_FAMILY_EXTERNAL] = names.toSet() } }
+    suspend fun setMetaFamilyExternal(names: Set<String>) { write("META_FAMILY_EXTERNAL") { it[K.META_FAMILY_EXTERNAL] = names.toSet() }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun nativeProvidersFlow(): Flow<Set<String>> =
         store.data.map { it[K.NATIVE_PROVIDERS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun nativeProviders(): Set<String> = nativeProvidersFlow().first()
@@ -2934,6 +2935,7 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         val cur = translateProviders()
         val next = if (enabled) cur + id else cur - id
         write("TRANSLATE_PROVIDERS") { it[K.TRANSLATE_PROVIDERS] = encodeStringList(next.toList()) }
+        runCatching { MetaCache.bumpSourcesEpoch() }
     }
 
     /** Persisted original→English translation pairs (title cache). */
@@ -3838,6 +3840,10 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
                 )
             }
         }
+        // Provider on/off (and install/remove, which funnel through the same
+        // list) changes what the metadata pipeline may consult — drop cached
+        // rows so the toggle takes effect on the next open, not at TTL expiry.
+        runCatching { MetaCache.bumpSourcesEpoch() }
     }
 
     fun reposFlow(): Flow<List<Cs3Repo>> =

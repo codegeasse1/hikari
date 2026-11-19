@@ -1,4 +1,11 @@
 
+## 0.12.121
+
+- Metadata toggles take effect immediately: flipping any metadata switch (addon on/off, TMDB legs, Aio legs/endpoint, external-metadata families, per-extension translate) now invalidates the cached detail + episode rows on the spot instead of serving the previous source's data until the cache expired — this was the "toggle does nothing" report
+- App updates no longer show the previous build's rows: the detail + episode caches are keyed by app version, so updating re-resolves once instead of replaying stale lists (episode titles, thumbs, production logos) for up to 3 days
+- Leftover foreign-script episode names are machine-translated to English when the content language is English: TMDB only translates the episodes its editors translated, so a list could end in e.g. Chinese names — those are now translated instead of left raw (a non-English content language is never touched)
+- Production logo match is punctuation/case-insensitive, so the same studio spelled/punctuated differently on the two sides still gets TMDB's logo
+
 ## 0.12.120
 
 - Episode list + numbering now come from the title's own extension for Stremio, Nuvio and tracker rows too (already true for CloudStream, Hikari, Universal, SkyStream, Aniyomi, Vega, Sora, Anymex, ZanGetSu and Fork): Aio/TMDB no longer replace these lists, so a foreign layout can't map an episode to the wrong video — they stay as fallback and fill episode names/photos only, and the detail metadata pipeline is untouched

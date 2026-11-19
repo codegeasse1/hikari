@@ -22,6 +22,36 @@ object MetaCache {
      *  series can gain episodes, so this is deliberately the shortest window). */
     const val EPISODES_TTL_MS = 12 * 60 * 60 * 1000L
 
+    /** The app build these keys were written by: a metadata pipeline fix in
+     *  a new build must never serve the previous build's cached rows (that
+     *  is what made shipped fixes look "not applied" until the TTL expired).
+     *  Mixed into every key below, so an upgrade re-resolves once. */
+    private fun appVer(): Int = runCatching {
+        com.hikari.app.BuildConfig.VERSION_CODE
+    }.getOrDefault(0)
+
+    /** Bumped whenever a metadata-source switch changes (addon on/off, TMDB
+     *  legs, Aio legs/endpoint, external-metadata families, translate
+     *  toggles). Mixed into every key below, so a toggle re-resolves
+     *  immediately instead of serving the previous source's rows until the
+     *  TTL expires. See AppStore.bumpedSources call sites. */
+    fun sourcesEpoch(): Int {
+        val held = sourcesEpochHeld
+        if (held >= 0) return held
+        val read = runCatching { prefs().getInt("sources_epoch", 0) }.getOrDefault(0)
+        sourcesEpochHeld = read
+        return read
+    }
+
+    fun bumpSourcesEpoch() {
+        val next = sourcesEpoch() + 1
+        sourcesEpochHeld = next
+        runCatching { prefs().edit().putInt("sources_epoch", next).apply() }
+    }
+
+    @Volatile
+    private var sourcesEpochHeld: Int = -1
+
     @Volatile
     private var episodesEpoch: Int = -1
 
@@ -188,7 +218,7 @@ object MetaCache {
 
     // ---- Title meta ----------------------------------------------------------
 
-    fun metaKey(uniqueId: String): String = "meta|$uniqueId"
+    fun metaKey(uniqueId: String): String = "meta|v${appVer()}|s${sourcesEpoch()}|$uniqueId"
 
     fun mangaMetaKey(providerId: String, mangaUrl: String): String = "metamanga|$providerId|$mangaUrl"
 
@@ -203,7 +233,7 @@ object MetaCache {
 
     // ---- Episode lists -------------------------------------------------------
 
-fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
+fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|v${appVer()}|s${sourcesEpoch()}|$uniqueId"
 
     fun cachedEpisodes(key: String, ttlMs: Long = EPISODES_TTL_MS): List<Episode>? {
         val o = read(key, ttlMs) ?: return null
@@ -249,8 +279,9 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
         runCatching { _epRevision.value += 1 }
     }
 
-    fun evictEpisodes(uniqueId: String) {
-        val key = episodesKey(uniqueId)
+    fun evictEpisodes(uniqueId: String) = evictEpisodesKey(episodesKey(uniqueId))
+
+    fun evictEpisodesKey(key: String) {
         memDrop(key)
         runCatching { file(key).delete() }
     }

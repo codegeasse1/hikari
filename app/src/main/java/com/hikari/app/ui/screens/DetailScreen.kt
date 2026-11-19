@@ -641,12 +641,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // Logos the same way, per company: when the winning row has no
             // logo, TMDB's logo for the same company name fills it in (logo
             // only — names, order and the rest stay exactly as they are).
+            // Compared punctuation/case-insensitively, because the two
+            // sides punctuate the same studio differently.
+            fun normName(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
             companies = (addon.companies + tmdb.companies)
                 .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
                 .map { c ->
                     if (!c.logoUrl.isNullOrBlank()) c
                     else tmdb.companies.firstOrNull {
-                        it.name.equals(c.name, ignoreCase = true) && !it.logoUrl.isNullOrBlank()
+                        it.name.isNotBlank() && normName(it.name) == normName(c.name) && !it.logoUrl.isNullOrBlank()
                     }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
                 }
                 .take(10),

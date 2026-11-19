@@ -4281,7 +4281,6 @@ class ContentRepository(private val manager: ProviderManager) {
         com.hikari.app.providers.ProviderGate.interactive { metaForInner(item) }
 
     private suspend fun metaForInner(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
-        synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
         val keyFamily = manager.byId(item.providerId)?.config?.type
         val addonsKey = manager.providers.value
             .filterIsInstance<com.hikari.app.providers.StremioAddon>()
@@ -4289,9 +4288,15 @@ class ContentRepository(private val manager: ProviderManager) {
         val metaKey = MetaCache.metaKey(item.uniqueId) +
             if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else "" +
             runCatching { MetaSources.fingerprint(item, keyFamily, addonsKey) }.getOrDefault("")
+        // In-memory mirror is keyed by the FULL disk key (which now carries
+        // the app build, the sources epoch and the metadata-source
+        // fingerprint): a keyed-by-id entry would keep serving the previous
+        // toggle's rows for the rest of the session, i.e. "the toggle does
+        // nothing" until restart.
+        synchronized(metaCache) { metaCache[metaKey] }?.let { return@withContext it }
         MetaCache.cachedMeta(metaKey)?.let { cached ->
             if (!cached.overview.isNullOrBlank()) {
-                synchronized(metaCache) { metaCache[item.uniqueId] = cached }
+                synchronized(metaCache) { metaCache[metaKey] = cached }
                 return@withContext cached
             }
         }
@@ -4314,14 +4319,14 @@ class ContentRepository(private val manager: ProviderManager) {
         if (result.backdropUrl != null && result.overview != null && !externalOn) {
             com.hikari.app.data.Logs.log("Meta", "detail meta: origin \"${item.title.take(60)}\" complete, external off — as-is")
             val t = translateItem(result)
-            synchronized(metaCache) { metaCache[item.uniqueId] = t }
+            synchronized(metaCache) { metaCache[metaKey] = t }
             MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
         val nativeIds = runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())
         if (originProvider != null && item.providerId in nativeIds) {
             val t = translateItem(result)
-            synchronized(metaCache) { metaCache[item.uniqueId] = t }
+            synchronized(metaCache) { metaCache[metaKey] = t }
             MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
@@ -4402,7 +4407,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 backdropUrl = translated.backdropUrl ?: it.backdropUrl,
             )
         } ?: translated
-        synchronized(metaCache) { metaCache[item.uniqueId] = finalMeta }
+        synchronized(metaCache) { metaCache[metaKey] = finalMeta }
         if (finalMeta != item) MetaCache.putMeta(metaKey, finalMeta)
         finalMeta
     }
@@ -4733,26 +4738,36 @@ class ContentRepository(private val manager: ProviderManager) {
         // The origin owns the list for a site-scraper (see
         // [isSiteScraperOrigin]): TMDB's synthetic ids can never play there.
         val scraperOrigin = isSiteScraperOrigin(item)
-        synchronized(episodeCache) { episodeCache[selKey] }?.let {
+        // The disk key carries the app build + sources epoch (see
+        // MetaCache) plus the metadata-source fingerprint, and the
+        // in-memory mirror is keyed by the same full key: a keyed-by-id
+        // entry would keep serving the previous toggle's rows for the rest
+        // of the session, i.e. "the toggle does nothing" until restart.
+        val keyFamily = manager.byId(item.providerId)?.config?.type
+        val epAddonsKey = manager.providers.value
+            .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+            .joinToString("|") { it.config.id + ":" + it.config.enabled }
+        val epsKey = MetaCache.episodesKey(selKey) +
+            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else "" +
+            runCatching { MetaSources.fingerprint(item, keyFamily, epAddonsKey) }.getOrDefault("")
+        synchronized(episodeCache) { episodeCache[epsKey] }?.let {
             if (scraperOrigin && isTmdbSyntheticList(item, it)) {
-                synchronized(episodeCache) { episodeCache.remove(selKey) }
-                runCatching { MetaCache.evictEpisodes(selKey) }
+                synchronized(episodeCache) { episodeCache.remove(epsKey) }
+                runCatching { MetaCache.evictEpisodesKey(epsKey) }
             } else {
                 val fixed = restoreAnimeSeasons(item, it)
                 publish(fixed)
                 if (fixed !== it) {
-                    synchronized(episodeCache) { episodeCache[selKey] = fixed }
+                    synchronized(episodeCache) { episodeCache[epsKey] = fixed }
                 }
                 return@withContext fixed
             }
         }
-        val epsKey = MetaCache.episodesKey(selKey) +
-            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
         // Poison check (see above): a TMDB-synthetic disk list for a
         // site-scraper is phantom seasons — evict it and ask the origin.
         val cachedPoisoned = scraperOrigin && cachedEps != null && isTmdbSyntheticList(item, cachedEps)
-        if (cachedPoisoned) runCatching { MetaCache.evictEpisodes(selKey) }
+        if (cachedPoisoned) runCatching { MetaCache.evictEpisodesKey(epsKey) }
         val cachedSeasoned = if (cachedPoisoned) null else cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { publish(it) }
         // AioMetadata FIRST only when the origin does NOT own the numbering
@@ -4917,7 +4932,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 val list = publish(restoreAnimeSeasons(item, got))
                 val translated = publish(translateEpisodes(item.providerId, list))
                 val out = publish(translated)
-                synchronized(episodeCache) { episodeCache[selKey] = out }
+                synchronized(episodeCache) { episodeCache[epsKey] = out }
                 MetaCache.putEpisodes(epsKey, out)
                 return@withContext out
             }
@@ -4945,7 +4960,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val filled = backfillEpisodeDetails(item, publish(merged))
         val out = publish(filled)
         if (out !== merged) {
-            synchronized(episodeCache) { episodeCache[selKey] = out }
+            synchronized(episodeCache) { episodeCache[epsKey] = out }
             MetaCache.putEpisodes(epsKey, out)
         }
         out
@@ -5165,6 +5180,34 @@ class ContentRepository(private val manager: ProviderManager) {
                 e
             }
         }
+        // Last resort for mixed-language rows: TMDB only carries the episodes
+        // its editors translated — the rest keep the origin's script, so an
+        // otherwise English list can end with e.g. Chinese names. When the
+        // app's content language is English those leftovers are machine
+        // translated; with a non-English content language they are correct
+        // as-is and are never touched.
+        val langTag = com.hikari.app.nuvio.TmdbResolver.contentLanguage.trim()
+        if (langTag.isBlank() || langTag.startsWith("en", ignoreCase = true)) {
+            val needIdx = out.mapIndexedNotNull { i, e ->
+                if (!e.name.isNullOrBlank() && EpisodeTitles.needsEnglish(e.name, showName)) i else null
+            }
+            if (needIdx.isNotEmpty()) {
+                val translations = Translator.translateAll(needIdx.map { out[it].name.orEmpty() })
+                var tChanged = changed
+                val final = out.mapIndexed { i, e ->
+                    val ti = needIdx.indexOf(i)
+                    if (ti < 0) e
+                    else {
+                        val t = translations[ti]
+                        if (t.isNotBlank() && t != e.name) {
+                            tChanged = true
+                            e.copy(name = t)
+                        } else e
+                    }
+                }
+                return if (tChanged) final else anilistNamed
+            }
+        }
         return if (changed) out else anilistNamed
     }
 
@@ -5218,7 +5261,7 @@ class ContentRepository(private val manager: ProviderManager) {
             withTimeoutOrNull(enrichLeft()) { fillAnimeStills(item, filled) } ?: filled
         } else filled
         val out = publish(stills)
-        synchronized(episodeCache) { episodeCache[selKey] = out }
+        synchronized(episodeCache) { episodeCache[epsKey] = out }
         MetaCache.putEpisodes(epsKey, out)
         return out
     }

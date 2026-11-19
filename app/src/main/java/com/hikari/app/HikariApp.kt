@@ -140,6 +140,10 @@ class HikariApp : Application() {
     fun onContentLanguageChanged() {
         runCatching { com.hikari.app.data.TmdbSources.clearLocalizedNames() }
         runCatching { com.hikari.app.data.SearchResultsCache.clear() }
+        // Localized titles/overviews/episode names live in the meta + episode
+        // caches too: without this a language switch keeps serving rows
+        // localized under the old language until their TTL expires.
+        runCatching { com.hikari.app.data.MetaCache.bumpSourcesEpoch() }
         contentLanguageRevision.value = contentLanguageRevision.value + 1L
     }
 
