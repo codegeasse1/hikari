@@ -288,7 +288,7 @@ object MetaSources {
      * purpose: [TmdbMeta]'s trust gate still rejects a wrong-row hit, the
      * same bar as today's Aio-first resolve.
      */
-    private fun tmdbHintFromDocs(
+    private suspend fun tmdbHintFromDocs(
         item: MediaItem,
         docs: List<ShelfDoc>,
     ): com.hikari.app.nuvio.TmdbResolver.Resolved? {
