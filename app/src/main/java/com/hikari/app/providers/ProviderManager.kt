@@ -113,9 +113,37 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                 // pop in as the warmer lands them.
                 val live = _providers.value
                 if (live.isNotEmpty()) {
-                    val keep = configs.map { it.id }.toSet()
-                    val pruned = live.filter { it.config.id in keep }
-                    if (pruned.size != live.size) _providers.value = pruned
+                    // A toggled provider keeps its OLD live instance otherwise:
+                    // ContentProvider.config is immutable, so flipping
+                    // enabled in the store changed nothing the pipelines
+                    // filter on (`it.config.enabled`) and the `providers`
+                    // flow never re-emitted — the switch snapped back and
+                    // the addon stayed consulted until an app restart. Swap
+                    // every instance whose config changed (usually one —
+                    // the toggled row) so the toggle takes effect at once.
+                    // The warmer below still owns brand-new ids.
+                    val byId = configs.associateBy { it.id }
+                    val rebuilt = ArrayList<ContentProvider>(live.size)
+                    var changed = false
+                    for (p in live) {
+                        val nc = byId[p.config.id]
+                        if (nc == null) {
+                            changed = true
+                            continue
+                        }
+                        if (nc != p.config) {
+                            val re = runCatching { instantiate(nc) }.getOrNull()
+                            if (re != null) {
+                                rebuilt += re
+                                changed = true
+                            } else {
+                                rebuilt += p
+                            }
+                        } else {
+                            rebuilt += p
+                        }
+                    }
+                    if (changed) _providers.value = rebuilt
                 }
                 launchWarmer(configs)
             } while (refreshQueued)

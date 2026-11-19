@@ -1,4 +1,15 @@
 
+## 0.12.123
+
+- Phantom episode rows are gone: when the resolved TMDB title knows fewer episodes than the origin lists (the reported 11-row list for 8-episode TMDB 291507), rows past TMDB's count that no source vouched for (no overview, date, rating or runtime) are dropped instead of shown with raw foreign text — any row with details from any source always survives, so a genuinely new episode is never trimmed
+- Leftover foreign-script episode names are machine-translated even with TMDB naming off or when TMDB answered nothing — previously the translation pass only ran after a successful TMDB lookup, so TMDB-off rows kept raw Chinese names; still skipped for non-English content languages, and a failed translation no longer poisons retries for the session
+- Production logos come from TMDB even with TMDB metadata off: a toggle-independent logo-only fetch backfills company logos by normalized name whenever the shelves leave them bare, so the Production row shows real logos regardless of which metadata sources are selected
+- Provider toggles actually toggle (0.12.122's fix, which never reached devices): flipping a switch now swaps the live provider instance, because provider configs are immutable and the old instance kept the previous on/off value — the switch snapped back and the addon stayed consulted until an app restart; toggling Cinemeta (or any addon) off now removes it from metadata, catalogs and streams at once
+
+## 0.12.122
+
+- Provider toggles actually toggle: flipping a switch now swaps the live provider instance, because provider configs are immutable and the old instance kept the previous on/off value — the switch snapped back and the addon stayed consulted until an app restart; toggling Cinemeta (or any addon) off now removes it from metadata, catalogs and streams at once
+
 ## 0.12.121
 
 - Metadata toggles take effect immediately: flipping any metadata switch (addon on/off, TMDB legs, Aio legs/endpoint, external-metadata families, per-extension translate) now invalidates the cached detail + episode rows on the spot instead of serving the previous source's data until the cache expired — this was the "toggle does nothing" report

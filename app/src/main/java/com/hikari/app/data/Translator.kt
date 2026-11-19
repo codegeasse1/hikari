@@ -135,7 +135,10 @@ object Translator {
     }
 
     /** Translates one string to English (returns it unchanged when it can't
-     *  be translated or is already English). */
+     *  be translated or is already English). A FAILED fetch (blank) never
+     *  marks the text done — otherwise one transient network failure would
+     *  leave the row untranslated for the rest of the session with no retry.
+     *  Only a real echo (the backend returning the input) is remembered. */
     suspend fun translate(text: String): String {
         if (!shouldTranslate(text)) return text
         synchronized(lock) {
@@ -143,7 +146,8 @@ object Translator {
             if (done.contains(text)) return text
         }
         val translated = fetch(text)
-        if (translated.isBlank() || translated == text) {
+        if (translated.isBlank()) return text
+        if (translated == text) {
             synchronized(lock) { done.add(text) }
             return text
         }

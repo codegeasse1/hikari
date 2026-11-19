@@ -184,6 +184,44 @@ object EpisodeTitles {
         }
         return Names(english, generic)
     }
+
+    private const val COUNTS_TTL_MS = 30 * 60 * 1000L
+    private class CountsEntry(val at: Long, val counts: Map<Int, Int>)
+    private val countsCache = ConcurrentHashMap<Int, CountsEntry>()
+
+    /** Authoritative episode count per season for [tmdbId] (season number ->
+     *  episode count), from the title's own `/tv` document — ONE small call,
+     *  memory-cached. This is what lets the app tell a real new episode from
+     *  a phantom row the origin lists but no source knows: TMDB 291507 ("The
+     *  Body") reports 8 while the origin listed 11, so rows 9+ with zero
+     *  details from every source are provably not episodes.
+     *  Never throws; empty means "no authority", and the caller keeps all rows. */
+    suspend fun seasonCounts(tmdbId: Int): Map<Int, Int> =
+        withContext(Dispatchers.IO) {
+            if (tmdbId <= 0) return@withContext emptyMap()
+            countsCache[tmdbId]?.let {
+                if (it.counts.isNotEmpty() ||
+                    System.currentTimeMillis() - it.at < NEGATIVE_TTL_MS
+                ) {
+                    return@withContext it.counts
+                }
+            }
+            val obj = runCatching {
+                TmdbResolver.apiGet("/tv/$tmdbId", mapOf("language" to LANGUAGE))
+            }.getOrNull() ?: return@withContext emptyMap()
+            val arr = obj.optJSONArray("seasons") ?: return@withContext emptyMap()
+            val out = HashMap<Int, Int>()
+            for (i in 0 until arr.length()) {
+                val s = arr.optJSONObject(i) ?: continue
+                val sn = s.optInt("season_number", -1)
+                val count = s.optInt("episode_count", 0)
+                if (sn < 0 || count <= 0) continue
+                out[sn] = count
+            }
+            countsCache[tmdbId] = CountsEntry(System.currentTimeMillis(), out)
+            out
+        }
+
     class EpDetail(
         val season: Int,
         val number: Int,

@@ -4430,7 +4430,14 @@ class ContentRepository(private val manager: ProviderManager) {
                 .filter { it.config.enabled }
             runCatching { MetaSources.fillEpisodeImages(item, got, metaAddons) }.getOrDefault(got)
         } else got
-        if (!thumbs.isNullOrEmpty()) return@interactive thumbs
+        // Phantom tail rows (an origin that lists episodes no source knows —
+        // the reported 11-row list for an 8-episode show): dropped only when
+        // NO source vouched for them. One choke point, so the detail list,
+        // the player sheet and autoplay all see the same rows.
+        val final = if (!thumbs.isNullOrEmpty()) {
+            runCatching { trimPhantomEpisodes(item, thumbs) }.getOrDefault(thumbs)
+        } else thumbs
+        if (!final.isNullOrEmpty()) return@interactive final
         val trk = TrackerAnimeResolver.trackerEpisodes(item)
             ?: TrackerAnimeResolver.fallbackEpisodes(item)
         if (trk != null) restoreAnimeSeasons(item, trk) else null
@@ -5116,13 +5123,90 @@ class ContentRepository(private val manager: ProviderManager) {
         return runCatching { if (anime) store.animeTmdb() else store.videoTmdb() }.getOrDefault(true)
     }
 
+    /** Drops provably-phantom tail rows: an origin that lists episodes past the
+     *  resolved TMDB season count whose rows carry ZERO details from every
+     *  source (no overview, date, rating or runtime — the reported case: an
+     *  11-row origin list for the 8-episode TMDB 291507, rows 9-11 bare with
+     *  raw Chinese names). Only ever removes unvouched rows past the known
+     *  count — a row any source described (future air date, origin overview,
+     *  anything) always survives, so a genuinely new episode TMDB hasn't
+     *  ingested yet is never trimmed. Anime is excluded (absolute numbering
+     *  does not map onto TMDB seasons); no TMDB id or no season data means
+     *  no authority, and every row is kept. Never throws. */
+    private suspend fun trimPhantomEpisodes(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.size < 3) return eps
+        if (item.type != MediaType.SERIES && item.type != MediaType.UNKNOWN) return eps
+        if (AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)) return eps
+        val resolved = withTimeoutOrNull(8_000) {
+            runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+        }?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            ?: return eps
+        val counts = withTimeoutOrNull(8_000) {
+            com.hikari.app.nuvio.EpisodeTitles.seasonCounts(resolved)
+        }.orEmpty()
+        if (counts.isEmpty()) return eps
+        var dropped = 0
+        val out = eps.filter { e ->
+            val max = counts[e.season] ?: return@filter true
+            if (e.number <= max) return@filter true
+            val bare = e.overview.isNullOrBlank() && e.released.isNullOrBlank() &&
+                e.rating == null && e.runtime == null
+            if (!bare) return@filter true
+            dropped++
+            false
+        }
+        if (dropped > 0) {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "trimmed $dropped phantom episode row(s) past TMDB count for \"${item.title.take(60)}\"",
+            )
+        }
+        return if (dropped > 0) out else eps
+    }
+
+    /** Machine-translates episode names still in a foreign script after every
+     *  naming leg ran (TMDB only translates the episodes its editors
+     *  translated; the rest keep the origin's script). Skipped for a
+     *  non-English content language — those names are correct there. */
+    private suspend fun translateLeftoverNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        val showName = item.searchTitle
+        val langTag = com.hikari.app.nuvio.TmdbResolver.contentLanguage.trim()
+        if (!(langTag.isBlank() || langTag.startsWith("en", ignoreCase = true))) return eps
+        val needIdx = eps.mapIndexedNotNull { i, e ->
+            if (!e.name.isNullOrBlank() && com.hikari.app.nuvio.EpisodeTitles.needsEnglish(e.name, showName)) i else null
+        }
+        if (needIdx.isEmpty()) return eps
+        val translations = Translator.translateAll(needIdx.map { eps[it].name.orEmpty() })
+        var changed = false
+        val out = eps.mapIndexed { i, e ->
+            val ti = needIdx.indexOf(i)
+            if (ti < 0) e
+            else {
+                val t = translations[ti]
+                if (t.isNotBlank() && t != e.name) {
+                    changed = true
+                    e.copy(name = t)
+                } else e
+            }
+        }
+        if (changed) {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "translated ${needIdx.size} leftover foreign-script episode name(s) for \"${item.title.take(60)}\"",
+            )
+        }
+        return if (changed) out else eps
+    }
+
     private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
         // Extension-own rows keep the origin's names untouched.
         if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return eps
         val anilistNamed = animeEpisodeNames(item, eps)
-        if (eps.size < 3) return anilistNamed
-        // TMDB naming only when TMDB is on for this kind of row.
-        if (!tmdbEpisodesAllowed(item)) return anilistNamed
+        if (eps.size < 3) return translateLeftoverNames(item, anilistNamed)
+        // TMDB naming only when TMDB is on for this kind of row — but the
+        // leftover-script translation below is NOT TMDB-gated: with TMDB off
+        // there is no other leg that can fix a foreign-script origin name.
+        if (!tmdbEpisodesAllowed(item)) return translateLeftoverNames(item, anilistNamed)
         val multiSeason = anilistNamed.map { it.season }.toSet().size > 1
         // A picked Vega pack names its own season ("[Season 3]"): the lookup
         // follows the pack, not the show title — otherwise every pack of a
@@ -5161,8 +5245,8 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 runCatching { EpisodeTitles.lookup(showName, item.year, numbers, language) }.getOrNull()
             }
-        } ?: return anilistNamed
-        if (names.isEmpty()) return anilistNamed
+        } ?: return translateLeftoverNames(item, anilistNamed)
+        if (names.isEmpty()) return translateLeftoverNames(item, anilistNamed)
         var changed = false
         val out = anilistNamed.map { e ->
             val raw = e.name
@@ -5180,35 +5264,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 e
             }
         }
-        // Last resort for mixed-language rows: TMDB only carries the episodes
-        // its editors translated — the rest keep the origin's script, so an
-        // otherwise English list can end with e.g. Chinese names. When the
-        // app's content language is English those leftovers are machine
-        // translated; with a non-English content language they are correct
-        // as-is and are never touched.
-        val langTag = com.hikari.app.nuvio.TmdbResolver.contentLanguage.trim()
-        if (langTag.isBlank() || langTag.startsWith("en", ignoreCase = true)) {
-            val needIdx = out.mapIndexedNotNull { i, e ->
-                if (!e.name.isNullOrBlank() && EpisodeTitles.needsEnglish(e.name, showName)) i else null
-            }
-            if (needIdx.isNotEmpty()) {
-                val translations = Translator.translateAll(needIdx.map { out[it].name.orEmpty() })
-                var tChanged = changed
-                val final = out.mapIndexed { i, e ->
-                    val ti = needIdx.indexOf(i)
-                    if (ti < 0) e
-                    else {
-                        val t = translations[ti]
-                        if (t.isNotBlank() && t != e.name) {
-                            tChanged = true
-                            e.copy(name = t)
-                        } else e
-                    }
-                }
-                return if (tChanged) final else anilistNamed
-            }
-        }
-        return if (changed) out else anilistNamed
+        // Whatever TMDB did not translate keeps the origin's script — the shared
+        // leftover pass fixes it (English content language only).
+        return translateLeftoverNames(item, if (changed) out else anilistNamed)
     }
 
     private suspend fun animeEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {

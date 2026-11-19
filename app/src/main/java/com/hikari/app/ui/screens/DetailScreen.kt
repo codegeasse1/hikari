@@ -593,14 +593,33 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _addonLogo = MutableStateFlow<String?>(null)
     val addonLogo: StateFlow<String?> = _addonLogo.asStateFlow()
 
+    /** Name form used to match a company across sources that punctuate it
+     *  differently ("Marvel Television" vs "marvel-television!"). A class
+     *  member (not a local) because this merge builds its result inside a
+     *  constructor call, where named local functions are illegal. */
+    private fun normCompanyName(s: String) =
+        s.lowercase().filter { ch -> ch.isLetterOrDigit() }.takeIf { it.isNotEmpty() }
+
     /** Addon-first merge for the detail shelves: the winning addon doc's
      *  cast/director/trailers/production win (they are the user's chosen
      *  source order); TMDB fills whatever the addon left bare — cast photos,
      *  certifications, collection, and any row the addon lacks entirely.
-     *  Either side may be null (TMDB off / no addon answered). */
-    private fun mergeShelfExtras(addon: TitleExtras?, tmdb: TitleExtras?): TitleExtras? {
+     *  Either side may be null (TMDB off / no addon answered). Company logos
+     *  additionally consult TMDB directly ([TmdbMeta.companyLogos], which
+     *  ignores the metadata toggles by design), so the Production row shows
+     *  real logos even with TMDB metadata off. */
+    private suspend fun mergeShelfExtras(addon: TitleExtras?, tmdb: TitleExtras?, item: MediaItem): TitleExtras? {
         if (addon == null) return tmdb
-        if (tmdb == null) return addon
+        if (tmdb == null) {
+            // No TMDB shelves at all (TMDB off): still backfill the addon
+            // rows' logos straight from TMDB before giving up on them.
+            val logoMap = runCatching { com.hikari.app.data.TmdbMeta.companyLogos(item) }.getOrDefault(emptyMap())
+            if (logoMap.isEmpty()) return addon
+            return addon.copy(companies = addon.companies.map { c ->
+                if (!c.logoUrl.isNullOrBlank()) c
+                else logoMap[normCompanyName(c.name)]?.let { c.copy(logoUrl = it) } ?: c
+            })
+        }
         val addonCast = addon.cast.takeIf { it.isNotEmpty() }
         val mergedCast = addonCast?.map { member ->
             if (!member.profileUrl.isNullOrBlank()) member
@@ -642,19 +661,30 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // logo, TMDB's logo for the same company name fills it in (logo
             // only — names, order and the rest stay exactly as they are).
             // Compared punctuation/case-insensitively, because the two
-            // sides punctuate the same studio differently.
-            companies = (addon.companies + tmdb.companies)
-                .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
-                .map { c ->
+            // sides punctuate the same studio differently. Whatever is still
+            // bare then consults TMDB directly (toggle-independent), so a
+            // TMDB company the shelves never carried still lends its logo.
+            companies = run {
+                val afterShelves = (addon.companies + tmdb.companies)
+                    .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
+                    .map { c ->
+                        if (!c.logoUrl.isNullOrBlank()) c
+                        else tmdb.companies.firstOrNull { t ->
+                            t.name.isNotBlank() && !t.logoUrl.isNullOrBlank() &&
+                                normCompanyName(t.name) != null &&
+                                normCompanyName(t.name) == normCompanyName(c.name)
+                        }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
+                    }
+                if (afterShelves.all { !it.logoUrl.isNullOrBlank() }) return@run afterShelves.take(10)
+                val logoMap = runCatching {
+                    com.hikari.app.data.TmdbMeta.companyLogos(item)
+                }.getOrDefault(emptyMap())
+                if (logoMap.isEmpty()) return@run afterShelves.take(10)
+                afterShelves.map { c ->
                     if (!c.logoUrl.isNullOrBlank()) c
-                    else tmdb.companies.firstOrNull { t ->
-                        t.name.isNotBlank() && !t.logoUrl.isNullOrBlank() &&
-                            t.name.lowercase().filter { ch -> ch.isLetterOrDigit() }
-                                .takeIf { n -> n.isNotEmpty() } ==
-                            c.name.lowercase().filter { ch -> ch.isLetterOrDigit() }
-                    }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
-                }
-                .take(10),
+                    else logoMap[normCompanyName(c.name)]?.let { c.copy(logoUrl = it) } ?: c
+                }.take(10)
+            },
             collection = tmdb.collection,
         )
     }
@@ -1162,7 +1192,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         com.hikari.app.data.MetaSources.addonLogo(item, metaAddons)
                     }.getOrDefault(null)
                 } else null
-            val merged = mergeShelfExtras(addonEx, ex)
+            val merged = mergeShelfExtras(addonEx, ex, item)
             if (shelvesGen != shelvesGeneration) return@withContext
             _extras.value = merged
             runCatching {

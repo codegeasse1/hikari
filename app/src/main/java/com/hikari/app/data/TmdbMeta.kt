@@ -3,6 +3,8 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import com.hikari.app.nuvio.TmdbResolver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 object TmdbMeta {
@@ -154,6 +156,43 @@ object TmdbMeta {
         val url = best?.tmdbPath("file_path")?.let { IMG + it }
         logoCache[key] = url.orEmpty()
         return url
+    }
+
+    private val companyLogoCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Map<String, String>>>()
+    private const val COMPANY_LOGO_TTL_MS = 12 * 60 * 60 * 1000L
+
+    /** Production-company/network logos keyed by normalized name, WITHOUT any
+     *  metadata toggle gating: the Production row must show real logos even
+     *  when TMDB metadata (or every other metadata source) is off. Logo-only
+     *  — one small details call, memory-cached — so it never fills text, art
+     *  or anything else. Never throws; empty means "keep the initials tiles". */
+    suspend fun companyLogos(item: MediaItem): Map<String, String> = withContext(Dispatchers.IO) {
+        val key = item.uniqueId
+        companyLogoCache[key]?.let { (at, m) ->
+            if (System.currentTimeMillis() - at < COMPANY_LOGO_TTL_MS) return@withContext m
+        }
+        val out = runCatching {
+            val resolved = TmdbResolver.resolve(item) ?: return@runCatching emptyMap<String, String>()
+            val seg = segment(resolved.mediaType)
+            if (seg != "movie" && seg != "tv") return@runCatching emptyMap<String, String>()
+            val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap())
+                ?: return@runCatching emptyMap<String, String>()
+            if (!isTmdbTrusted(item, d, seg)) return@runCatching emptyMap<String, String>()
+            val m = LinkedHashMap<String, String>()
+            for (arrKey in listOf("production_companies", "networks")) {
+                val arr = d.optJSONArray(arrKey) ?: continue
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val logo = o.tmdbPath("logo_path")?.let { IMG + it } ?: continue
+                    val name = o.optString("name").trim()
+                    if (name.isBlank()) continue
+                    m.putIfAbsent(normalizeTitle(name), logo)
+                }
+            }
+            m
+        }.getOrDefault(emptyMap())
+        companyLogoCache[key] = System.currentTimeMillis() to out
+        out
     }
 
     private val NUMERALS = mapOf(
