@@ -8903,17 +8903,25 @@ class PlayerActivity : ComponentActivity() {
                 if (still.isNullOrBlank()) return
                 if (attempt > 0 && !iv.isAttachedToWindow) return
                 runCatching {
+                    // Alternate art (title art, or the episode's own still when
+                    // the row started on title art): used only after the two
+                    // retries below are exhausted. It is loaded as a fresh
+                    // request — Coil's Builder.error() only takes drawables,
+                    // not another data model.
                     val errUrl = (titleArts + listOfNotNull(epStill))
                         .firstOrNull { it != still && it.isNotBlank() }
-                    val errModel = errUrl?.let { PosterLoader.model(it) }
                     val base = (PosterLoader.cellModel(still, thumbW, thumbH)
                         ?: PosterLoader.model(still))?.let {
                         (it as? ImageRequest)?.newBuilder()
                             ?: ImageRequest.Builder(this@PlayerActivity).data(it)
                     } ?: return@runCatching
-                    if (errModel != null) base.error(errModel)
                     base.listener(onError = { _, _ ->
-                        if (attempt < 2) iv.postDelayed({ loadThumb(attempt + 1) }, 1500)
+                        if (attempt < 2) {
+                            iv.postDelayed({ loadThumb(attempt + 1) }, 1500)
+                        } else if (errUrl != null) {
+                            iv.load(PosterLoader.cellModel(errUrl, thumbW, thumbH)
+                                ?: PosterLoader.model(errUrl))
+                        }
                     })
                     iv.load(base.build())
                 }
