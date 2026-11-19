@@ -4487,11 +4487,15 @@ class ContentRepository(private val manager: ProviderManager) {
     private val directTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<Episode>>>()
 
     private suspend fun directTmdbEpisodes(item: MediaItem, tmdbId: Int): List<Episode>? {
-        val key = tmdbId.toString()
+        // TMDB answers in the show's ORIGINAL language when no `language` is
+        // sent (whenever a title has no translation) — that is where raw
+        // foreign-script episode names came from. Ask in the app's language.
+        val epLang = com.hikari.app.nuvio.TmdbResolver.contentLanguage.trim().takeIf { it.isNotBlank() } ?: "en-US"
+        val key = tmdbId.toString() + "|" + epLang
         directTmdbCache[key]?.let { cached ->
             if (System.currentTimeMillis() - cached.first < DIRECT_TMDB_TTL_MS && cached.second.isNotEmpty()) return cached.second
         }
-        val tv = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return null
+        val tv = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId, mapOf("language" to epLang)) ?: return null
         val seasons = tv.optJSONArray("seasons") ?: return null
         val nums = (0 until seasons.length()).mapNotNull { i ->
             val s = seasons.optJSONObject(i) ?: return@mapNotNull null
@@ -4502,7 +4506,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val rows = coroutineScope {
             nums.map { sn ->
                 async(Dispatchers.IO) {
-                    val sd = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId + "/season/" + sn, emptyMap())
+                    val sd = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId + "/season/" + sn, mapOf("language" to epLang))
                         ?: return@async emptyList<Episode>()
                     val eps = sd.optJSONArray("episodes") ?: return@async emptyList<Episode>()
                     buildList {
@@ -4767,7 +4771,20 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (fixed !== it) {
                     synchronized(episodeCache) { episodeCache[epsKey] = fixed }
                 }
-                return@withContext fixed
+                // A cold first open can cache rows before machine translation
+                // lands (budget expiry), freezing foreign-script names for the
+                // rest of the session: re-run the leftover pass — cached
+                // translations make it cheap — and persist the healed list
+                // when it changes anything.
+                val healed = runCatching {
+                    withTimeoutOrNull(4_000L) { translateLeftoverNames(item, fixed) }
+                }.getOrNull() ?: fixed
+                if (healed !== fixed) {
+                    publish(healed)
+                    synchronized(episodeCache) { episodeCache[epsKey] = healed }
+                    MetaCache.putEpisodes(epsKey, healed)
+                }
+                return@withContext healed
             }
         }
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
@@ -5194,6 +5211,34 @@ class ContentRepository(private val manager: ProviderManager) {
                 "Meta",
                 "translated ${needIdx.size} leftover foreign-script episode name(s) for \"${item.title.take(60)}\"",
             )
+        }
+        return genericizeFutureForeignNames(showName, if (changed) out else eps)
+    }
+
+    /** Unreleased episodes whose names are still foreign-script after every
+     *  naming + translation leg ran (TMDB has no English title for unaired
+     *  rows yet, and machine translation had nothing usable to echo): show
+     *  the bare season/episode number instead of a script the user cannot
+     *  read. Only future-dated rows are touched — aired rows with a failed
+     *  translation keep their text, so a transient outage can never wipe
+     *  real names. Same English-content-language gate as the caller. */
+    private fun genericizeFutureForeignNames(showName: String, eps: List<Episode>): List<Episode> {
+        if (eps.isEmpty()) return eps
+        val c = java.util.Calendar.getInstance()
+        val today = "%04d-%02d-%02d".format(
+            c.get(java.util.Calendar.YEAR),
+            c.get(java.util.Calendar.MONTH) + 1,
+            c.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+        var changed = false
+        val out = eps.map { e ->
+            val rel = e.released?.take(10).orEmpty()
+            if (!e.name.isNullOrBlank() && rel.length == 10 && rel > today &&
+                com.hikari.app.nuvio.EpisodeTitles.needsEnglish(e.name, showName)
+            ) {
+                changed = true
+                e.copy(name = null)
+            } else e
         }
         return if (changed) out else eps
     }

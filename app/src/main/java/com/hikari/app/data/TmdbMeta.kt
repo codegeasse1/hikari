@@ -367,19 +367,37 @@ object TmdbMeta {
         return best?.let { it to null }
     }
 
-    /** TMDB's "similar" titles for [item] (same genre/vibe). */
-    suspend fun similar(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
+    /** TMDB's "similar" titles for [item] (same genre/vibe). [resolvedHint]
+     *  skips the fuzzy search when a trusted shelf doc already named the
+     *  TMDB row (see [MetaSources.resolveForShelves]). */
+    suspend fun similar(
+        item: MediaItem,
+        limit: Int = 18,
+        resolvedHint: TmdbResolver.Resolved? = null,
+    ): List<MediaItem> =
+        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit, resolvedHint) else emptyList()
 
-    /** TMDB's "recommendations" for [item] (what people watched next). */
-    suspend fun related(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
+    /** TMDB's "recommendations" for [item] (what people watched next).
+     *  [resolvedHint] skips the fuzzy search when a trusted shelf doc
+     *  already named the TMDB row (see [MetaSources.resolveForShelves]). */
+    suspend fun related(
+        item: MediaItem,
+        limit: Int = 18,
+        resolvedHint: TmdbResolver.Resolved? = null,
+    ): List<MediaItem> =
+        if (runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true) && runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit, resolvedHint) else emptyList()
 
-    private suspend fun shelf(item: MediaItem, kind: String, limit: Int): List<MediaItem> {
+    private suspend fun shelf(
+        item: MediaItem,
+        kind: String,
+        limit: Int,
+        resolvedHint: TmdbResolver.Resolved? = null,
+    ): List<MediaItem> {
         // Anime pick: TMDB's shelves would list the mistranslated title's
         // neighbours (other sitcoms for a donghua), not anime.
         if (runCatching { DonghuaDetails.pick(item) }.getOrNull() is DonghuaDetails.Pick.Anime) return emptyList()
-        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return emptyList()
+        val resolved = resolvedHint
+            ?: runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return emptyList()
         val seg = segment(resolved.mediaType)
         val data = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}/$kind", emptyMap())
             ?: return emptyList()
@@ -428,7 +446,10 @@ object TmdbMeta {
     /** A trailer with its sort rank, so the ranking logic stays readable. */
     private data class ScoredTrailer(val score: Int, val trailer: Trailer)
 
-    suspend fun extras(item: MediaItem): TitleExtras? {
+    /** Full TMDB shelf bundle (details, cast, trailers, companies). [resolvedHint]
+     *  skips the fuzzy search when a trusted shelf doc already named the
+     *  TMDB row (see [MetaSources.resolveForShelves]). */
+    suspend fun extras(item: MediaItem, resolvedHint: TmdbResolver.Resolved? = null): TitleExtras? {
         // TMDB master toggle no longer gates modules: each module toggle decides alone.
         val useTrailers = runCatching { HikariApp.instance.store.tmdbModule("trailers") }.getOrDefault(true)
         val useDetails = runCatching { HikariApp.instance.store.tmdbModule("details") }.getOrDefault(true)
@@ -485,7 +506,9 @@ object TmdbMeta {
         // TMDB off (master or per-kind toggle) means no TMDB network at all:
         // the anime/TVDB fallbacks below still answer, TMDB simply doesn't.
         val tmdbAllowed = runCatching { MetaSources.tmdbOn(item) }.getOrDefault(true)
-        val resolved = if (tmdbAllowed) runCatching { TmdbResolver.resolve(item) }.getOrNull() else null
+        val resolved = if (tmdbAllowed) {
+            resolvedHint ?: runCatching { TmdbResolver.resolve(item) }.getOrNull()
+        } else null
         if (resolved == null) return animeFallback()
         val seg = segment(resolved.mediaType)
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"

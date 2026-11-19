@@ -1,4 +1,10 @@
 
+## 0.12.124
+
+- Detail shelves are source-agnostic now: trailers, cast, production, logos, similar and recommendations merge across every enabled metadata leg (Aio plus all installed metadata addons plus TMDB) instead of first-doc-wins, so turning any one source off no longer blanks rows the others could fill — and a newly installed metadata addon feeds every row automatically with no per-row wiring
+- TMDB legs resolve from an id any trusted metadata doc already knows (Aio/Cinemeta TMDB and IMDb ids) before falling back to fuzzy title search, so a wrong origin-side numeric id (the reported Odyssey case, where the origin's id pointed at an unrelated title) no longer kills trailers, production and similar when Aio is off; Logs now carry a one-line shelf diagnostic (which legs ran, what resolved, what filled) so any future miss is provable instead of guesswork
+- Unreleased episodes no longer keep unreadable foreign-script names: the direct episode fetch asks TMDB in the app's language instead of the show's original, cached lists are re-checked for leftover translation when opened, and still-foreign names on future-dated episodes fall back to the bare episode number instead of a script the user cannot read
+
 ## 0.12.123
 
 - Phantom episode rows are gone: when the resolved TMDB title knows fewer episodes than the origin lists (the reported 11-row list for 8-episode TMDB 291507), rows past TMDB's count that no source vouched for (no overview, date, rating or runtime) are dropped instead of shown with raw foreign text — any row with details from any source always survives, so a genuinely new episode is never trimmed

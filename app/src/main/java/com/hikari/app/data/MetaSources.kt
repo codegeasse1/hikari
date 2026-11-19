@@ -145,88 +145,275 @@ object MetaSources {
         }
 
     /**
-     * The winning full `/meta` document for the detail shelves (cast,
-     * production, trailers, similar): Aio first, then installed metadata
-     * addons in provider order, first trusted hit wins. Returns the source
-     * name, the doc, and the winning addon's provider id ("" for Aio).
-     * Never throws; null means no addon answered.
+     * One trusted `/meta` document for the detail shelves. Aio first, then
+     * every enabled installed addon in provider order — ALL trusted docs are
+     * kept (see [addonExtrasDocs]/[addonSimilarDocs]), so every row is a
+     * union across sources instead of winner-takes-all: any single source
+     * going dark (or never installed) can no longer blank a row, and a newly
+     * installed metadata source feeds every row with no per-row wiring.
+     * Never throws; empty means no source answered.
+     */
+    data class ShelfDoc(val source: String, val doc: JSONObject, val providerId: String)
+
+    suspend fun allDocs(
+        item: MediaItem,
+        addons: List<StremioAddon>,
+    ): List<ShelfDoc> = withContext(Dispatchers.IO) {
+        val out = ArrayList<ShelfDoc>(addons.size + 1)
+        runCatching {
+            withTimeoutOrNull(2_500L) { AioMetadata.meta(item) }
+        }.getOrNull()?.let { doc ->
+            if (isTrustedDoc(item, doc)) out += ShelfDoc("AioMetadata", doc, "")
+        }
+        if (addons.isNotEmpty()) {
+            runCatching {
+                coroutineScope {
+                    val jobs = addons.map { addon ->
+                        async {
+                            withTimeoutOrNull(3_000L) {
+                                for (id in metaIdCandidates(item)) {
+                                    val doc = addon.fetchMetaDoc(typeSegs(item).first(), id)
+                                        ?: continue
+                                    if (isTrustedDoc(item, doc)) return@withTimeoutOrNull doc
+                                }
+                                null
+                            }
+                        }
+                    }
+                    for (i in addons.indices) {
+                        val doc = runCatching { jobs[i].await() }.getOrNull()
+                        if (doc != null) {
+                            val a = addons[i]
+                            out += ShelfDoc(
+                                a.config.name.ifBlank { a.config.id },
+                                doc,
+                                a.config.id,
+                            )
+                        }
+                    }
+                    jobs.forEach { runCatching { it.cancel() } }
+                }
+            }
+        }
+        out
+    }
+
+    /** Merged shelves across every trusted doc (see [allDocs]): cast trailers
+     *  and companies union in provider order, details fill field-wise, so a
+     *  row survives any one doc missing it. Null only when no doc said
+     *  anything at all. */
+    fun addonExtrasDocs(item: MediaItem, docs: List<ShelfDoc>): TitleExtras? {
+        if (docs.isEmpty()) return null
+        var details: TitleDetails? = null
+        val cast = LinkedHashMap<String, CastMember>()
+        val trailers = LinkedHashMap<String, Trailer>()
+        val companies = LinkedHashMap<String, CompanyRef>()
+        var overview: String? = null
+        for ((_, doc, _) in docs) {
+            val p = runCatching { AddonMetaDetails.parse(doc) }.getOrNull() ?: continue
+            details = mergeDetails(details, detailsOf(p))
+            for (m in p.cast) {
+                val k = m.name.trim().lowercase()
+                if (k.isEmpty()) continue
+                val cur = cast[k]
+                cast[k] = if (cur == null) m
+                else cur.copy(character = cur.character ?: m.character, profileUrl = cur.profileUrl ?: m.profileUrl)
+                if (cast.size >= 20) break
+            }
+            for (t in p.trailers) {
+                if (t.youtubeKey.isNotBlank()) trailers.putIfAbsent(t.youtubeKey, t)
+                if (trailers.size >= 12) break
+            }
+            for (c in p.companies) {
+                if (companies.size >= 10) break
+                val k = (if (c.isNetwork) "n" else "c") + "|" + c.id
+                val cur = companies[k]
+                if (cur == null) companies[k] = c
+                else if (cur.logoUrl.isNullOrBlank() && !c.logoUrl.isNullOrBlank()) {
+                    companies[k] = cur.copy(logoUrl = c.logoUrl)
+                }
+            }
+            if (overview.isNullOrBlank()) p.description?.let { overview = it }
+        }
+        val d = details
+        if (d == null && cast.isEmpty() && trailers.isEmpty() && companies.isEmpty() && overview == null) return null
+        return TitleExtras(
+            details = d,
+            cast = cast.values.take(20),
+            trailers = trailers.values.take(12),
+            companies = companies.values.take(10),
+            overview = overview,
+        )
+    }
+
+    /** Similar/recommendation entries concatenated across every trusted doc
+     *  (Aio serves these; plain Cinemeta usually does not), deduped by id. */
+    fun addonSimilarDocs(
+        item: MediaItem,
+        docs: List<ShelfDoc>,
+        limit: Int = 18,
+    ): List<MediaItem> {
+        if (docs.isEmpty()) return emptyList()
+        val out = ArrayList<MediaItem>(limit)
+        val seen = HashSet<String>()
+        for ((_, doc, providerId) in docs) {
+            val list = runCatching {
+                AddonMetaDetails.similar(doc, item, providerId.ifBlank { item.providerId }, limit)
+            }.getOrDefault(emptyList())
+            for (m in list) {
+                if (out.size >= limit) break
+                if (seen.add(m.providerId + "|" + m.id)) out += m
+            }
+            if (out.size >= limit) break
+        }
+        return out
+    }
+
+    /** First title logo across the trusted docs, for the detail hero when
+     *  TMDB — the usual logo source — is off. */
+    fun addonLogoDocs(docs: List<ShelfDoc>): String? {
+        for ((_, doc, _) in docs) {
+            runCatching { AddonMetaDetails.parse(doc).logo }.getOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * A TMDB id any trusted shelf doc already knows (Aio's `_tmdbId`, a
+     * `tmdb:`-prefixed doc id, Cinemeta-style `moviedb_id`), so the TMDB legs
+     * resolve deterministically instead of gambling on a fuzzy title search —
+     * the case that blanked every row when Aio was off while the origin's own
+     * numeric id pointed at an unrelated title. An IMDb id falls back to a
+     * verified `/find` lookup. A direct TMDB hit is unverified here on
+     * purpose: [TmdbMeta]'s trust gate still rejects a wrong-row hit, the
+     * same bar as today's Aio-first resolve.
+     */
+    private fun tmdbHintFromDocs(
+        item: MediaItem,
+        docs: List<ShelfDoc>,
+    ): com.hikari.app.nuvio.TmdbResolver.Resolved? {
+        for ((source, doc, _) in docs) {
+            var id: String? = null
+            val keys = listOf("_tmdbId", "tmdb_id", "tmdbId", "moviedb_id", "themoviedb_id")
+            for (k in keys) {
+                val v = doc.optString(k).trim()
+                if (v.isNotEmpty() && v.all { it.isDigit() }) {
+                    id = v
+                    break
+                }
+            }
+            if (id == null) {
+                val raw = doc.optString("id").trim()
+                if (raw.startsWith("tmdb:", ignoreCase = true) || raw.startsWith("tmdb-", ignoreCase = true)) {
+                    val v = raw.substringAfter(':').substringAfter('-').trim()
+                    if (v.isNotEmpty() && v.all { it.isDigit() }) id = v
+                } else if (source == "AioMetadata" && raw.isNotEmpty() && raw.all { it.isDigit() }) {
+                    id = raw
+                }
+            }
+            if (id != null) {
+                val mt = if (item.type == MediaType.MOVIE) "movie" else "tv"
+                return com.hikari.app.nuvio.TmdbResolver.Resolved(id, mt)
+            }
+            for (k in listOf("imdb_id", "imdbId")) {
+                val tt = doc.optString(k).trim()
+                if (tt.startsWith("tt", ignoreCase = true) && tt.length >= 8) {
+                    runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item.copy(id = tt)) }
+                        .getOrNull()?.let { return it }
+                }
+            }
+        }
+        return null
+    }
+
+    /** TMDB identity for the shelves: a doc-known id first, fuzzy search
+     *  last. Never throws; null means TMDB cannot identify this title. */
+    suspend fun resolveForShelves(
+        item: MediaItem,
+        docs: List<ShelfDoc>,
+    ): com.hikari.app.nuvio.TmdbResolver.Resolved? {
+        if (docs.isNotEmpty()) {
+            runCatching { tmdbHintFromDocs(item, docs) }.getOrNull()?.let { return it }
+        }
+        return runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+    }
+
+    private fun detailsOf(p: AddonMetaDetails.ParsedMeta): TitleDetails? {
+        val d = TitleDetails(
+            runtimeMinutes = p.runtimeMinutes,
+            director = p.director,
+            writers = p.writers,
+            imdbId = p.imdbId,
+            rating = p.imdbRating,
+            year = p.year,
+        )
+        return d.takeIf {
+            d.runtimeMinutes != null || d.director != null || d.writers.isNotEmpty() ||
+                d.imdbId != null || d.rating != null || d.year != null
+        }
+    }
+
+    private fun mergeDetails(a: TitleDetails?, b: TitleDetails?): TitleDetails? {
+        if (a == null) return b
+        if (b == null) return a
+        return TitleDetails(
+            status = a.status ?: b.status,
+            runtimeMinutes = a.runtimeMinutes ?: b.runtimeMinutes,
+            year = a.year ?: b.year,
+            rating = a.rating ?: b.rating,
+            voteCount = a.voteCount ?: b.voteCount,
+            certification = a.certification ?: b.certification,
+            country = a.country ?: b.country,
+            language = a.language ?: b.language,
+            releaseDate = a.releaseDate ?: b.releaseDate,
+            director = a.director ?: b.director,
+            writers = if (a.writers.isNotEmpty()) a.writers else b.writers,
+            imdbId = a.imdbId ?: b.imdbId,
+            genres = if (a.genres.isNotEmpty()) a.genres else b.genres,
+        )
+    }
+
+    /**
+     * First trusted `/meta` document for the detail shelves (Aio first, then
+     * installed metadata addons in provider order). Kept for single-doc
+     * callers; the shelves themselves merge across [allDocs] (see
+     * [addonExtrasDocs]/[addonSimilarDocs]). Never throws; null means no
+     * addon answered.
      */
     suspend fun winningDoc(
         item: MediaItem,
         addons: List<StremioAddon>,
     ): Triple<String, JSONObject, String>? = withContext(Dispatchers.IO) {
-        val aioDoc = runCatching {
-            withTimeoutOrNull(2_500L) { AioMetadata.meta(item) }
-        }.getOrNull()
-        if (aioDoc != null && isTrustedDoc(item, aioDoc)) {
-            return@withContext Triple("AioMetadata", aioDoc, "")
-        }
-        val base = item
-        runCatching {
-            coroutineScope {
-                val jobs = addons.map { addon ->
-                    async {
-                        withTimeoutOrNull(3_000L) {
-                            for (id in metaIdCandidates(base)) {
-                                val doc = addon.fetchMetaDoc(typeSegs(base).first(), id)
-                                    ?: continue
-                                if (isTrustedDoc(base, doc)) return@withTimeoutOrNull doc
-                            }
-                            null
-                        }
-                    }
-                }
-                var win: Triple<String, JSONObject, String>? = null
-                for (i in addons.indices) {
-                    val doc = runCatching { jobs[i].await() }.getOrNull()
-                    if (doc != null) {
-                        val a = addons[i]
-                        win = Triple(
-                            a.config.name.ifBlank { a.config.id },
-                            doc,
-                            a.config.id,
-                        )
-                        break
-                    }
-                }
-                jobs.forEach { runCatching { it.cancel() } }
-                win
-            }
-        }.getOrNull()
+        runCatching { allDocs(item, addons) }.getOrDefault(emptyList())
+            .firstOrNull()?.let { Triple(it.source, it.doc, it.providerId) }
     }
 
-    /** Detail shelves from the addon legs: cast, director, trailers,
-     *  production, runtime, IMDb id — works with TMDB off, because the doc
-     *  itself (Aio aggregates TMDB server-side) already carries them. */
+    /** Detail shelves merged across every trusted addon-leg doc (see
+     *  [addonExtrasDocs]): cast, director, trailers, production, runtime,
+     *  IMDb id — works with TMDB off, because the docs themselves (Aio
+     *  aggregates TMDB server-side) already carry them. */
     suspend fun addonExtras(item: MediaItem, addons: List<StremioAddon>): TitleExtras? {
-        val (_, doc, _) = runCatching { winningDoc(item, addons) }.getOrNull() ?: return null
-        return runCatching { AddonMetaDetails.toExtras(AddonMetaDetails.parse(doc)) }.getOrNull()
+        val docs = runCatching { allDocs(item, addons) }.getOrDefault(emptyList())
+        return addonExtrasDocs(item, docs)
     }
 
-    /** Recommendation/similar entries carried inside the winning addon doc
-     *  (Aio serves these; plain Cinemeta usually does not). */
+    /** Recommendation/similar entries concatenated across every trusted
+     *  addon-leg doc (Aio serves these; plain Cinemeta usually does not). */
     suspend fun addonSimilar(
         item: MediaItem,
         addons: List<StremioAddon>,
         limit: Int = 18,
     ): List<MediaItem> {
-        val (_, doc, providerId) = runCatching { winningDoc(item, addons) }.getOrNull()
-            ?: return emptyList()
-        return runCatching {
-            AddonMetaDetails.similar(
-                doc,
-                item,
-                providerId.ifBlank { item.providerId },
-                limit,
-            )
-        }.getOrDefault(emptyList())
+        val docs = runCatching { allDocs(item, addons) }.getOrDefault(emptyList())
+        return addonSimilarDocs(item, docs, limit)
     }
 
-    /** Title logo from the addon legs (Aio/Cinemeta `logo`), for the detail
-     *  hero when TMDB — the usual logo source — is off. */
+    /** First title logo across the trusted addon-leg docs (Aio/Cinemeta
+     *  `logo`), for the detail hero when TMDB — the usual logo source — is
+     *  off. */
     suspend fun addonLogo(item: MediaItem, addons: List<StremioAddon>): String? {
-        val (_, doc, _) = runCatching { winningDoc(item, addons) }.getOrNull() ?: return null
-        return runCatching { AddonMetaDetails.parse(doc).logo }.getOrNull()
+        val docs = runCatching { allDocs(item, addons) }.getOrDefault(emptyList())
+        return addonLogoDocs(docs)
     }
 
     private suspend fun trustedPatch(addon: StremioAddon, item: MediaItem): MetaPatch? {        for (id in metaIdCandidates(item)) {

@@ -1180,16 +1180,31 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // The addon legs answer in parallel: Aio's meta doc carries
             // cast/trailers inline, so shelves fill even with TMDB off; studios
             // rarely ride the Stremio doc, so TMDB backfills the Production row.
-            val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item) }.getOrNull() else null
+            // Universal shelves: every enabled metadata leg contributes. The
+            // trusted docs are fetched once and shared: doc-known TMDB/IMDb
+            // ids let the TMDB legs resolve deterministically (no fuzzy
+            // gamble on a wrong origin-side id), and the addon rows below
+            // merge across ALL docs — any single source going dark can no
+            // longer blank a row. A newly installed metadata addon feeds
+            // every row with no per-row wiring.
+            val docs = if (externalOn && !fastPass) {
+                runCatching {
+                    com.hikari.app.data.MetaSources.allDocs(item, metaAddons)
+                }.getOrDefault(emptyList())
+            } else emptyList()
+            val resolved = if (tmdbOk) runCatching {
+                com.hikari.app.data.MetaSources.resolveForShelves(item, docs)
+            }.getOrNull() else null
+            val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item, resolved) }.getOrNull() else null
             val addonEx = if (externalOn && !fastPass) {
                 runCatching {
-                    com.hikari.app.data.MetaSources.addonExtras(item, metaAddons)
+                    com.hikari.app.data.MetaSources.addonExtrasDocs(item, docs)
                 }.getOrDefault(null)
             } else null
             if (shelvesGen == shelvesGeneration) _addonLogo.value =
                 if (externalOn && !fastPass) {
                     runCatching {
-                        com.hikari.app.data.MetaSources.addonLogo(item, metaAddons)
+                        com.hikari.app.data.MetaSources.addonLogoDocs(docs)
                     }.getOrDefault(null)
                 } else null
             val merged = mergeShelfExtras(addonEx, ex, item)
@@ -1241,17 +1256,25 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 return@withContext
             }
             _relatedFromPlugin.value = false
-            val rel = if (tmdbOk) runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList()) else emptyList()
+            val rel = if (tmdbOk) runCatching { TmdbMeta.related(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _related.value = rel
-            var sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
-            // Addon recommendations (Aio serves these inside its meta doc):
-            // fill the Similar row when TMDB is off or answered nothing.
+            var sim = if (tmdbOk) runCatching { TmdbMeta.similar(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
+            // Addon recommendations (Aio serves these inside its meta doc,
+            // merged across every trusted doc now): fill the Similar row
+            // when TMDB is off or answered nothing.
             if (sim.isEmpty() && externalOn && !fastPass) {
                 sim = runCatching {
-                    com.hikari.app.data.MetaSources.addonSimilar(item, metaAddons)
+                    com.hikari.app.data.MetaSources.addonSimilarDocs(item, docs)
                 }.getOrDefault(emptyList())
             }
             if (shelvesGen == shelvesGeneration) _similar.value = sim
+            if (!fastPass) {
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "shelves \"${item.title.take(50)}\" tmdbOk=$tmdbOk docs=${docs.size} " +
+                        "resolved=${resolved?.tmdbId ?: "-"} ex=${ex != null} rel=${rel.size} sim=${sim.size}",
+                )
+            }
             if (recSrc == "both") {
                 // Plugin titles the TMDB lists already cover add nothing.
                 val seen = rel.mapTo(HashSet()) { it.uniqueId }
