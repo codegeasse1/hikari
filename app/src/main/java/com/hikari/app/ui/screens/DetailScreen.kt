@@ -643,13 +643,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // only — names, order and the rest stay exactly as they are).
             // Compared punctuation/case-insensitively, because the two
             // sides punctuate the same studio differently.
-            fun normName(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
             companies = (addon.companies + tmdb.companies)
                 .distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }
                 .map { c ->
                     if (!c.logoUrl.isNullOrBlank()) c
-                    else tmdb.companies.firstOrNull {
-                        it.name.isNotBlank() && normName(it.name) == normName(c.name) && !it.logoUrl.isNullOrBlank()
+                    else tmdb.companies.firstOrNull { t ->
+                        t.name.isNotBlank() && !t.logoUrl.isNullOrBlank() &&
+                            t.name.lowercase().filter { ch -> ch.isLetterOrDigit() }
+                                .takeIf { n -> n.isNotEmpty() } ==
+                            c.name.lowercase().filter { ch -> ch.isLetterOrDigit() }
                     }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
                 }
                 .take(10),
