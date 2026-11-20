@@ -202,14 +202,61 @@ jobs:
 
       - name: Run unit tests
         run: |
-          set -e
-          gradle :app:testDebugUnitTest --no-daemon --console=plain \
-            -Dorg.gradle.internal.http.connectionTimeout=30000 \
-            -Dorg.gradle.internal.http.socketTimeout=60000
-          echo "==== unit test results ===="
-          grep -h "<testsuite " app/build/test-results/testDebugUnitTest/*.xml | sed -E 's/.*name="([^"]+)" tests="([0-9]+)" skipped="([0-9]+)" failures="([0-9]+)" errors="([0-9]+)".*/\1: tests=\2 skipped=\3 failures=\4 errors=\5/' || true
-          if grep -l -E 'failures="[1-9]|errors="[1-9]' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null; then
-            echo "::error::Unit tests failed - see the summary above and the test report."
+          # Cold-start downloads (Maven Central 429s/stalls) get retries like
+          # the APK build below — one failed attempt is not proof of a broken
+          # test. Results are reported as workflow annotations (::notice:: /
+          # ::error::), so a failure carries its own diagnostics even when the
+          # full log cannot be downloaded.
+          attempt=0
+          ok=0
+          while [ "$attempt" -lt 3 ]; do
+            attempt=$((attempt+1))
+            echo "==== unit tests, attempt $attempt/3 ===="
+            if gradle :app:testDebugUnitTest --no-daemon --console=plain \
+              -Dorg.gradle.internal.http.connectionTimeout=30000 \
+              -Dorg.gradle.internal.http.socketTimeout=60000 \
+              > "gradle-test-$attempt.log" 2>&1; then
+              ok=1
+              break
+            fi
+            echo "attempt $attempt exited $?"
+            tail -n 30 "gradle-test-$attempt.log" || true
+            sleep 20
+          done
+          python3 - <<'PYEOF'
+          import glob
+          import xml.etree.ElementTree as ET
+          files = sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml'))
+          if not files:
+              print('::error::No test-result XMLs were produced by the test task.')
+          else:
+              total = fails = errs = skipped = 0
+              bad = []
+              for fp in files:
+                  try:
+                      r = ET.parse(fp).getroot()
+                  except Exception as ex:
+                      print('::error::Could not parse %s: %s' % (fp, str(ex)[:200]))
+                      continue
+                  total += int(r.get('tests', 0))
+                  fails += int(r.get('failures', 0))
+                  errs += int(r.get('errors', 0))
+                  skipped += int(r.get('skipped', 0))
+                  for tc in r.iter('testcase'):
+                      for res in list(tc):
+                          if res.tag in ('failure', 'error'):
+                              txt = res.get('message') or (res.text or '')
+                              bad.append('%s.%s: %s' % (
+                                  tc.get('classname', '?'), tc.get('name', '?'), txt[:1500]))
+              print('::notice::Unit tests: %d tests, %d failures, %d errors, %d skipped (%d classes)' % (
+                  total, fails, errs, skipped, len(files)))
+              for m in bad[:10]:
+                  print('::error::' + m.replace('\r', '').replace('\n', '%0A'))
+          PYEOF
+          if [ "$ok" -ne 1 ]; then
+            # No XMLs (compile/config error) or all attempts flaked: attach
+            # the Gradle tail so the cause is visible in the annotations.
+            tail -n 60 "gradle-test-$attempt.log" 2>/dev/null | tr '\n' '|' | cut -c1-8000 | sed 's/^/::error::gradle: /' || true
             exit 1
           fi
 
@@ -368,7 +415,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: gradle-build.log
+          path: |
+            gradle-build.log
+            gradle-test-*.log
           if-no-files-found: ignore
 
       - name: Upload APKs
