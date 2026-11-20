@@ -807,6 +807,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _streamError.value = null
             _episodes.value = null
             _episodesLoaded.value = false
+            _episodesLoading.value = false
+            _episodesFailed.value = false
             _related.value = emptyList()
             _similar.value = emptyList()
             _relatedFromPlugin.value = false
@@ -1024,13 +1026,16 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadEpisodesFor(item: MediaItem, gen: Int): List<Episode> {
         // A movie (or an item whose type is still unknown) has no episode list
         // to retry — one ask, and its answer stands.
-        // episodesFor() already performs a bounded parallel fallback. Repeating
-        // that whole sweep three times could keep the page in "Loading episodes…"
-        // for minutes; the explicit Try again action is the retry path.
-        val tries = 1
+        // Series get ONE bounded second chance, and only when the first ask
+        // looks transient: it threw, or it came back empty fast (a cold-cache
+        // race, not an exhausted sweep). A first ask that ran the full sweep
+        // and still found nothing settles immediately with the retry button —
+        // re-running an exhausted 50s sweep is exactly "stuck on searching".
+        val tries = 2
         var got: List<Episode> = emptyList()
         for (attempt in 1..tries) {
             val at = System.currentTimeMillis()
+            var threw = false
             got = try {
                 repo.episodesFor(item) { partial ->
                     if (partial.isNotEmpty() && gen == episodeGeneration) {
@@ -1040,6 +1045,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             } catch (c: kotlinx.coroutines.CancellationException) {
                 throw c
             } catch (t: Throwable) {
+                threw = true
                 com.hikari.app.data.Logs.log(
                     "Episodes",
                     "\"${item.title}\" episode list threw on attempt $attempt " +
@@ -1059,13 +1065,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _episodesFailed.value = false
                 return got
             }
+            val elapsed = System.currentTimeMillis() - at
             com.hikari.app.data.Logs.log(
                 "Episodes",
                 "\"${item.title}\": no episode list on attempt $attempt of $tries " +
-                    "(${System.currentTimeMillis() - at}ms, type ${item.type})",
+                    "(${elapsed}ms, type ${item.type})",
             )
             if (gen != episodeGeneration) return got
-            if (attempt < tries) delay(EPISODE_LOAD_PAUSE_MS * attempt)
+            // Second chance only for a fast/transient miss. A slow empty
+            // means the sweep genuinely exhausted its providers — settle now
+            // with the retry button instead of searching twice as long.
+            if (attempt < tries && (threw || elapsed < 20_000L)) delay(EPISODE_LOAD_PAUSE_MS * attempt)
+            else break
         }
         // Empty after every attempt: the extension could not answer. The page
         // says so (and offers a retry) instead of implying the series has none.
@@ -1083,11 +1094,16 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  pack switch (which is a different list, not a filter over the old one). */
     private fun reloadEpisodes() {
             // Movies never load episodes: answer instantly so movies never spin on Loading episodes.
-            if (_meta.value?.type == MediaType.MOVIE) { _episodesLoading.value = false; _episodesLoaded.value = true; return }
+            if (_meta.value?.type == MediaType.MOVIE) { _episodesLoading.value = false; _episodesLoaded.value = true; _episodesFailed.value = false; return }
         val item = _meta.value ?: return
         episodeRetryJob?.cancel()
         episodeRetryJob = viewModelScope.launch {
+            // A fresh lookup is NOT a settled empty page: clear the finished
+            // flags first, or the UI keeps rendering the old final text
+            // ("No episode list available" needs loaded && !loading) mid-load.
             _episodesLoading.value = true
+            _episodesLoaded.value = false
+            _episodesFailed.value = false
             val gen = newEpisodeGeneration()
             try {
                 val list = loadEpisodesFor(item, gen)

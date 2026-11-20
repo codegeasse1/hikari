@@ -13651,14 +13651,16 @@ class PlayerActivity : ComponentActivity() {
         val variantMap = HashMap<Int, Int>()
         audioVariantsFor(currentIndex).forEach { (label, index, tagged) ->
             variantMap[options.size] = index
+            val donorActive = index == dualAudioIndex
             options.add(
                 GlassOption(
                     label = label,
                     sub = if (index == currentIndex) I18n.t("Playing now \u2014 %s").replace("%s", sources[index].name)
+                    else if (donorActive) I18n.t("Sound playing \u2014 tap to stop")
                     else if (tagged) sources[index].name
                     else I18n.t("Audio language unknown \u2014 tap for its sound"),
-                    badge = I18n.t("Server"),
-                    selected = index == currentIndex,
+                    badge = if (donorActive) I18n.t("Sound") else I18n.t("Server"),
+                    selected = index == currentIndex || donorActive,
                 )
             )
         }
@@ -14140,10 +14142,79 @@ class PlayerActivity : ComponentActivity() {
             ).show()
             return
         }
+        val videoIndex = currentIndex
+        val src = sources[audioIndex]
+        stopDualAudio()
+        Toast.makeText(
+            this,
+            I18n.t("Resolving sound from %s…").replace("%s", src.name),
+            Toast.LENGTH_SHORT,
+        ).show()
+        com.hikari.app.data.Logs.log("Player", "dual audio resolving \"${src.name}\"")
+        lifecycleScope.launch {
+            // Same classification the video path uses (see [probeAndPlay]):
+            // landing-page URLs (HubCloud/Cinejoy wrappers, text/html per
+            // Probe lines) must be resolved to direct media BEFORE the second
+            // ExoPlayer sees them — handing it the raw page is exactly what
+            // produced the extractor errors / silent no-sound donors.
+            val isCs3Audio = src.providerId.startsWith("cs3|")
+            val clean = if (isCs3Audio) sanitizeHeaders(src.headers)
+                else withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+            val base = if (isCs3Audio) clean
+                else loopbackQueryHeaders(src.url).let { if (it.isEmpty() || !isLoopbackHost(src.url)) clean else it + clean }
+            if (isCs3Audio) {
+                runCatching { com.hikari.app.cs3.Cs3MainApiProvider.warmPlaybackSession(src.url, clean) }
+            }
+            val ua = uaFor(base)
+            val cached = StreamProbe.cached(src.url)
+            val resolved = cached ?: runCatching {
+                withTimeoutOrNull(15_000L) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        StreamProbe.resolve(src.url, base + mapOf("User-Agent" to ua))
+                    }
+                }
+            }.getOrNull()
+            if (isFinishing || isDestroyed) return@launch
+            if (player == null || currentIndex != videoIndex) return@launch
+            if (resolved != null) {
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "dual audio resolved \"${src.name}\" mime=${resolved.mime ?: "-"}",
+                )
+                val list = sources.toMutableList()
+                val cur = list.getOrNull(audioIndex)
+                if (cur != null) {
+                    list[audioIndex] = StreamProbe.apply(cur.toStreamSource(), resolved).toPlayerSource()
+                    sources = list
+                    notifySourcesChanged()
+                }
+            } else {
+                // Unresolved: the main path still hands ExoPlayer the raw URL
+                // (it follows redirects itself), so the donor gets the same
+                // chance — but a wrapper page usually fails, and the failure
+                // surfaces as a toast instead of silence (see below).
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "dual audio unresolved \"${src.name}\" — trying raw URL",
+                )
+            }
+            val donor = sources.getOrNull(audioIndex) ?: return@launch
+            attachDualAudioPlayer(donor, audioIndex)
+        }
+    }
+
+    /** Builds the second (audio-only) ExoPlayer for an already-resolved donor
+     *  source. Split out of [startDualAudio] so the resolve step above stays
+     *  readable. A fatal donor error releases the pair and gives the video
+     *  its sound back — never a muted picture with dead sound. */
+    private fun attachDualAudioPlayer(src: PlayerSource, audioIndex: Int) {
+        val primary = player ?: return
+        if (audioIndex !in sources.indices || audioIndex == currentIndex) return
         stopDualAudio()
         try {
-            val src = sources[audioIndex]
-            val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+            val isCs3Attach = src.providerId.startsWith("cs3|")
+            val cleanHeaders = if (isCs3Attach) sanitizeHeaders(src.headers)
+                else withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
             val ua = cleanHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
             // Same CloudStream parity as the main path below (CS3-only): shared
             // app.baseClient plus the provider's video interceptor when declared.
@@ -14201,6 +14272,9 @@ class PlayerActivity : ComponentActivity() {
                             I18n.t("Dual audio failed: %s").replace("%s", rootMessage(error).take(120)),
                             Toast.LENGTH_LONG,
                         ).show()
+                        // A dead donor must never leave a muted picture behind:
+                        // release it and give the video its sound back.
+                        if (dualAudioIndex == audioIndex) stopDualAudio()
                     }
                 }
             })
@@ -14350,9 +14424,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Offers the second server's embedded audio languages once per pairing.
-     *  A "Multi-Audio" server is one muxed stream with Hindi / English /
-     *  French inside it — without this the Audio sheet only says "selected
-     *  multi" and there is no language to pick. */
+     *  EVERY donor gets its track list — Hindi / English / Spanish or just
+     *  the one track it carries — so "Audio only" always answers with what
+     *  the picked server actually has. Zero tracks after resolve means the
+     *  donor failed: toast, release it, and give the video its sound back
+     *  instead of a muted picture. */
     private fun maybeOfferDualTrackPicker(audioIndex: Int) {
         if (dualPickerShownFor == audioIndex) return
         lifecycleScope.launch {
@@ -14369,12 +14445,16 @@ class PlayerActivity : ComponentActivity() {
                 .filter { it.type == C.TRACK_TYPE_AUDIO }
                 .sumOf { it.mediaTrackGroup.length }
             val srcName = sources.getOrNull(audioIndex)?.name.orEmpty()
-            val multi = ServerMeta.isMultiAudio(srcName, "") || count > 1
-            if (!multi) {
-                // Single-language second server: nothing to choose, sound just plays.
-                if (count == 0) {
-                    com.hikari.app.data.Logs.log("Player", "dual audio has no audio tracks (yet) on \"${srcName.take(80)}\"")
+            if (count == 0) {
+                com.hikari.app.data.Logs.log("Player", "dual audio has no audio tracks on \"${srcName.take(80)}\" — releasing")
+                runOnUiThread {
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        I18n.t("That server gave no sound — video sound restored."),
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
+                if (dualAudioIndex == audioIndex) stopDualAudio()
                 return@launch
             }
             dualPickerShownFor = audioIndex
@@ -14405,7 +14485,11 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         if (groups.isEmpty()) {
-            Toast.makeText(this, I18n.t("Second server has no separate audio tracks yet"), Toast.LENGTH_SHORT).show()
+            // Waited and still nothing: the donor failed. Never leave a
+            // muted picture behind — release and restore video sound.
+            com.hikari.app.data.Logs.log("Player", "dual audio donor has no audio tracks — releasing")
+            Toast.makeText(this, I18n.t("That server gave no sound — video sound restored."), Toast.LENGTH_LONG).show()
+            stopDualAudio()
             return
         }
         val rows = mutableListOf<TrackRow>()
@@ -14485,6 +14569,13 @@ class PlayerActivity : ComponentActivity() {
     private fun showDualAudioChoice(audioIndex: Int) {
         if (audioIndex == currentIndex) {
             stopDualAudio()
+            return
+        }
+        // Tapping the active sound donor stops the pairing: sound back on
+        // the video, no dead second player left behind.
+        if (audioIndex == dualAudioIndex) {
+            stopDualAudio()
+            Toast.makeText(this, I18n.t("Dual audio off — sound back on video"), Toast.LENGTH_SHORT).show()
             return
         }
         val audioName = sources.getOrNull(audioIndex)?.name.orEmpty()

@@ -1,4 +1,10 @@
 
+## 0.12.127
+
+- Episode list no longer flashes a false "No episode list available": every lookup resets the finished flags first so the page shows Loading until it really settles, series get one bounded second chance only on fast/transient misses (a full exhausted sweep settles at once with the retry button instead of searching twice as long), partial rows publish as they land, and only a genuinely empty final shows the empty text
+- Dual-server audio resolves the donor like video does: the picked sound server goes through StreamProbe classification first, so landing-page URLs (HubCloud/Cinejoy wrappers that played fine as video but failed as donors) resolve to direct media before the second player starts; unresolved donors still try the raw URL once and fail loudly
+- Picking a server for sound always answers with that server's audio list: every donor opens its embedded track picker (Hindi / English / Spanish / whatever it carries, even a single track), zero-track donors toast and release with video sound restored instead of a muted picture, fatal donor errors unmute the video, and the Audio sheet marks the active sound donor with a Sound badge (tap it to stop)
+
 ## 0.12.126
 
 - Dual-server audio lists every mixable server when the toggle is on: donor rows are no longer limited to servers whose names carry a language word and match the playing release, so a plainly-named Hindi 720p server appears as a donor for sound-under-4K-video; language-tagged servers keep their label and sort first, untagged ones list under their server name, the playing server and torrent/DRM/local streams stay out, and toggle-off behavior is unchanged
