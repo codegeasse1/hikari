@@ -13649,13 +13649,14 @@ class PlayerActivity : ComponentActivity() {
         // Audio languages the extension ships as separate servers, so the
         // language can be switched from HERE and the position kept.
         val variantMap = HashMap<Int, Int>()
-        audioVariantsFor(currentIndex).forEach { (tag, index) ->
+        audioVariantsFor(currentIndex).forEach { (label, index, tagged) ->
             variantMap[options.size] = index
             options.add(
                 GlassOption(
-                    label = tag,
+                    label = label,
                     sub = if (index == currentIndex) I18n.t("Playing now \u2014 %s").replace("%s", sources[index].name)
-                    else sources[index].name,
+                    else if (tagged) sources[index].name
+                    else I18n.t("Audio language unknown \u2014 tap for its sound"),
                     badge = I18n.t("Server"),
                     selected = index == currentIndex,
                 )
@@ -13704,6 +13705,7 @@ class PlayerActivity : ComponentActivity() {
             I18n.t("Audio"),
             options,
             hint = if (variantMap.isEmpty()) I18n.t("Some releases ship more than one audio track.")
+            else if (dualAudioOn) I18n.t("Pick a server for its sound \u2014 video keeps playing.")
             else I18n.t("Pick a language \u2014 some servers carry the audio."),
             iconRes = R.drawable.ic_audio,
         ) { which ->
@@ -14057,8 +14059,10 @@ class PlayerActivity : ComponentActivity() {
      *  emits when it delivers a multi-audio film as several streams. Kept
      *  deliberately conservative: a candidate only counts when at least two
      *  servers reduce to the same base name, so a stray language word can never
-     *  invent a row. Returns (display tag, source index) pairs. */
-    private fun audioVariantsFor(activeIndex: Int): List<Pair<String, Int>> {
+     *  invent a row. Returns (display label, source index, language-known)
+     *  triples — label is the language tag when the name carries one, else
+     *  the server name itself. */
+    private fun audioVariantsFor(activeIndex: Int): List<Triple<String, Int, Boolean>> {
         val activeTag = sources.getOrNull(activeIndex)?.let { audioTagOf(it.name) }
         val activeBase = if (activeTag != null) audioBaseName(sources[activeIndex].name, activeTag) else null
         val candidates = sources.mapIndexedNotNull { i, s ->
@@ -14067,8 +14071,28 @@ class PlayerActivity : ComponentActivity() {
             if (base.length < 3) return@mapIndexedNotNull null
             Triple(i, tag, base)
         }.filter { activeBase == null || it.third == activeBase }
-        if (candidates.size < 2) return emptyList()
-        return candidates.map { (i, tag, _) -> tag.replaceFirstChar { it.uppercase() } to i }
+        if (!dualAudioOn) {
+            if (candidates.size < 2) return emptyList()
+            return candidates.map { (i, tag, _) -> Triple(tag.replaceFirstChar { it.uppercase() }, i, true) }
+        }
+        // Dual-server audio ON: EVERY mixable server is a donor, not just the
+        // name-tagged same-release ones — a Hindi 720p server with a plain
+        // name ("Filemoon 720p") would otherwise never appear, which is
+        // exactly the "only the playing server's audios" report. Tagged
+        // servers keep their language label and sort first; untagged ones
+        // list under their server name (language unknown until the stream
+        // opens — probing every server up front would spin up N players).
+        // The playing server is not its own donor, and torrent/DRM/local
+        // streams can't mix (see [dualAudioUsable]) so they stay out.
+        return sources.mapIndexedNotNull { i, s ->
+            if (i == activeIndex || !dualAudioUsable(i)) return@mapIndexedNotNull null
+            val tag = audioTagOf(s.name)
+            if (tag != null) Triple(tag.replaceFirstChar { it.uppercase() }, i, true)
+            else Triple(s.name, i, false)
+        }.sortedWith(
+            compareByDescending<Triple<String, Int, Boolean>> { it.third }
+                .thenBy { it.first.lowercase() }
+        )
     }
 
     /** Switches to a sibling server that carries a different audio language,

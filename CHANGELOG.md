@@ -1,4 +1,9 @@
 
+## 0.12.126
+
+- Dual-server audio lists every mixable server when the toggle is on: donor rows are no longer limited to servers whose names carry a language word and match the playing release, so a plainly-named Hindi 720p server appears as a donor for sound-under-4K-video; language-tagged servers keep their label and sort first, untagged ones list under their server name, the playing server and torrent/DRM/local streams stay out, and toggle-off behavior is unchanged
+- Cold-open episode misses retry once with warm caches: when every episode leg times out on first contact the pipeline runs a second pass instead of publishing "No episode list available" as final (the reported open-shows-0-reopen-shows-rows), and only a second miss returns empty; the retry is logged
+
 ## 0.12.125
 
 - TMDB enrichment is on by default and now says so where you can see it: the master switch lives in Custom metadata tweaks → Movies & series (it was previously only reachable via Settings search), and all TMDB defaults stay on for fresh installs

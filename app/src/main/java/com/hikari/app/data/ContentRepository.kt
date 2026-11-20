@@ -4763,6 +4763,7 @@ class ContentRepository(private val manager: ProviderManager) {
     private suspend fun episodesForInner(
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
+        isRetry: Boolean = false,
     ): List<Episode>? = withContext(Dispatchers.IO) {
         val detailMem = EpisodeDetailMemory()
         val publish: (List<Episode>) -> List<Episode> = { list ->
@@ -5027,7 +5028,21 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
         }
         val merged = cachedSeasoned?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
-            ?: return@withContext null
+            ?: run {
+                // Cold-open total miss (every leg timed out on first contact —
+                // the reported "Episodes (0), reopen shows rows"): run the
+                // pipeline once more with warm caches instead of publishing
+                // an empty page as final. A second miss returns null for
+                // real, and the tracker's own fallback still runs after.
+                if (!isRetry) {
+                    com.hikari.app.data.Logs.log(
+                        "Meta",
+                        "episodes retry for \"${item.title.take(50)}\" (first pass missed everything)",
+                    )
+                    return@withContext episodesForInner(item, onPartial, true)
+                }
+                return@withContext null
+            }
         val filled = backfillEpisodeDetails(item, publish(merged))
         val out = publish(filled)
         if (out !== merged) {
