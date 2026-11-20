@@ -58,7 +58,7 @@ object TmdbResolver {
         if (allowAio) runCatching { AioMetadata.resolveId(item) }.getOrNull()?.let {
             com.hikari.app.data.Logs.log(
                 "Meta",
-                "resolve \"${item.title.take(50)}\" -> ${it.mediaType}/${it.tmdbId} via aio",
+                "resolve \"${item.title.take(50)}\" -> ${it.mediaType}/${it.id} via aio",
             )
             return Resolved(it.id, it.mediaType)
         }
