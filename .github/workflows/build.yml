@@ -200,66 +200,6 @@ jobs:
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "sherpa-onnx AAR has the Dub classes."
 
-      - name: Run unit tests
-        run: |
-          # Cold-start downloads (Maven Central 429s/stalls) get retries like
-          # the APK build below — one failed attempt is not proof of a broken
-          # test. Results are reported as workflow annotations (::notice:: /
-          # ::error::), so a failure carries its own diagnostics even when the
-          # full log cannot be downloaded.
-          attempt=0
-          ok=0
-          while [ "$attempt" -lt 3 ]; do
-            attempt=$((attempt+1))
-            echo "==== unit tests, attempt $attempt/3 ===="
-            if gradle :app:testDebugUnitTest --no-daemon --console=plain \
-              -Dorg.gradle.internal.http.connectionTimeout=30000 \
-              -Dorg.gradle.internal.http.socketTimeout=60000 \
-              > "gradle-test-$attempt.log" 2>&1; then
-              ok=1
-              break
-            fi
-            echo "attempt $attempt exited $?"
-            tail -n 30 "gradle-test-$attempt.log" || true
-            sleep 20
-          done
-          python3 - <<'PYEOF'
-          import glob
-          import xml.etree.ElementTree as ET
-          files = sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml'))
-          if not files:
-              print('::error::No test-result XMLs were produced by the test task.')
-          else:
-              total = fails = errs = skipped = 0
-              bad = []
-              for fp in files:
-                  try:
-                      r = ET.parse(fp).getroot()
-                  except Exception as ex:
-                      print('::error::Could not parse %s: %s' % (fp, str(ex)[:200]))
-                      continue
-                  total += int(r.get('tests', 0))
-                  fails += int(r.get('failures', 0))
-                  errs += int(r.get('errors', 0))
-                  skipped += int(r.get('skipped', 0))
-                  for tc in r.iter('testcase'):
-                      for res in list(tc):
-                          if res.tag in ('failure', 'error'):
-                              txt = res.get('message') or (res.text or '')
-                              bad.append('%s.%s: %s' % (
-                                  tc.get('classname', '?'), tc.get('name', '?'), txt[:1500]))
-              print('::notice::Unit tests: %d tests, %d failures, %d errors, %d skipped (%d classes)' % (
-                  total, fails, errs, skipped, len(files)))
-              for m in bad[:10]:
-                  print('::error::' + m.replace('\r', '').replace('\n', '%0A'))
-          PYEOF
-          if [ "$ok" -ne 1 ]; then
-            # No XMLs (compile/config error) or all attempts flaked: attach
-            # the Gradle tail so the cause is visible in the annotations.
-            tail -n 60 "gradle-test-$attempt.log" 2>/dev/null | tr '\n' '|' | cut -c1-8000 | sed 's/^/::error::gradle: /' || true
-            exit 1
-          fi
-
       - name: Build APKs (debug + release)
         env:
           GIT_SHA: ${{ github.sha }}
@@ -356,6 +296,70 @@ jobs:
             grep -E "^e: " gradle-build.log | head -n 40 | sed -E 's/^e: (.+): \(([0-9]+), ([0-9]+)\): (.*)/::error file=\1,line=\2,col=\3::\4/' || true
           fi
           exit $code
+
+      # Unit tests run AFTER the APK build on purpose: by now every
+      # dependency the module needs is downloaded and warm, so this step
+      # only ever fetches the tiny junit jar fresh — the cold-start 429s
+      # that used to fail it cannot happen here. A test failure still fails
+      # the job before any APK is collected or published (later steps only
+      # run on success, except the always-on log upload).
+      - name: Run unit tests
+        run: |
+          # Results are reported as workflow annotations (::notice:: /
+          # ::error::), so a failure carries its own diagnostics even when
+          # the full log cannot be downloaded.
+          attempt=0
+          ok=0
+          while [ "$attempt" -lt 3 ]; do
+            attempt=$((attempt+1))
+            echo "==== unit tests, attempt $attempt/3 ===="
+            if gradle :app:testDebugUnitTest --no-daemon --console=plain \
+              -Dorg.gradle.internal.http.connectionTimeout=30000 \
+              -Dorg.gradle.internal.http.socketTimeout=60000 \
+              > "gradle-test-$attempt.log" 2>&1; then
+              ok=1
+              break
+            fi
+            echo "attempt $attempt exited $?"
+            tail -n 30 "gradle-test-$attempt.log" || true
+            sleep 60
+          done
+          python3 - <<'PYEOF'
+          import glob
+          import xml.etree.ElementTree as ET
+          files = sorted(glob.glob('app/build/test-results/testDebugUnitTest/*.xml'))
+          if not files:
+              print('::error::No test-result XMLs were produced by the test task.')
+          else:
+              total = fails = errs = skipped = 0
+              bad = []
+              for fp in files:
+                  try:
+                      r = ET.parse(fp).getroot()
+                  except Exception as ex:
+                      print('::error::Could not parse %s: %s' % (fp, str(ex)[:200]))
+                      continue
+                  total += int(r.get('tests', 0))
+                  fails += int(r.get('failures', 0))
+                  errs += int(r.get('errors', 0))
+                  skipped += int(r.get('skipped', 0))
+                  for tc in r.iter('testcase'):
+                      for res in list(tc):
+                          if res.tag in ('failure', 'error'):
+                              txt = res.get('message') or (res.text or '')
+                              bad.append('%s.%s: %s' % (
+                                  tc.get('classname', '?'), tc.get('name', '?'), txt[:1500]))
+              print('::notice::Unit tests: %d tests, %d failures, %d errors, %d skipped (%d classes)' % (
+                  total, fails, errs, skipped, len(files)))
+              for m in bad[:10]:
+                  print('::error::' + m.replace('\r', '').replace('\n', '%0A'))
+          PYEOF
+          if [ "$ok" -ne 1 ]; then
+            # No XMLs (compile/config error) or all attempts flaked: attach
+            # the Gradle tail so the cause is visible in the annotations.
+            tail -n 60 "gradle-test-$attempt.log" 2>/dev/null | tr '\n' '|' | cut -c1-8000 | sed 's/^/::error::gradle: /' || true
+            exit 1
+          fi
 
       # ---- Split APKs: work out which files this build produced ----
       # The release build now emits one APK per phone processor
