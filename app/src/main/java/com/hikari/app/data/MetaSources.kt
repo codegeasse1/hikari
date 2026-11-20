@@ -82,6 +82,8 @@ object MetaSources {
         bits.append(if (runCatching { s.animeTmdb() }.getOrDefault(true)) "n1" else "n0")
         bits.append(if (runCatching { s.videoAio() }.getOrDefault(true)) "a1" else "a0")
         bits.append(if (runCatching { s.animeAio() }.getOrDefault(true)) "m1" else "m0")
+        bits.append(if (runCatching { s.episodeOrdering() }.getOrDefault(true)) "o1" else "o0")
+        bits.append(if (runCatching { s.tmdbModule("episodes") }.getOrDefault(true)) "e1" else "e0")
         bits.append(runCatching { s.aioBaseUrl() }.getOrDefault("").hashCode().toString(36))
         bits.append(family?.name ?: "?")
         bits.append(runCatching { s.metaFamilyExternal() }.getOrDefault(emptySet()).hashCode().toString(36))

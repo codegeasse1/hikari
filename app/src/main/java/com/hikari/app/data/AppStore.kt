@@ -397,6 +397,10 @@ class AppStore(private val ctx: Context) {
         val VIDEO_TMDB = booleanPreferencesKey("videoMetaTmdb")
         /** AioMetadata first-leg for movies & series. On by default. */
         val VIDEO_AIO = booleanPreferencesKey("videoMetaAio")
+        /** Season & episode ordering: when on, flat season-1 lists may be cut
+         *  into per-season numbering and TMDB may supply a missing list.
+         *  Enrichment (names, images) never depends on this. On by default. */
+        val EPISODE_ORDERING = booleanPreferencesKey("episodeOrdering")
         /** AioMetadata backend endpoint + key (Settings -> Integrations -> Metadata sources). Blank endpoint = Aio legs skip. */
         val AIO_BASE_URL = stringPreferencesKey("aioBaseUrl")
         val AIO_API_KEY = stringPreferencesKey("aioApiKey")
@@ -844,6 +848,9 @@ class AppStore(private val ctx: Context) {
     fun videoAioFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoAio(): Boolean = videoAioFlow().first()
     suspend fun setVideoAio(value: Boolean) { write("VIDEO_AIO") { it[K.VIDEO_AIO] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
+    fun episodeOrderingFlow(): Flow<Boolean> = store.data.map { it[K.EPISODE_ORDERING] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun episodeOrdering(): Boolean = episodeOrderingFlow().first()
+    suspend fun setEpisodeOrdering(value: Boolean) { write("EPISODE_ORDERING") { it[K.EPISODE_ORDERING] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun aioBaseUrlFlow(): Flow<String> = store.data.map { it[K.AIO_BASE_URL].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun aioBaseUrl(): String = aioBaseUrlFlow().first()
     suspend fun setAioBaseUrl(value: String) { write("AIO_BASE_URL") { it[K.AIO_BASE_URL] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }

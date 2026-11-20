@@ -1,4 +1,14 @@
 
+## 0.12.125
+
+- TMDB enrichment is on by default and now says so where you can see it: the master switch lives in Custom metadata tweaks → Movies & series (it was previously only reachable via Settings search), and all TMDB defaults stay on for fresh installs
+- Genre grid no longer bleeds the home page through in Dark Glass UI: the overlay root is opaque in every theme (TV keeps its black page), so cards sit on a solid surface instead of overlapping the hero behind them
+- Production logos fill from TMDB with Aio on: the logo map and the merge now share one company-key form (the old pair — spaced vs spaceless — missed every lookup), and the by-name backfill also matches the spaced title form, so truncated/punctuated variants still lend their logo; addon order and names are untouched
+- Anime identity pipeline is logged end to end: episode opens log incoming id/rawType/category, the Aio leg (ids tried, hit/miss, rows, ms), TMDB resolve (id/type, source, ms) and the winning leg's row count, plus restoreAnimeSeasons before/after — One Piece / Black Clover style mismatches are now provable from one Logs export
+- Kitsu rows resolve exactly: a Kitsu id maps through Kitsu's keyless edge API to MAL/TVDB for Aio (both namespaces the backend answers) and to AniList for the tracker leg, before any TMDB fuzzy search — no key or login needed for Kitsu
+- New Season & episode ordering switch (Custom metadata tweaks → Episodes, on by default): off means addon/provider lists are never renumbered or replaced by TMDB and no silent TMDB list is generated; TMDB enrichment of names/images keeps working either way, and the toggle invalidates cached episode rows immediately
+- Local JVM unit tests guard the pure logic (company-key equality, trust-bar thresholds, dub/sub merge keeping dub release dates) and run in CI on every push
+
 ## 0.12.124
 
 - Detail shelves are source-agnostic now: trailers, cast, production, logos, similar and recommendations merge across every enabled metadata leg (Aio plus all installed metadata addons plus TMDB) instead of first-doc-wins, so turning any one source off no longer blanks rows the others could fill — and a newly installed metadata addon feeds every row automatically with no per-row wiring

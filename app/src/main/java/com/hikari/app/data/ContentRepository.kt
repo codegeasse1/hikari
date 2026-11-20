@@ -4421,6 +4421,12 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = com.hikari.app.providers.ProviderGate.interactive {
+        com.hikari.app.data.Logs.log(
+            "Meta",
+            "episodes for \"${item.title.take(50)}\" id=${item.providerId}|${item.id.take(40)} rawType=${item.rawType} type=${item.type}" +
+                " tracker=${TrackerAnimeResolver.isTrackerAnime(item)}" +
+                " anime=${AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)}",
+        )
         val got = episodesForInner(item, onPartial)
             ?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
         // Addon-leg thumbnails (Aio, then installed metadata addons): a dead
@@ -4440,7 +4446,13 @@ class ContentRepository(private val manager: ProviderManager) {
         if (!final.isNullOrEmpty()) return@interactive final
         val trk = TrackerAnimeResolver.trackerEpisodes(item)
             ?: TrackerAnimeResolver.fallbackEpisodes(item)
-        if (trk != null) restoreAnimeSeasons(item, trk) else null
+        if (trk != null) {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "tracker fallback for \"${item.title.take(50)}\": ${trk.size} rows",
+            )
+            restoreAnimeSeasons(item, trk)
+        } else null
     }
 
     /**
@@ -4624,11 +4636,24 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
+        if (!runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(true)) {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "ordering off: keeping ${episodes.size} rows untouched for \"${item.title.take(50)}\"",
+            )
+            return episodes
+        }
         if (item.type != MediaType.SERIES || episodes.size < 8) return episodes
         if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return episodes
         if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
         val tmdbLayout = runCatching { tmdbSeasonLayout(item) }.getOrDefault(emptyList())
-        splitFlatEpisodes(episodes, tmdbLayout)?.let { return it }
+        splitFlatEpisodes(episodes, tmdbLayout)?.let {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "ordering: flat S1 x${episodes.size} -> ${it.map { e -> e.season }.distinct().size} seasons for \"${item.title.take(50)}\"",
+            )
+            return it
+        }
         return episodes
     }
 
@@ -4804,9 +4829,16 @@ class ContentRepository(private val manager: ProviderManager) {
         // only playable ones, and a foreign list is exactly the "right list,
         // wrong episode plays" report.
         if (!ownsEpisodeNumbering(item) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val aioStart = System.currentTimeMillis()
             val aioEps = runCatching {
                 withTimeoutOrNull(1_500) { AioMetadata.episodes(item) }
             }.getOrNull()
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "aio episodes for \"${item.title.take(50)}\": " +
+                    (if (aioEps == null) "miss/timeout" else "${aioEps.size} rows S${aioEps.minOfOrNull { it.season }}-S${aioEps.maxOfOrNull { it.season }}") +
+                    " in ${System.currentTimeMillis() - aioStart}ms",
+            )
             if (!aioEps.isNullOrEmpty()) {
                 val aioSorted = aioEps.sortedWith(compareBy({ it.season }, { it.number }))
                 val aioTranslated = publish(translateEpisodes(item.providerId, aioSorted))
@@ -4815,7 +4847,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 return@withContext finishEpisodes(item, selKey, epsKey, aioNamed, publish)
             }
         }
-        if (!ownsEpisodeNumbering(item) && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        if (!ownsEpisodeNumbering(item) && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(true) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
             fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
             val tmdbId = if (TrackerAnimeResolver.isTrackerAnime(item)) {
@@ -4837,6 +4869,10 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }.getOrNull()
                 if (!direct.isNullOrEmpty()) {
+                    com.hikari.app.data.Logs.log(
+                        "Meta",
+                        "tmdb episodes for \"${item.title.take(50)}\": tv/$tmdbId -> ${direct.size} rows",
+                    )
                     val sorted = direct.sortedWith(compareBy({ it.season }, { it.number }))
                     val translated = publish(translateEpisodes(item.providerId, sorted))
                     val named = withTimeoutOrNull(tmdbLeft()) { withRealEpisodeNames(item, translated) }
@@ -4950,6 +4986,13 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             }.getOrNull()?.takeIf { it.isNotEmpty() }
             trkStaged = got
+            if (got != null) {
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "tracker episodes for \"${item.title.take(50)}\": ${got.size} rows" +
+                        (if (got.any { e -> (!e.name.isNullOrBlank() && !EpisodeTitles.isGeneric(e.name)) || !e.overview.isNullOrBlank() }) " (detailed)" else " (bare)"),
+                )
+            }
             if (got != null && got.any { e ->
                     (!e.name.isNullOrBlank() && !EpisodeTitles.isGeneric(e.name)) || !e.overview.isNullOrBlank()
                 }) {
@@ -4963,6 +5006,10 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
             episodesFromExtensions(item, { publish(it) })?.let { list ->
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "extension episodes for \"${item.title.take(50)}\": ${list.size} rows",
+                )
                 val seasoned = publish(restoreAnimeSeasons(item, publish(list)))
                 // Same order as above: auto-translate first, then TMDB's names in
                 // the app's chosen language (which win when they exist).

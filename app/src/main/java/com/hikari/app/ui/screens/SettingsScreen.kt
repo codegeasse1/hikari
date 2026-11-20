@@ -6529,6 +6529,8 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val videoTmdb by remember { app.store.videoTmdbFlow() }.collectAsState(initial = true)
     val animeAio by remember { app.store.animeAioFlow() }.collectAsState(initial = true)
     val videoAio by remember { app.store.videoAioFlow() }.collectAsState(initial = true)
+    val tmdbMaster by remember { app.store.tmdbEnabledFlow() }.collectAsState(initial = true)
+    val epOrdering by remember { app.store.episodeOrderingFlow() }.collectAsState(initial = true)
     val savedAioUrl by remember { app.store.aioBaseUrlFlow() }.collectAsState(initial = "")
     var draftAioUrl by remember { mutableStateOf("") }
     LaunchedEffect(savedAioUrl) { draftAioUrl = savedAioUrl }
@@ -6618,6 +6620,12 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
         Spacer(Modifier.height(14.dp))
         Text(tr("Movies & series"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         SettingsToggle(
+            label = tr("Enable TMDB enrichment"),
+            supporting = tr("Master switch for TMDB artwork, details, episodes and recommendations. On by default; the per-row Modules below only matter while this is on."),
+            checked = tmdbMaster,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setTmdbEnabled(on) } } },
+        )
+        SettingsToggle(
             label = tr("TMDB"),
             supporting = tr("Posters, details and episode names for movies and series"),
             checked = videoTmdb,
@@ -6653,6 +6661,14 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             )
 
         }
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Episodes"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsToggle(
+            label = tr("Season & episode ordering"),
+            supporting = tr("On: flat season-1 lists may be cut into per-season numbering and TMDB may supply a missing list. Off: addon and provider lists are never renumbered or replaced; TMDB still enriches names and images."),
+            checked = epOrdering,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setEpisodeOrdering(on) } } },
+        )
         Spacer(Modifier.height(14.dp))
         Text(tr("Metadata addons"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         if (!LocalHideHelp.current) Text(

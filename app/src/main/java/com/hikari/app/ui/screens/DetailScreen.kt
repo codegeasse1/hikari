@@ -593,12 +593,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _addonLogo = MutableStateFlow<String?>(null)
     val addonLogo: StateFlow<String?> = _addonLogo.asStateFlow()
 
-    /** Name form used to match a company across sources that punctuate it
-     *  differently ("Marvel Television" vs "marvel-television!"). A class
-     *  member (not a local) because this merge builds its result inside a
-     *  constructor call, where named local functions are illegal. */
-    private fun normCompanyName(s: String) =
-        s.lowercase().filter { ch -> ch.isLetterOrDigit() }.takeIf { it.isNotEmpty() }
+    /** Hardened company match: exact shared key, then a guarded prefix rule
+     *  for truncated/punctuated variants ("International Media Funds Ma…"
+     *  vs "International Media Funds"), then the spaced title form.
+     *  Pure string logic in [com.hikari.app.data.TmdbMeta.companyNamesMatch]
+     *  so the JVM unit tests cover it. */
+    private fun companyNameMatches(a: String, b: String): Boolean =
+        com.hikari.app.data.TmdbMeta.companyNamesMatch(a, b)
 
     /** Addon-first merge for the detail shelves: the winning addon doc's
      *  cast/director/trailers/production win (they are the user's chosen
@@ -617,7 +618,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             if (logoMap.isEmpty()) return addon
             return addon.copy(companies = addon.companies.map { c ->
                 if (!c.logoUrl.isNullOrBlank()) c
-                else logoMap[normCompanyName(c.name)]?.let { c.copy(logoUrl = it) } ?: c
+                else com.hikari.app.data.TmdbMeta.companyLogoFor(logoMap, c.name)?.let { c.copy(logoUrl = it) } ?: c
             })
         }
         val addonCast = addon.cast.takeIf { it.isNotEmpty() }
@@ -671,8 +672,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         if (!c.logoUrl.isNullOrBlank()) c
                         else tmdb.companies.firstOrNull { t ->
                             t.name.isNotBlank() && !t.logoUrl.isNullOrBlank() &&
-                                normCompanyName(t.name) != null &&
-                                normCompanyName(t.name) == normCompanyName(c.name)
+                                companyNameMatches(t.name, c.name)
                         }?.let { c.copy(logoUrl = it.logoUrl) } ?: c
                     }
                 if (afterShelves.all { !it.logoUrl.isNullOrBlank() }) return@run afterShelves.take(10)
@@ -682,7 +682,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 if (logoMap.isEmpty()) return@run afterShelves.take(10)
                 afterShelves.map { c ->
                     if (!c.logoUrl.isNullOrBlank()) c
-                    else logoMap[normCompanyName(c.name)]?.let { c.copy(logoUrl = it) } ?: c
+                    else com.hikari.app.data.TmdbMeta.companyLogoFor(logoMap, c.name)?.let { c.copy(logoUrl = it) } ?: c
                 }.take(10)
             },
             collection = tmdb.collection,

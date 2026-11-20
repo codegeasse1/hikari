@@ -122,9 +122,15 @@ fun GenresOverlay(
     Column(
         Modifier
             .fillMaxSize()
+            // Opaque surface, not the theme background: in Dark Glass UI the
+            // background is transparent by design, and this overlay sits on
+            // top of the home page — a transparent root lets the home hero
+            // and bottom bar bleed through the genre grid ("overlap").
+            // copy(alpha = 1f) keeps every theme's own hue, just solid.
+            // TV keeps its own black page.
             .background(
                 if (tv) Color.Black
-                else MaterialTheme.colorScheme.background
+                else MaterialTheme.colorScheme.surface.copy(alpha = 1f)
             ),
     ) {
         Row(

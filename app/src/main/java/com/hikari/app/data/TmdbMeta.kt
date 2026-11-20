@@ -186,7 +186,7 @@ object TmdbMeta {
                     val logo = o.tmdbPath("logo_path")?.let { IMG + it } ?: continue
                     val name = o.optString("name").trim()
                     if (name.isBlank()) continue
-                    m.putIfAbsent(normalizeTitle(name), logo)
+                    m.putIfAbsent(companyKey(name), logo)
                 }
             }
             m
@@ -199,6 +199,52 @@ object TmdbMeta {
         "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5",
         "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9", "ten" to "10",
     )
+
+    /** Company name in match form: lower-cased, punctuation-stripped, no
+     *  spaces ("Night Train Media" -> "nighttrainmedia"). The ONE form used
+     *  on both sides of the logo backfill — the Production row used to miss
+     *  every logo because the map was keyed with spaces and looked up
+     *  without. */
+    fun companyKey(raw: String): String =
+        raw.lowercase().filter { it.isLetterOrDigit() }.takeIf { it.isNotEmpty() }.orEmpty()
+
+    /** Hardened company match: the shared [companyKey] form first (exact),
+     *  then a guarded prefix rule so truncated/punctuated variants
+     *  ("International Media Funds Ma…" vs "International Media Funds")
+     *  still count as the same studio, then the spaced title form for
+     *  punctuation-only differences. The prefix rule needs the shorter key
+     *  to be at least 12 chars so short names ("Pixar") never fuzzy-match
+     *  a longer studio name. Pure string logic — covered by JVM unit tests. */
+    fun companyNamesMatch(a: String, b: String): Boolean {
+        if (a.isBlank() || b.isBlank()) return false
+        val ka = companyKey(a)
+        val kb = companyKey(b)
+        if (ka.isNotEmpty() && ka == kb) return true
+        if (ka.isNotEmpty() && kb.isNotEmpty()) {
+            val short = if (ka.length <= kb.length) ka else kb
+            val long = if (ka.length <= kb.length) kb else ka
+            if (short.length >= 12 && long.startsWith(short)) return true
+        }
+        val ta = normalizeTitle(a)
+        return ta.isNotEmpty() && ta == normalizeTitle(b)
+    }
+
+    /** Logo-map lookup with the same tolerance as [companyNamesMatch]:
+     *  exact [companyKey] hit first, then the guarded prefix scan (the map
+     *  is keyed spaceless, so the spaced title form cannot apply here).
+     *  Null when nothing matches — callers keep the company row as-is. */
+    fun companyLogoFor(logoMap: Map<String, String>, name: String): String? {
+        if (name.isBlank() || logoMap.isEmpty()) return null
+        val k = companyKey(name)
+        if (k.isEmpty()) return null
+        logoMap[k]?.let { return it }
+        if (k.length >= 12) {
+            for ((mk, logo) in logoMap) {
+                if (mk.length >= 12 && (mk.startsWith(k) || k.startsWith(mk))) return logo
+            }
+        }
+        return null
+    }
 
     /** Lower-cased, punctuation-stripped, numeral-normalised title — the form
      *  used to match a title across sources that punctuate it differently

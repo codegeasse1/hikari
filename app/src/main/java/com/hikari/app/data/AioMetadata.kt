@@ -213,6 +213,25 @@ object AioMetadata {
 
     /** Stremio ids to ask the addon for, best first. */
     private suspend fun candidateIds(item: MediaItem): List<String> {
+        // Kitsu rows resolve through their own keyless edge API into MAL /
+        // TVDB ids (see [TrackerAnimeResolver.kitsuExternalIds]) — both are
+        // namespaces the AIO backend answers — so a Kitsu id is sent to AIO
+        // directly and never pays for a TMDB fuzzy search first.
+        TrackerAnimeResolver.kitsuDigitsOf(item)?.let { kid ->
+            val mapped = runCatching {
+                withTimeoutOrNull(2_500) { TrackerAnimeResolver.kitsuExternalIds(kid) }
+            }.getOrNull().orEmpty()
+            if (mapped.isNotEmpty()) {
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "aio kitsu:$kid -> " + mapped.entries.joinToString(",") { (k, v) -> "$k:$v" },
+                )
+            }
+            val out = ArrayList<String>(2)
+            mapped["myanimelist"]?.takeIf { it.all { c -> c.isDigit() } }?.let { out += "mal:$it" }
+            mapped["thetvdb"]?.takeIf { it.all { c -> c.isDigit() } }?.let { out += "tvdb:$it" }
+            if (out.isNotEmpty()) return out
+        }
         imdbOf(item)?.let { return listOf(it) }
         tmdbDigitsOf(item)?.let {
             // A site scraper's own numeric row id is NOT a TMDB id — only
@@ -239,22 +258,50 @@ object AioMetadata {
     private suspend fun fetchRaw(item: MediaItem, kind: String): JSONObject? {
         val root = addonRoot() ?: return null
         val ids = candidateIds(item)
-        if (ids.isEmpty()) return null
+        if (ids.isEmpty()) {
+            com.hikari.app.data.Logs.log("Meta", "aio: no usable id for \"${item.title.take(50)}\" — skipped")
+            return null
+        }
         val key = "$kind|${typeSeg(item)}|${ids.first().lowercase()}|${item.searchTitle.lowercase()}|${item.year ?: 0}"
         val ttl = if (kind == "eps") EPS_TTL_MS else META_TTL_MS
-        memGet(key, ttl)?.let { return it }
+        memGet(key, ttl)?.let {
+            com.hikari.app.data.Logs.log("Meta", "aio $kind mem-hit ${ids.first()} for \"${item.title.take(50)}\"")
+            return it
+        }
         diskRead(kind, key, ttl)?.let {
             memPut(key, it)
+            com.hikari.app.data.Logs.log("Meta", "aio $kind disk-hit ${ids.first()} for \"${item.title.take(50)}\"")
             return it
         }
         val deferred = CompletableDeferred<JSONObject?>()
         val prev = inflight.putIfAbsent(key, deferred)
         if (prev != null) return prev.await()
         try {
+            val start = System.currentTimeMillis()
             val got = withTimeoutOrNull(NET_BUDGET_MS) { fetchNetwork(root, item, kind, ids) }
+            val ms = System.currentTimeMillis() - start
             if (got != null) {
                 memPut(key, got)
                 diskWrite(kind, key, got)
+                if (kind == "eps") {
+                    val n = got.optJSONArray("videos")?.length() ?: 0
+                    com.hikari.app.data.Logs.log(
+                        "Meta",
+                        "aio $kind ${ids.first()} for \"${item.title.take(50)}\": $n rows in ${ms}ms",
+                    )
+                } else {
+                    val tmdb = got.optString("_tmdbId").trim().takeIf { it.isNotEmpty() && it != "null" }
+                    com.hikari.app.data.Logs.log(
+                        "Meta",
+                        "aio $kind ${ids.first()} for \"${item.title.take(50)}\": hit" +
+                            (if (!tmdb.isNullOrBlank()) " _tmdbId=$tmdb" else "") + " in ${ms}ms",
+                    )
+                }
+            } else {
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "aio $kind ${ids.first()} for \"${item.title.take(50)}\": miss/timeout in ${ms}ms",
+                )
             }
             deferred.complete(got)
             return got

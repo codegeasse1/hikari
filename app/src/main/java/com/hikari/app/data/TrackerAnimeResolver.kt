@@ -90,6 +90,7 @@ object TrackerAnimeResolver {
     }
 
     private val showCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, AnilistShow?>>()
+    private val kitsuMapCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Map<String, String>>>()
     private val tmdbIdCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Int?>>()
     private val jikanCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, Map<Int, JikanEp>>>()
     private const val DAY_MS = 24 * 60 * 60 * 1000L
@@ -326,6 +327,18 @@ object TrackerAnimeResolver {
     }
 
     private suspend fun anilistShowFor(item: MediaItem): AnilistShow? {
+        // Kitsu rows resolve exactly: Kitsu's keyless edge API maps its own id
+        // to AniList/MAL (see [kitsuExternalIds]), so a Kitsu id never pays
+        // for a fuzzy title search — and a wrong fuzzy hit can never overwrite
+        // the Kitsu row's identity. Falls through to title search on any miss.
+        if (item.providerId.equals("kitsu", true)) {
+            kitsuDigitsOf(item)?.let { kid ->
+                val mapped = runCatching { kitsuExternalIds(kid) }.getOrNull().orEmpty()
+                mapped["anilist"]?.toIntOrNull()?.takeIf { it > 0 }?.let { aid ->
+                    runCatching { anilistShowById(aid) }.getOrNull()?.let { return it }
+                }
+            }
+        }
         val direct = if (item.providerId.equals("anilist", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null
         if (direct != null) return anilistShowById(direct)
         val t = item.searchTitle.trim()
@@ -342,6 +355,53 @@ object TrackerAnimeResolver {
         showCache[key] = System.currentTimeMillis() to verified
         if (verified != null) showCache["id|" + verified.id] = System.currentTimeMillis() to verified
         return verified
+    }
+
+    /** Kitsu's own id for [item], or null (provider `kitsu` with a numeric
+     *  row id, or an explicit `kitsu:123` id). */
+    fun kitsuDigitsOf(item: MediaItem): String? {
+        val id = item.id.trim()
+        if (id.startsWith("kitsu:", ignoreCase = true)) {
+            return id.substringAfter(':').trim().takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } }
+        }
+        if (item.providerId.equals("kitsu", true) && id.isNotEmpty() && id.all { it.isDigit() }) return id
+        return null
+    }
+
+    /** Kitsu id -> external ids (`myanimelist`, `anilist`, `thetvdb`, …) via
+     *  Kitsu's keyless edge API. No key, no login — Kitsu needs nothing the
+     *  user must paste. 1-day cache; never throws. */
+    suspend fun kitsuExternalIds(kitsuId: String): Map<String, String> = withContext(Dispatchers.IO) {
+        kitsuMapCache[kitsuId]?.let { (at, m) ->
+            if (System.currentTimeMillis() - at < DAY_MS) return@withContext m
+        }
+        val out = runCatching {
+            val raw = withTimeoutOrNull(4_000) {
+                Http.getStringQuiet("https://kitsu.io/api/edge/anime/" + kitsuId + "?include=mappings")
+            } ?: return@runCatching emptyMap<String, String>()
+            parseKitsuMappings(raw)
+        }.getOrDefault(emptyMap())
+        kitsuMapCache[kitsuId] = System.currentTimeMillis() to out
+        out
+    }
+
+    /** `externalSite` -> id from a Kitsu `/anime/{id}?include=mappings`
+     *  payload (sites look like `myanimelist/anime`, `anilist/anime`). */
+    fun parseKitsuMappings(raw: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        runCatching {
+            val root = JSONObject(raw)
+            val included = root.optJSONArray("included") ?: return@runCatching
+            for (i in 0 until included.length()) {
+                val o = included.optJSONObject(i) ?: continue
+                if (!o.optString("type").equals("mappings", true)) continue
+                val a = o.optJSONObject("attributes") ?: continue
+                val site = a.optString("externalSite").trim().takeIf { it.isNotBlank() } ?: continue
+                val eid = a.optString("externalId").trim().takeIf { it.isNotEmpty() && it != "null" } ?: continue
+                out.putIfAbsent(site.substringBefore('/').lowercase(), eid)
+            }
+        }
+        return out
     }
 
     private suspend fun anilistShowById(id: Int): AnilistShow? {

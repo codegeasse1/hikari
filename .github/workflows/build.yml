@@ -200,6 +200,19 @@ jobs:
           if [ "$bad" -ne 0 ]; then exit 1; fi
           echo "sherpa-onnx AAR has the Dub classes."
 
+      - name: Run unit tests
+        run: |
+          set -e
+          gradle :app:testDebugUnitTest --no-daemon --console=plain \
+            -Dorg.gradle.internal.http.connectionTimeout=30000 \
+            -Dorg.gradle.internal.http.socketTimeout=60000
+          echo "==== unit test results ===="
+          grep -h "<testsuite " app/build/test-results/testDebugUnitTest/*.xml | sed -E 's/.*name="([^"]+)" tests="([0-9]+)" skipped="([0-9]+)" failures="([0-9]+)" errors="([0-9]+)".*/\1: tests=\2 skipped=\3 failures=\4 errors=\5/' || true
+          if grep -l -E 'failures="[1-9]|errors="[1-9]' app/build/test-results/testDebugUnitTest/*.xml 2>/dev/null; then
+            echo "::error::Unit tests failed - see the summary above and the test report."
+            exit 1
+          fi
+
       - name: Build APKs (debug + release)
         env:
           GIT_SHA: ${{ github.sha }}

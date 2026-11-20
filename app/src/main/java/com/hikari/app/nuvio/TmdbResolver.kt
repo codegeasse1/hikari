@@ -56,14 +56,29 @@ object TmdbResolver {
         // what stops wrong-show / wrong-episode TMDB hits. Miss -> TMDB below.
         // allowAio=false is AioMetadata's own id lookup (recursion guard).
         if (allowAio) runCatching { AioMetadata.resolveId(item) }.getOrNull()?.let {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "resolve \"${item.title.take(50)}\" -> ${it.mediaType}/${it.tmdbId} via aio",
+            )
             return Resolved(it.id, it.mediaType)
         }
+        val start = System.currentTimeMillis()
         val key = cacheKey(item)
-        memory[key]?.let { return it }
+        memory[key]?.let {
+            com.hikari.app.data.Logs.log(
+                "Meta",
+                "resolve \"${item.title.take(50)}\" -> ${it.mediaType}/${it.tmdbId} (mem)",
+            )
+            return it
+        }
         val trackerRow = isTrackerAnime(item)
         if (!trackerRow) {
             loadCache()[key]?.let {
                 memory[key] = it
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "resolve \"${item.title.take(50)}\" -> ${it.mediaType}/${it.tmdbId} (disk)",
+                )
                 return it
             }
         }
@@ -78,6 +93,15 @@ object TmdbResolver {
             if (r != null) {
                 memory[key] = r
                 if (!isTrackerAnime(item)) saveCache(key, r)
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "resolve \"${item.title.take(50)}\" -> ${r.mediaType}/${r.tmdbId} (network, ${System.currentTimeMillis() - start}ms)",
+                )
+            } else {
+                com.hikari.app.data.Logs.log(
+                    "Meta",
+                    "resolve \"${item.title.take(50)}\": no match (${System.currentTimeMillis() - start}ms)",
+                )
             }
             deferred.complete(r)
             return r

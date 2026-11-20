@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 513
-        versionName = "0.12.124"
+        versionCode = 514
+        versionName = "0.12.125"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -379,6 +379,10 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.lifecycle.process)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    // Local JVM unit tests (app/src/test): pure-logic regression guards with no
+    // Android dependencies. org.json stays OFF the classpath on purpose (see
+    // below), so tests only touch string/math/data-class logic.
+    testImplementation("junit:junit:4.13.2")
 }
 
 //
