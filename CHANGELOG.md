@@ -1,4 +1,11 @@
 
+## 0.12.131
+
+- Tracker library stops refetching everything on every open: shelves stay in memory (5-minute fresh, 30-minute stale), so reopening Library or coming back from a title paints instantly with an "Updating…" hint while a quiet refresh confirms behind it; only a truly first load shows "Loading…"
+- "Show all" no longer downloads the whole library twice: it paints the already-loaded shelf at once and confirms behind it, so it opens instantly and no longer blanks on the second fetch's rate-limit
+- AniList pressure halved: anime + manga halves fly together (total wait is the slower half, not the sum), the viewer name is cached instead of re-asked every load, parallel Library + Show-all calls share one fetch, and a 429 honors AniList's Retry-After with a fast "rate-limited — retry in ~Xs (tap to retry)" instead of burning full retry chains
+- Your watch/read sync shows at once: every successful tracker push records progress in memory immediately, and detail pages read back your tracker state — a title you left at episode 5 / chapter 4 opens with "Watching · Ep 5" and those rows marked watched, plus Completed / Plan to Watch / On Hold badges (AniList direct per-title read; MAL/Kitsu/Shikimori from loaded shelves)
+
 ## 0.12.130
 
 - Dual-audio EAC3 now actually plays: the second player uses the same FFmpeg-backed renderers as the main player, so Dolby Digital Plus / AC-3 Hindi/English/Spanish dubs decode in software where the phone has no hardware decoder (the exact "same server plays as video but fails as donor" case — the video player always had FFmpeg, the donor didn't); zero APK growth, the library was already bundled

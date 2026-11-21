@@ -1791,6 +1791,21 @@ fun DetailScreen(
     val playFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val backFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val detailApp = context.applicationContext as HikariApp
+    // Tracker-known state for this title (status + watched/read count): the
+    // library's memory first, a direct per-title read when it never sat in
+    // the shelves. Powers the badge below and the watched-till marks.
+    var trackerEntry by remember(providerId, type, mediaId) {
+        mutableStateOf<com.hikari.app.data.TrackerLibraryRepository.EntryState?>(null)
+    }
+    LaunchedEffect(providerId, type, mediaId, m?.uniqueId) {
+        val item = m ?: MediaItem(providerId, mediaId, title, type, posterUrl, rawType = rawType)
+        trackerEntry = withContext(Dispatchers.IO) {
+            runCatching {
+                com.hikari.app.data.TrackerLibraryRepository.entryStateFor(item)
+                    ?: com.hikari.app.data.TrackerLibraryRepository.remoteEntry(detailApp, item)
+            }.getOrNull()
+        }
+    }
     val detailRatingFlow = remember { detailApp.store.showDetailRatingFlow() }
     val showDetailRating by detailRatingFlow.collectAsState(initial = true)
     val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
@@ -1940,6 +1955,33 @@ fun DetailScreen(
 
     val sortedEps = remember(episodes) {
         episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
+    }
+    /** Episode ids the tracker already counts as watched/read: the first N
+     *  in airing order, so multi-season shows map sensibly too. Local marks
+     *  below still win for anything watched in Hikari itself. */
+    val trackerSeenIds = remember(trackerEntry, sortedEps) {
+        val p = trackerEntry?.progress ?: 0
+        if (p <= 0 || sortedEps.isEmpty()) emptySet()
+        else sortedEps.take(p).map { it.id }.toSet()
+    }
+    /** "Watching · Ep 5" / "Completed" line under the episodes header. */
+    fun trackerStatusLine(isSeries: Boolean, isManga: Boolean): String? {
+        val e = trackerEntry ?: return null
+        val label = when (e.status.uppercase()) {
+            "COMPLETED" -> tr("Completed")
+            "CURRENT", "WATCHING", "READING", "REWATCHING" -> tr("Watching")
+            "PLANNING", "PLAN_TO_WATCH", "PLAN TO WATCH" -> tr("Plan to Watch")
+            "PAUSED", "ON_HOLD", "ON HOLD" -> tr("On Hold")
+            "DROPPED" -> tr("Dropped")
+            else -> e.status.replace('_', ' ').lowercase()
+                .replaceFirstChar { c -> if (c.isLowerCase()) c.uppercaseChar() else c }
+        }
+        val src = e.source.ifBlank { tr("Tracker") }
+        val prog = if (e.progress > 0 && isSeries) {
+            val unit = if (isManga) tr("Ch %s") else tr("Ep %s")
+            " · " + unit.replace("%s", e.progress.toString())
+        } else ""
+        return "$src · $label$prog"
     }
     // Nuvio parity: Specials (season 0) sort last and never open by default —
     // the page lands on Season 1 with real episodes, not on featurettes.
@@ -3922,14 +3964,16 @@ fun DetailScreen(
     /** Whether an episode counts as seen for the anti-spoiler toggle — the
      *  same finished condition the Continue Watching shelf uses. */
     fun isEpSeen(ep: Episode): Boolean =
-        historyForTitle.firstOrNull { it.episodeId == ep.id }?.let {
+        ep.id in trackerSeenIds || historyForTitle.firstOrNull { it.episodeId == ep.id }?.let {
             WatchProgress.isWatched(it.positionMs, it.durationMs)
         } == true
 
     /** Per-episode watch state for the rows below: 0 = untouched, 1 =
      *  watching (even a second counts), 2 = watched (credits window). A
-     *  movie answers through its null episode, exactly like the marks. */
+     *  movie answers through its null episode, exactly like the marks.
+     *  Tracker-known episodes (watched/read on the service) count as 2. */
     fun epWatchState(ep: Episode?): Int {
+        if (ep != null && ep.id in trackerSeenIds) return 2
         val h = historyForTitle.firstOrNull { it.episodeId == ep?.id.orEmpty() }
             ?: return 0
         return when {
@@ -5564,6 +5608,19 @@ fun DetailScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+                    // Tracker-known state for this title (your status on the
+                    // service + how far you watched/read) — nothing when the
+                    // title has no tracker entry.
+                    trackerStatusLine(markIsSeries, m?.rawType == "manga")?.let { line ->
+                        item(key = "ep-tracker-state") {
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
                         }
                     }
                     if (sortedEps.isEmpty()) {

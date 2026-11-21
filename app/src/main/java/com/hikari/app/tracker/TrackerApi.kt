@@ -768,6 +768,35 @@ object TrackerApi {
         }
     } catch (e: Exception) {
         Result.failure(Exception("${client.kind.label}: ${e.message ?: e.javaClass.simpleName}"))
+    }.also { result ->
+        // A just-pushed progress lands in the library's memory at once, so
+        // the detail page and shelves show it without waiting out a refetch.
+        result.onSuccess {
+            runCatching {
+                val progress = if (media.movie) 1 else media.episode.coerceAtLeast(1)
+                val done = completed(media, match.total)
+                val provider = when (client.kind) {
+                    TrackerKind.ANILIST -> "anilist"
+                    TrackerKind.MAL -> "mal"
+                    TrackerKind.KITSU -> "kitsu"
+                    TrackerKind.SHIKIMORI -> "shikimori"
+                    TrackerKind.SIMKL -> "simkl"
+                    TrackerKind.TRAKT -> "trakt"
+                }
+                val source = when (client.kind) {
+                    TrackerKind.ANILIST -> "AniList"
+                    TrackerKind.MAL -> "MyAnimeList"
+                    TrackerKind.KITSU -> "Kitsu"
+                    TrackerKind.SHIKIMORI -> "Shikimori"
+                    TrackerKind.SIMKL -> "Simkl"
+                    TrackerKind.TRAKT -> "Trakt"
+                }
+                com.hikari.app.data.TrackerLibraryRepository.noteProgress(
+                    provider, match.id, progress,
+                    if (done) "COMPLETED" else "CURRENT", source,
+                )
+            }
+        }
     }
 
     /** "episode 12 of 220" / "watched" — the tail of a push sentence. */

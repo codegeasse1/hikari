@@ -2,6 +2,7 @@ package com.hikari.app.data
 
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -38,30 +39,162 @@ object TrackerLibraryRepository {
      *  so instead of a blank "Couldn't load". */
     val errors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    suspend fun load(app: HikariApp, sourceOverride: String? = null): Result<List<Shelf>> = withContext(Dispatchers.IO) {
-        val key = (sourceOverride ?: runCatching { app.store.trackerLibrarySource() }.getOrDefault("nuvio")).lowercase()
-        val r = when (key) {
-            "trakt" -> loadTrakt(app)
-            "simkl" -> loadSimkl(app)
-            "anilist" -> loadAniList(app)
-            "mal" -> loadMal(app)
-            "kitsu" -> loadKitsu(app)
-            "shikimori" -> loadShikimori(app)
-            "mdblist" -> Result.failure(IllegalStateException("MDBList library requires a connected MDBList account."))
-            else -> Result.success(emptyList())
+    /** Fresh-for minutes; a stale copy still paints while refresh runs. */
+    private const val CACHE_FRESH_MS = 5 * 60 * 1000L
+    private const val CACHE_STALE_MS = 30 * 60 * 1000L
+    /** Failed loads stay cached briefly so a retry-storm can't hammer 429s. */
+    private const val ERR_CACHE_MS = 30 * 1000L
+    private const val NOTE_TTL_MS = 30 * 60 * 1000L
+    private const val ENTRY_TTL_MS = 2 * 60 * 1000L
+
+    private data class Cached(val atMs: Long, val result: Result<List<Shelf>>)
+    private val shelfCache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Result<List<Shelf>>>>()
+
+    /** Per-title tracker state: status + watched/read count. Source is the
+     *  human label shown on the detail page ("AniList", "MyAnimeList"...). */
+    data class EntryState(val status: String, val progress: Int, val source: String = "")
+    private val entryStates = java.util.concurrent.ConcurrentHashMap<String, EntryState>()
+    private data class ProgressNote(val progress: Int, val status: String, val source: String, val atMs: Long)
+    private val progressNotes = java.util.concurrent.ConcurrentHashMap<String, ProgressNote>()
+    private data class EntryCached(val atMs: Long, val entry: EntryState?)
+    private val entryCache = java.util.concurrent.ConcurrentHashMap<String, EntryCached>()
+
+    private fun entryKey(providerId: String, trackerId: String) =
+        providerId.lowercase() + "|" + trackerId
+
+    /** Fresh shelves, or null when a fetch (or background refresh) is due. */
+    fun peekFresh(sourceKey: String): List<Shelf>? {
+        val c = shelfCache["tracker:" + sourceKey.lowercase()] ?: return null
+        if (System.currentTimeMillis() - c.atMs > CACHE_FRESH_MS) return null
+        return c.result.getOrNull()
+    }
+
+    /** Whatever we last saw (up to [CACHE_STALE_MS] old) — paint instantly,
+     *  then let the caller refresh behind it. */
+    fun peekAny(sourceKey: String): List<Shelf>? {
+        val c = shelfCache["tracker:" + sourceKey.lowercase()] ?: return null
+        if (System.currentTimeMillis() - c.atMs > CACHE_STALE_MS) return null
+        return c.result.getOrNull()
+    }
+
+    /** A just-pushed watch/read progress lands here instantly, so the detail
+     *  page and library never wait for the expirable fetch to catch up. */
+    fun noteProgress(providerId: String, trackerId: String, progress: Int, status: String, source: String) {
+        if (trackerId.isBlank()) return
+        progressNotes[entryKey(providerId, trackerId)] =
+            ProgressNote(progress.coerceAtLeast(0), status, source, System.currentTimeMillis())
+    }
+
+    /** Library-known state for one title: just-pushed notes win over fetched
+     *  rows, fetched rows win over nothing. */
+    fun entryStateFor(item: MediaItem): EntryState? {
+        val k = entryKey(item.providerId, item.id)
+        progressNotes[k]?.let { n ->
+            if (System.currentTimeMillis() - n.atMs <= NOTE_TTL_MS) return EntryState(n.status, n.progress, n.source)
+            else progressNotes.remove(k)
         }
-        val ordered = r.map(::reorderShelves)
-        ordered.onFailure { errors["tracker:$key"] = it.message ?: "couldn't load" }
-            .onSuccess { shelves ->
-                if (shelves.isEmpty()) {
-                    errors["tracker:$key"] =
-                        "Connected, but its watchlist, history, collection and lists are all empty — add something on that service first."
-                } else {
-                    errors.remove("tracker:$key")
+        return entryStates[k]
+    }
+
+    /** Direct per-title read for pages whose title never sat in the shelves
+     *  (AniList only — the rest answer through [entryStateFor] once their
+     *  library has loaded at least once). */
+    suspend fun remoteEntry(app: HikariApp, item: MediaItem): EntryState? = withContext(Dispatchers.IO) {
+        entryStateFor(item)?.let { return@withContext it }
+        if (item.providerId != "anilist") return@withContext null
+        val id = item.id.toIntOrNull() ?: return@withContext null
+        val ck = "anilist|$id"
+        entryCache[ck]?.let {
+            if (System.currentTimeMillis() - it.atMs <= ENTRY_TTL_MS) return@withContext it.entry
+        }
+        val account = app.store.trackers().firstOrNull { it.kind == TrackerKind.ANILIST }
+            ?: return@withContext null
+        val user = anilistUser(app, account)
+        if (user.isBlank()) return@withContext null
+        val query = "query(\$name:String,\$mediaId:Int){MediaList(userName:\$name,mediaId:\$mediaId){status progress}}"
+        val body = JSONObject()
+            .put("query", query)
+            .put("variables", JSONObject().put("name", user).put("mediaId", id))
+            .toString()
+        val headers = mapOf(
+            "Authorization" to "Bearer " + account.token,
+            "Accept" to "application/json",
+            "Content-Type" to "application/json",
+        )
+        val found: EntryState? = try {
+            Http.post("https://graphql.anilist.co", body, headers).use { r ->
+                if (!r.isSuccessful) null
+                else {
+                    val e = runCatching {
+                        JSONObject(r.body?.string().orEmpty()).optJSONObject("data")?.optJSONObject("MediaList")
+                    }.getOrNull() ?: return@use null
+                    EntryState(e.optString("status"), e.optInt("progress", 0), "AniList")
                 }
-                Logs.log("Tracker", "$key: ${shelves.size} shelves")
             }
-        ordered
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        entryCache[ck] = EntryCached(System.currentTimeMillis(), found)
+        if (found != null) entryStates[ck] = found
+        found
+    }
+
+    suspend fun load(app: HikariApp, sourceOverride: String? = null, refresh: Boolean = false): Result<List<Shelf>> = withContext(Dispatchers.IO) {
+        val key = (sourceOverride ?: runCatching { app.store.trackerLibrarySource() }.getOrDefault("nuvio")).lowercase()
+        val cacheKey = "tracker:$key"
+        if (!refresh) {
+            shelfCache[cacheKey]?.let { c ->
+                val age = System.currentTimeMillis() - c.atMs
+                val ttl = if (c.result.isSuccess) CACHE_FRESH_MS else ERR_CACHE_MS
+                if (age <= ttl) {
+                    Logs.log("Tracker", "$key: cache hit")
+                    return@withContext c.result
+                }
+            }
+        }
+        // Library + Show-all (and two screens at once) share one fetch —
+        // the second caller awaits instead of doubling AniList pressure.
+        inFlight[cacheKey]?.let { return@withContext it.await() }
+        val d = CompletableDeferred<Result<List<Shelf>>>()
+        inFlight[cacheKey] = d
+        try {
+            val r = when (key) {
+                "trakt" -> loadTrakt(app)
+                "simkl" -> loadSimkl(app)
+                "anilist" -> loadAniList(app)
+                "mal" -> loadMal(app)
+                "kitsu" -> loadKitsu(app)
+                "shikimori" -> loadShikimori(app)
+                "mdblist" -> Result.failure(IllegalStateException("MDBList library requires a connected MDBList account."))
+                else -> Result.success(emptyList())
+            }
+            val ordered = r.map(::reorderShelves)
+            ordered.onFailure { errors["tracker:$key"] = it.message ?: "couldn't load" }
+                .onSuccess { shelves ->
+                    if (shelves.isEmpty()) {
+                        errors["tracker:$key"] =
+                            "Connected, but its watchlist, history, collection and lists are all empty — add something on that service first."
+                    } else {
+                        errors.remove("tracker:$key")
+                    }
+                    Logs.log("Tracker", "$key: ${shelves.size} shelves")
+                }
+            shelfCache[cacheKey] = Cached(System.currentTimeMillis(), ordered)
+            d.complete(ordered)
+            ordered
+        } catch (e: CancellationException) {
+            d.cancel(e)
+            throw e
+        } catch (e: Throwable) {
+            val f = Result.failure<List<Shelf>>(if (e is Exception) e else Exception(e))
+            d.complete(f)
+            if (e is Exception) throw e else throw Exception(e)
+        } finally {
+            inFlight.remove(cacheKey, d)
+        }
     }
 
     private suspend fun loadTrakt(app: HikariApp): Result<List<Shelf>> {
@@ -263,28 +396,67 @@ object TrackerLibraryRepository {
             ?: return Result.failure(IllegalStateException("Connect AniList in Settings \u2192 Trackers first."))
         val out=ArrayList<Shelf>()
         aniListAuthFailed = false
-        val animeLists=aniListCollection(app, account, "ANIME")
-            ?: return Result.failure(IllegalStateException(
-                if (aniListAuthFailed) "AniList login expired (HTTP 401) — reconnect AniList in Settings → Trackers."
-                else "AniList did not return a library (network or rate-limit) — tap the error to retry."))
-        for(i in 0 until animeLists.length()){
-            val l=animeLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList"};val a=l.optJSONArray("entries")?:JSONArray()
-            val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"))?.let(::add)}.distinctBy{it.uniqueId}
+        // A fresh 429 told us when the window lifts — fail fast instead of
+        // burning two full retry chains against the same wall.
+        val waitMs = aniListRateLimitedUntilMs - System.currentTimeMillis()
+        if (waitMs > 0) return Result.failure(IllegalStateException(
+            "AniList rate-limited — retry in ~" + ((waitMs + 999) / 1000).coerceAtLeast(1) + "s (tap to retry)."))
+        val out=ArrayList<Shelf>()
+        // Both halves fly together now (was: manga waited out anime's full
+        // retry chain) — total wait is the slower half, not the sum.
+        val animeLists: JSONArray?
+        val mangaLists: JSONArray
+        coroutineScope {
+            val a = async { aniListCollection(app, account, "ANIME") }
+            val mg = async { aniListCollection(app, account, "MANGA") }
+            animeLists = a.await()
+            mangaLists = mg.await() ?: JSONArray()
+        }
+        if (animeLists == null && mangaLists.length() == 0)
+            return Result.failure(IllegalStateException(
+                if (aniListAuthFailed) "AniList login expired (HTTP 401) — reconnect AniList in Settings " + "\\u2192" + " Trackers."
+                else aniListRateMessage()))
+        // A finished fetch proves the window passed.
+        aniListRateLimitedUntilMs = 0L
+        for(i in 0 until (animeLists?.length() ?: 0)){
+            val l=(animeLists ?: JSONArray()).optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList"};val a=l.optJSONArray("entries")?:JSONArray()
+            val items=buildList{for(j in 0 until a.length()){val e=a.optJSONObject(j)?:continue;noteAniListEntry(e);aniListMedia(e.optJSONObject("media"))?.let(::add)}}.distinctBy{it.uniqueId}
             if(items.isNotEmpty())out+=Shelf("anilist."+i+"."+name,name,items)
         }
-        val mangaLists=aniListCollection(app, account, "MANGA") ?: JSONArray()
         for(i in 0 until mangaLists.length()){
             val l=mangaLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList Manga"};val a=l.optJSONArray("entries")?:JSONArray()
-            val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"), manga=true)?.let(::add)}.distinctBy{it.uniqueId}
-            if(items.isNotEmpty())out+=Shelf("anilist.manga."+i+"."+name,name,items)
+            val items=buildList{for(j in 0 until a.length()){val e=a.optJSONObject(j)?:continue;noteAniListEntry(e);aniListMedia(e.optJSONObject("media"), manga=true)?.let(::add)}}.distinctBy{it.uniqueId}
+            if(items.isNotEmpty())out+=Shelf("anilist.manga."+i+"."+name,items)
         }
         return Result.success(out)
     }
     /** Set when AniList answers 401: the token is dead, not the network. */
     private var aniListAuthFailed = false
+    /** Epoch-ms until which AniList told us (HTTP 429) to stay away. */
+    private var aniListRateLimitedUntilMs = 0L
+    private val lastAnilistRetryAfter = java.util.concurrent.atomic.AtomicLong(0)
+    /** Viewer-name cache: the name never changes, the token does. */
+    private val anilistUserCache = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
+    /** Countdown while a 429 window is open, else the generic line. */
+    private fun aniListRateMessage(): String {
+        val waitMs = aniListRateLimitedUntilMs - System.currentTimeMillis()
+        return if (waitMs > 0) "AniList rate-limited — retry in ~" + ((waitMs + 999) / 1000).coerceAtLeast(1) + "s (tap to retry)."
+        else "AniList did not return a library (network or rate-limit) — tap the error to retry."
+    }
+
+    /** Every entry carries its own status/progress — remember it per title so
+     *  the detail page can paint watched-till without another query. */
+    private fun noteAniListEntry(e: JSONObject) {
+        val media = e.optJSONObject("media") ?: return
+        val id = media.optInt("id", 0)
+        if (id <= 0) return
+        entryStates[entryKey("anilist", id.toString())] =
+            EntryState(e.optString("status"), e.optInt("progress", 0), "AniList")
+    }
 
     private suspend fun aniListCollection(app: HikariApp, account: com.hikari.app.data.TrackerAccount, type: String): JSONArray? {
-        val query = "query(\$name:String){MediaListCollection(userName: \$name,type:"+type+"){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
+        val query = "query(\$name:String){MediaListCollection(userName: \$name,type:"+type+"){lists{name entries{status progress media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
         // AniList's MediaListCollection is user-specific. The access token
         // must be sent as a Bearer token; without it a connected account can still
         // return an empty/unauthorized collection.
@@ -308,6 +480,7 @@ object TrackerLibraryRepository {
                 Http.post("https://graphql.anilist.co", body, headers).use { r ->
                     code = r.code
                     raw = if (r.isSuccessful) r.body?.string() else null
+                    if (code == 429) lastAnilistRetryAfter.set(r.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it in 1..300 } ?: 60L)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -322,6 +495,12 @@ object TrackerLibraryRepository {
             }
             if (code == 429 || code >= 500) {
                 Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " HTTP " + code)
+                if (code == 429) {
+                    // Honor the window AniList gives us; the next open fails
+                    // fast with a countdown instead of re-burning retries.
+                    val waitSecs = lastAnilistRetryAfter.getAndSet(0).takeIf { it > 0 } ?: 60L
+                    aniListRateLimitedUntilMs = System.currentTimeMillis() + waitSecs * 1000L
+                }
                 continue
             }
             if (raw == null) {
@@ -338,6 +517,7 @@ object TrackerLibraryRepository {
     }
     private suspend fun anilistUser(app: HikariApp, account: com.hikari.app.data.TrackerAccount): String {
         if (account.user.isNotBlank()) return account.user
+        anilistUserCache[account.token.hashCode()]?.takeIf { it.isNotBlank() }?.let { return it }
         val body = JSONObject().put("query", "{Viewer{name}}").toString()
         val headers = mapOf("Authorization" to "Bearer " + account.token, "Accept" to "application/json", "Content-Type" to "application/json")
         val waits = longArrayOf(0, 2_000, 6_000)
@@ -351,7 +531,7 @@ object TrackerLibraryRepository {
                     }
                     if (!r.isSuccessful) return@use
                     val name = JSONObject(r.body?.string().orEmpty()).optJSONObject("data")?.optJSONObject("Viewer")?.optString("name").orEmpty()
-                    if (name.isNotBlank()) return name
+                    if (name.isNotBlank()) { anilistUserCache[account.token.hashCode()] = name; return name }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -371,17 +551,17 @@ object TrackerLibraryRepository {
         val statuses=listOf("watching" to "Watching","plan_to_watch" to "Plan to Watch","completed" to "Completed","on_hold" to "On Hold","dropped" to "Dropped")
         val out=ArrayList<Shelf>()
         for((status,label) in statuses){
-            val raw=Http.getStringQuiet("https://api.myanimelist.net/v2/users/@me/animelist?status="+status+"&limit=1000&fields=id,title,main_picture,start_date,mean",mapOf("Authorization" to "Bearer "+account.token))?:continue
+            val raw=Http.getStringQuiet("https://api.myanimelist.net/v2/users/@me/animelist?status="+status+"&limit=1000&fields=id,title,main_picture,start_date,mean,list_status",mapOf("Authorization" to "Bearer "+account.token))?:continue
             val a=JSONObject(raw).optJSONArray("data")?:continue
-            val items=buildList{for(i in 0 until a.length())malMedia(a.optJSONObject(i)?.optJSONObject("node"))?.let(::add)}
+            val items=buildList{for(i in 0 until a.length()){val nd=a.optJSONObject(i)?.optJSONObject("node");noteMalEntry(nd);malMedia(nd)?.let(::add)}}
             if(items.isNotEmpty())out+=Shelf("mal."+status,label,items)
         }
         // Manga lists live on a separate endpoint with their own statuses.
         val mangaStatuses=listOf("reading" to "Reading","plan_to_read" to "Plan to Read","completed" to "Completed","on_hold" to "On Hold","dropped" to "Dropped")
         for((status,label) in mangaStatuses){
-            val raw=Http.getStringQuiet("https://api.myanimelist.net/v2/users/@me/mangalist?status="+status+"&limit=1000&fields=id,title,main_picture,start_date,mean",mapOf("Authorization" to "Bearer "+account.token))?:continue
+            val raw=Http.getStringQuiet("https://api.myanimelist.net/v2/users/@me/mangalist?status="+status+"&limit=1000&fields=id,title,main_picture,start_date,mean,list_status",mapOf("Authorization" to "Bearer "+account.token))?:continue
             val a=JSONObject(raw).optJSONArray("data")?:continue
-            val items=buildList{for(i in 0 until a.length())malMedia(a.optJSONObject(i)?.optJSONObject("node"), manga=true)?.let(::add)}
+            val items=buildList{for(i in 0 until a.length()){val nd=a.optJSONObject(i)?.optJSONObject("node");noteMalEntry(nd);malMedia(nd, manga=true)?.let(::add)}}
             if(items.isNotEmpty())out+=Shelf("mal.manga."+status,"Manga · "+label,items)
         }
         return Result.success(out)
@@ -403,6 +583,7 @@ object TrackerLibraryRepository {
             val rel=e.optJSONObject("relationships")?.optJSONObject("anime")?.optJSONObject("data");val o=rel?.optString("id")?.let{anime[it]}?:continue;val aa=o.optJSONObject("attributes")?:continue
             val score=at.optDouble("ratingTwenty",0.0).takeIf{it>0}?.div(2.0)
             val item=MediaItem("kitsu",o.optString("id"),aa.optString("canonicalTitle").ifBlank{"Untitled"},MediaType.SERIES,aa.optJSONObject("posterImage")?.optString("original"),rawType="anime",rating=score,metadataSource="Kitsu")
+            noteKitsuEntry(o.optString("id"), at)
             groups.getOrPut(at.optString("status").ifBlank{"unknown"}){ArrayList()}.add(item)
         }
         val shelves=ArrayList<Shelf>(groups.map { entry -> val status = entry.key; Shelf("kitsu."+status, "Kitsu · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) })
@@ -419,6 +600,7 @@ object TrackerLibraryRepository {
                     val rel=e.optJSONObject("relationships")?.optJSONObject("manga")?.optJSONObject("data");val o=rel?.optString("id")?.let{manga[it]}?:continue;val aa=o.optJSONObject("attributes")?:continue
                     val score=at.optDouble("ratingTwenty",0.0).takeIf{it>0}?.div(2.0)
                     val item=MediaItem("kitsu",o.optString("id"),aa.optString("canonicalTitle").ifBlank{"Untitled"},MediaType.SERIES,aa.optJSONObject("posterImage")?.optString("original"),rawType="manga",rating=score,metadataSource="Kitsu")
+                    noteKitsuEntry(o.optString("id"), at)
                     mgroups.getOrPut(at.optString("status").ifBlank{"unknown"}){ArrayList()}.add(item)
                 }
                 mgroups.forEach { entry -> val status = entry.key; shelves += Shelf("kitsu.manga."+status, "Kitsu · Manga · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) }
@@ -451,15 +633,25 @@ object TrackerLibraryRepository {
         val out=ArrayList<Shelf>()
         for((status,label) in statuses){
             val rows = pages("Anime", status, "anime")
-            val items=buildList{for(r in rows)shikiMedia(r.optJSONObject("anime"))?.let(::add)}.distinctBy { it.uniqueId }
+            val items=buildList{for(r in rows){noteShikiEntry(r, false);shikiMedia(r.optJSONObject("anime"))?.let(::add)}}.distinctBy { it.uniqueId }
             if(items.isNotEmpty())out+=Shelf("shikimori."+status,"Shikimori · "+label,items)
         }
         for((status,label) in statuses){
             val rows = pages("Manga", status, "manga")
-            val items=buildList{for(r in rows)shikiMedia(r.optJSONObject("manga"), manga=true)?.let(::add)}.distinctBy { it.uniqueId }
+            val items=buildList{for(r in rows){noteShikiEntry(r, true);shikiMedia(r.optJSONObject("manga"), manga=true)?.let(::add)}}.distinctBy { it.uniqueId }
             if(items.isNotEmpty())out+=Shelf("shikimori.manga."+status,"Shikimori · Manga · "+label,items)
         }
         return Result.success(out)
+    }
+    /** user_rates rows carry status + watched episodes/chapters beside the media. */
+    private fun noteShikiEntry(row: JSONObject?, manga: Boolean) {
+        if (row == null) return
+        val media = row.optJSONObject(if (manga) "manga" else "anime") ?: return
+        val id = media.optInt("id", 0)
+        if (id <= 0) return
+        val seen = row.optInt(if (manga) "chapters" else "episodes", 0)
+        entryStates[entryKey("shikimori", id.toString())] =
+            EntryState(row.optString("status"), seen, "Shikimori")
     }
     private fun aniListMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null;val t=o.optJSONObject("title")
@@ -470,6 +662,22 @@ object TrackerLibraryRepository {
         val english=t?.optString("english")?.trim().orEmpty().takeIf{it.isNotBlank()&&!it.equals(title,ignoreCase=true)}.orEmpty()
         val next=o.optJSONObject("nextAiringEpisode")?.optLong("airingAt",0L)?.takeIf{it>0}?.let{java.time.Instant.ofEpochSecond(it).toString()}
         return MediaItem("anilist",id.toString(),title,MediaType.SERIES,o.optJSONObject("coverImage")?.optString("large"),o.optJSONObject("startDate")?.optInt("year",0)?.takeIf{it>0},rawType=if(manga)"manga" else "anime",rating=o.optDouble("averageScore",0.0).takeIf{it>0}?.div(10.0),nextEpisodeDate=next,metadataSource="AniList",originalTitle=english)
+    }
+    /** MAL's list_status rides on every node once asked for — same per-title memory as AniList. */
+    private fun noteMalEntry(n: JSONObject?) {
+        if (n == null) return
+        val id = n.optInt("id", 0)
+        if (id <= 0) return
+        val ls = n.optJSONObject("list_status") ?: return
+        val watched = ls.optInt("num_episodes_watched", 0).takeIf { it > 0 }
+            ?: ls.optInt("num_chapters_read", 0)
+        entryStates[entryKey("mal", id.toString())] =
+            EntryState(ls.optString("status"), watched, "MyAnimeList")
+    }
+    private fun noteKitsuEntry(trackerId: String, at: JSONObject?) {
+        if (trackerId.isBlank() || at == null) return
+        entryStates[entryKey("kitsu", trackerId)] =
+            EntryState(at.optString("status"), at.optInt("progress", 0), "Kitsu")
     }
     private fun malMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null

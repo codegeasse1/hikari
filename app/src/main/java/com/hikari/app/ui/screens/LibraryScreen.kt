@@ -141,6 +141,8 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     var remoteShelves by remember { mutableStateOf<List<TrackerLibraryRepository.Shelf>>(emptyList()) }
     var remoteError by remember { mutableStateOf<String?>(null) }
     var remoteLoading by remember { mutableStateOf(false) }
+    // Background refresh behind stale shelves — the list stays visible.
+    var remoteUpdating by remember { mutableStateOf(false) }
     // Tapping the tracker error retries the load in place — a transient
     // rate-limit no longer needs an app restart to clear.
     var trackerRetry by remember { mutableStateOf(0) }
@@ -148,12 +150,20 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         if (trackerSource == "nuvio") {
             remoteShelves = emptyList()
             remoteError = null
+            remoteUpdating = false
         } else {
-            remoteLoading = true
-            val result = TrackerLibraryRepository.load(app)
-            remoteShelves = result.getOrDefault(emptyList())
+            // Stale-while-revalidate: paint whatever we last saw instantly,
+            // then refresh behind it. Only a truly first load spins.
+            val stale = TrackerLibraryRepository.peekAny(trackerSource)
+            remoteShelves = stale ?: emptyList()
+            remoteError = null
+            remoteLoading = stale == null
+            remoteUpdating = stale != null
+            val result = TrackerLibraryRepository.load(app, refresh = TrackerLibraryRepository.peekFresh(trackerSource) == null)
+            remoteShelves = result.getOrDefault(stale.orEmpty())
             remoteError = result.exceptionOrNull()?.message
             remoteLoading = false
+            remoteUpdating = false
         }
     }
     // Type pills filter BOTH the saved grid and the tracker shelves (an AniList
@@ -251,6 +261,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                     Text(tr("Watchlists and personal lists from your connected tracker"),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (remoteLoading) Text(tr("Loading…"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    else if (remoteUpdating) Text(tr("Updating…"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     else if (!remoteError.isNullOrBlank()) Text(
                         remoteError.orEmpty(),
                         style = MaterialTheme.typography.labelSmall,
@@ -659,12 +670,11 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
     var query by remember { mutableStateOf("") }
     val searchPlaceholder = tr("Search this shelf…")
     LaunchedEffect(source, shelfKey, shelfRetry) {
-        loading = true
-        error = null
-        val result = TrackerLibraryRepository.load(app, source)
-        val shelf = result.getOrNull()?.firstOrNull { it.key == shelfKey }
-        val all = shelf?.items.orEmpty()
-        items = if (filter.isBlank()) all else all.filter {
+        // The shelf is usually already in memory from the Library page — paint
+        // it instantly, then confirm behind it. No more double full-library
+        // downloads (the old code re-fetched everything, doubling rate-limit
+        // hits and blanking the grid when the second fetch failed).
+        fun applyFilter(all: List<MediaItem>): List<MediaItem> = if (filter.isBlank()) all else all.filter {
             when (filter) {
                 "anime" -> it.providerId.startsWith("aniyomi|") || it.rawType == "aniyomi" || it.rawType == "anime"
                 "manga" -> it.rawType == "manga"
@@ -673,6 +683,14 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
                 else -> true
             }
         }
+        val staleAll = TrackerLibraryRepository.peekAny(source)?.firstOrNull { it.key == shelfKey }?.items.orEmpty()
+        items = applyFilter(staleAll)
+        loading = staleAll.isEmpty()
+        error = null
+        val result = TrackerLibraryRepository.load(app, source, refresh = TrackerLibraryRepository.peekFresh(source) == null)
+        val shelf = result.getOrNull()?.firstOrNull { it.key == shelfKey }
+        val all = shelf?.items.orEmpty()
+        items = applyFilter(all)
         if (result.isFailure && shelf == null) error = result.exceptionOrNull()?.message
         else if (shelf == null) error = shelfNotFound
         loading = false
