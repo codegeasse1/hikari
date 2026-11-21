@@ -1965,6 +1965,7 @@ fun DetailScreen(
         else sortedEps.take(p).map { it.id }.toSet()
     }
     /** "Watching · Ep 5" / "Completed" line under the episodes header. */
+    @Composable
     fun trackerStatusLine(isSeries: Boolean, isManga: Boolean): String? {
         val e = trackerEntry ?: return null
         val label = when (e.status.uppercase()) {

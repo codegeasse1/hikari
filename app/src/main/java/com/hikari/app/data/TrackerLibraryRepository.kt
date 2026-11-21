@@ -401,7 +401,6 @@ object TrackerLibraryRepository {
         val waitMs = aniListRateLimitedUntilMs - System.currentTimeMillis()
         if (waitMs > 0) return Result.failure(IllegalStateException(
             "AniList rate-limited — retry in ~" + ((waitMs + 999) / 1000).coerceAtLeast(1) + "s (tap to retry)."))
-        val out=ArrayList<Shelf>()
         // Both halves fly together now (was: manga waited out anime's full
         // retry chain) — total wait is the slower half, not the sum.
         val animeLists: JSONArray?
@@ -414,7 +413,7 @@ object TrackerLibraryRepository {
         }
         if (animeLists == null && mangaLists.length() == 0)
             return Result.failure(IllegalStateException(
-                if (aniListAuthFailed) "AniList login expired (HTTP 401) — reconnect AniList in Settings " + "\\u2192" + " Trackers."
+                if (aniListAuthFailed) "AniList login expired (HTTP 401) — reconnect AniList in Settings " + "\u2192" + " Trackers."
                 else aniListRateMessage()))
         // A finished fetch proves the window passed.
         aniListRateLimitedUntilMs = 0L
@@ -426,7 +425,7 @@ object TrackerLibraryRepository {
         for(i in 0 until mangaLists.length()){
             val l=mangaLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList Manga"};val a=l.optJSONArray("entries")?:JSONArray()
             val items=buildList{for(j in 0 until a.length()){val e=a.optJSONObject(j)?:continue;noteAniListEntry(e);aniListMedia(e.optJSONObject("media"), manga=true)?.let(::add)}}.distinctBy{it.uniqueId}
-            if(items.isNotEmpty())out+=Shelf("anilist.manga."+i+"."+name,items)
+            if(items.isNotEmpty())out+=Shelf("anilist.manga."+i+"."+name,name,items)
         }
         return Result.success(out)
     }
