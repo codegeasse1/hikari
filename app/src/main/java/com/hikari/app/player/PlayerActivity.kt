@@ -3881,8 +3881,44 @@ class PlayerActivity : ComponentActivity() {
             // already answered a terminal failure this session (or a URL a probe
             // found dead) is skipped, so the tap lands on something that can
             // actually play instead of burning a full error cycle first.
-            else -> healthyStartIndex()
+            else -> {
+                // Direct play with a real default quality starts on a server
+                // carrying it — chooser mode never reaches here.
+                val wanted = runCatching {
+                    (applicationContext as HikariApp).store.playerDefaultQuality()
+                }.getOrDefault(0)
+                val qi = qualityStartIndex(wanted)
+                if (qi >= 0) qi else healthyStartIndex()
+            }
         }
+    }
+
+    /** First healthy server carrying the default quality [wanted], or -1.
+     *  Direct play only (the chooser is manual): best at-or-below the wanted
+     *  height, lowest-above when everything is taller — the in-stream default
+     *  rule lifted to the server list. Ties keep today's biases
+     *  (probe-verified, then the title's own provider, then discovery order);
+     *  unknown-height servers never win while a known one exists. A name is
+     *  only a claim — a wrong pick falls back through the normal error cycle. */
+    private fun qualityStartIndex(wanted: Int): Int {
+        if (wanted <= 0 || sources.isEmpty()) return -1
+        val healthyIdx = sources.indices.filter { i ->
+            val s = sources[i]
+            !s.isTorrent && s.url.isNotBlank() &&
+                mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
+        }
+        if (healthyIdx.isEmpty()) return -1
+        val known = healthyIdx.mapNotNull { i ->
+            val h = DefaultPlayback.heightOfName(sources[i].name, sources[i].details)
+            if (h > 0) i to h else null
+        }
+        if (known.isEmpty()) return -1
+        val h = known.filter { it.second <= wanted }.maxByOrNull { it.second }?.second
+            ?: known.minByOrNull { it.second }!!.second
+        val same = known.filter { it.second == h }.map { it.first }
+        return same.firstOrNull { sources[it].probeVerified() }
+            ?: same.firstOrNull { sources[it].isFromOrigin() }
+            ?: same.first()
     }
 
     /** First server that is neither on a host that already failed terminally

@@ -1,4 +1,8 @@
 
+## 0.12.132
+
+- Direct play now honors the default quality at server choice: with "don't play directly" off and a real default (e.g. 1080p), playback starts on a healthy server whose name carries that quality (best at-or-below, lowest-above when everything is taller; ties keep probe-verified then own-provider then order). Chooser mode is untouched, remembered last-servers still win, Auto disables it, and a mislabeled server falls back through the normal error cycle
+
 ## 0.12.131
 
 - Tracker library stops refetching everything on every open: shelves stay in memory (5-minute fresh, 30-minute stale), so reopening Library or coming back from a title paints instantly with an "Updating…" hint while a quiet refresh confirms behind it; only a truly first load shows "Loading…"

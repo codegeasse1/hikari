@@ -97,13 +97,24 @@ object DefaultPlayback {
         return maxOf(height, width * 9 / 16)
     }
 
+    /** Resolution a server's name/details state (1080, 720, …), 0 when unknown.
+     *  Same reading the download planner uses, for the player-side server
+     *  pick (see PlayerActivity.qualityStartIndex). */
+    fun heightOfName(name: String, details: String): Int {
+        val t = name + " " + details
+        Regex("""(?<![0-9])(2160|1440|1080|720|576|480|360|240)\s*p""", RegexOption.IGNORE_CASE)
+            .find(t)?.let { return it.groupValues[1].toInt() }
+        if (Regex("""(^|[^a-z0-9])(4k|uhd)([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return 2160
+        if (Regex("""(^|[^a-z0-9])fhd([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return 1080
+        return 0
+    }
+
     /**
      * Which of [heights] to use for [wanted]: the best one at or below it, and when everything is
      * above it the lowest one (the next one up). Entries <= 0 are ignored. Returns the index into
      * [heights], or -1 when [wanted] is Auto or nothing is usable.
      */
-    fun pickQuality(heights: List<Int>, wanted: Int): Int {
-        if (wanted <= 0) return -1
+    fun pickQuality(heights: List<Int>, wanted: Int): Int {        if (wanted <= 0) return -1
         var below = -1
         var above = -1
         for (i in heights.indices) {
