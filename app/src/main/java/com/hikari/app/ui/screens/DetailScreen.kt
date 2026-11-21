@@ -1964,26 +1964,7 @@ fun DetailScreen(
         if (p <= 0 || sortedEps.isEmpty()) emptySet()
         else sortedEps.take(p).map { it.id }.toSet()
     }
-    /** "Watching · Ep 5" / "Completed" line under the episodes header. */
-    @Composable
-    fun trackerStatusLine(isSeries: Boolean, isManga: Boolean): String? {
-        val e = trackerEntry ?: return null
-        val label = when (e.status.uppercase()) {
-            "COMPLETED" -> tr("Completed")
-            "CURRENT", "WATCHING", "READING", "REWATCHING" -> tr("Watching")
-            "PLANNING", "PLAN_TO_WATCH", "PLAN TO WATCH" -> tr("Plan to Watch")
-            "PAUSED", "ON_HOLD", "ON HOLD" -> tr("On Hold")
-            "DROPPED" -> tr("Dropped")
-            else -> e.status.replace('_', ' ').lowercase()
-                .replaceFirstChar { c -> if (c.isLowerCase()) c.uppercaseChar() else c }
-        }
-        val src = e.source.ifBlank { tr("Tracker") }
-        val prog = if (e.progress > 0 && isSeries) {
-            val unit = if (isManga) tr("Ch %s") else tr("Ep %s")
-            " · " + unit.replace("%s", e.progress.toString())
-        } else ""
-        return "$src · $label$prog"
-    }
+
     // Nuvio parity: Specials (season 0) sort last and never open by default —
     // the page lands on Season 1 with real episodes, not on featurettes.
     val seasons = remember(sortedEps) {
@@ -5613,11 +5594,27 @@ fun DetailScreen(
                     }
                     // Tracker-known state for this title (your status on the
                     // service + how far you watched/read) — nothing when the
-                    // title has no tracker entry.
-                    trackerStatusLine(markIsSeries, m?.rawType == "manga")?.let { line ->
+                    // title has no tracker entry. Text is built inside item{}
+                    // so tr() stays in a @Composable context.
+                    if (trackerEntry != null) {
                         item(key = "ep-tracker-state") {
+                            val te = trackerEntry!!
+                            val tlabel = when (te.status.uppercase()) {
+                                "COMPLETED" -> tr("Completed")
+                                "CURRENT", "WATCHING", "READING", "REWATCHING" -> tr("Watching")
+                                "PLANNING", "PLAN_TO_WATCH", "PLAN TO WATCH" -> tr("Plan to Watch")
+                                "PAUSED", "ON_HOLD", "ON HOLD" -> tr("On Hold")
+                                "DROPPED" -> tr("Dropped")
+                                else -> te.status.replace('_', ' ').lowercase()
+                                    .replaceFirstChar { c -> if (c.isLowerCase()) c.uppercaseChar() else c }
+                            }
+                            val tsrc = te.source.ifBlank { tr("Tracker") }
+                            val tprog = if (te.progress > 0 && markIsSeries) {
+                                val unit = if (m?.rawType == "manga") tr("Ch %s") else tr("Ep %s")
+                                " · " + unit.replace("%s", te.progress.toString())
+                            } else ""
                             Text(
-                                line,
+                                "$tsrc · $tlabel$tprog",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.padding(horizontal = 16.dp),
