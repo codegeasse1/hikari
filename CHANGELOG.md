@@ -1,6 +1,7 @@
 
-## 0.12.128
+## 0.12.129
 
+- Dual audio survives undecodable donor tracks: the donor now starts on the first track this phone can actually decode (your log's FSL EAC3 5.1 case — the phone has no Dolby Digital Plus decoder — no longer errors on the default track), a decoder failure steps to the next playable track on the same donor with a "Trying compatible audio…" toast instead of killing the pairing, the track picker badges undecodable tracks as Not playable, and only a donor with nothing playable releases with video sound restored
 - Series rows that arrive typed as movies no longer stick at Episodes (0): when the late full meta corrects the page to series after the movie shortcut already settled episodes empty, the lookup restarts once automatically (the Bleach: Thousand-Year Blood War case — 4K HDHUB's row said movie and the first TMDB resolve agreed before tv won), proven by a "type corrected to series" log line; real movies behave exactly as before
 
 ## 0.12.127

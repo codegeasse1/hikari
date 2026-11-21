@@ -1694,6 +1694,21 @@ class PlayerActivity : ComponentActivity() {
     /** Which audio index the dual-track picker was already offered for — so a
      *  Multi-Audio second server asks once per pairing, not on every sync. */
     private var dualPickerShownFor = -1
+    /** Donor tracks already tried this pairing ("audioIndex:group:track") —
+     *  the codec fallback walks to the next untried playable track instead
+     *  of replaying the one that just failed to decode. */
+    private var dualTriedDonorTracks = mutableSetOf<String>()
+    /** True when this phone has a decoder for [f]'s codec. A donor can resolve
+     *  fine and still be undecodeable here (the FSL EAC3 5.1 case on MediaTek:
+     *  MediaCodecAudioRenderer NO_UNSUPPORTED_TYPE) — those tracks are badged,
+     *  never auto-picked, and skipped by the error fallback. Unknown mime-type
+     *  gets the benefit of the doubt. */
+    private fun donorAudioPlayable(f: Format): Boolean {
+        val mime = f.sampleMimeType ?: return true
+        return runCatching {
+            androidx.media3.exoplayer.mediacodec.MediaCodecUtil.getDecoderInfo(mime, false, false) != null
+        }.getOrDefault(true)
+    }
 
     /** The user chose "Off" in the subtitle sheet. */
     private var textOff = false
@@ -14257,6 +14272,7 @@ class PlayerActivity : ComponentActivity() {
             dualPlayer = dual
             dualAudioIndex = audioIndex
             dualPickerShownFor = -1
+            dualTriedDonorTracks.clear()
             // A second server that mixes but never reports an error still reads
             // as "selected multi and then audio not coming" — surface its
             // failure instead of silence.
@@ -14266,6 +14282,20 @@ class PlayerActivity : ComponentActivity() {
                         "Player",
                         "dual audio error on \"${src.name}\": ${rootMessage(error).take(220)}",
                     )
+                    // A track this phone cannot decode (the FSL EAC3 5.1 case)
+                    // is not a dead donor: step to the next playable track on
+                    // the SAME donor first — only release when nothing playable
+                    // is left.
+                    if (dualAudioIndex == audioIndex && tryNextDonorTrack(audioIndex)) {
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@PlayerActivity,
+                                I18n.t("Trying compatible audio…"),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                        return
+                    }
                     runOnUiThread {
                         Toast.makeText(
                             this@PlayerActivity,
@@ -14307,6 +14337,7 @@ class PlayerActivity : ComponentActivity() {
         dualPlayer = null
         dualAudioIndex = -1
         dualPickerShownFor = -1
+        dualTriedDonorTracks.clear()
         runCatching { player?.volume = 1f }
     }
 
@@ -14423,6 +14454,39 @@ class PlayerActivity : ComponentActivity() {
         return true
     }
 
+    /** Steps the donor to its next untried PLAYABLE audio track (same server,
+     *  same video underneath). Returns true when a switch fired — the caller
+     *  must NOT release the pair. Marks the outgoing track tried, so a second
+     *  failure keeps walking forward instead of bouncing. */
+    private fun tryNextDonorTrack(audioIndex: Int): Boolean {
+        val dual = dualPlayer ?: return false
+        if (dualAudioIndex != audioIndex) return false
+        val groups = dual.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        for (g in groups) {
+            val ov = dual.trackSelectionParameters.overrides[g.mediaTrackGroup]
+            ov?.trackIndices?.forEach { dualTriedDonorTracks.add("$audioIndex:${g.mediaTrackGroup.hashCode()}:$it") }
+        }
+        for (g in groups) {
+            val mg = g.mediaTrackGroup
+            for (i in 0 until mg.length) {
+                val key = "$audioIndex:${mg.hashCode()}:$i"
+                if (key in dualTriedDonorTracks) continue
+                if (!donorAudioPlayable(mg.getFormat(i))) continue
+                dualTriedDonorTracks.add(key)
+                dual.trackSelectionParameters = dual.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(TrackSelectionOverride(mg, ImmutableList.of(i)))
+                    .build()
+                runCatching { player?.currentPosition?.let { dual.seekTo(it) } }
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "dual audio fallback to playable donor track $i (${mg.getFormat(i).sampleMimeType})",
+                )
+                return true
+            }
+        }
+        return false
+    }
+
     /** Offers the second server's embedded audio languages once per pairing.
      *  EVERY donor gets its track list — Hindi / English / Spanish or just
      *  the one track it carries — so "Audio only" always answers with what
@@ -14451,6 +14515,43 @@ class PlayerActivity : ComponentActivity() {
                     Toast.makeText(
                         this@PlayerActivity,
                         I18n.t("That server gave no sound — video sound restored."),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                if (dualAudioIndex == audioIndex) stopDualAudio()
+                return@launch
+            }
+            // Never start on a track this phone cannot decode: the default
+            // pick is usually the first track, which is exactly the EAC3 5.1
+            // that errors on MediaTek phones. Pin the first playable track now
+            // (the picker below can still move it), and release with a clear
+            // message when NOTHING on the donor is decodeable here.
+            var pinned = false
+            for (g in dual.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }) {
+                if (pinned) break
+                val mg = g.mediaTrackGroup
+                for (i in 0 until mg.length) {
+                    if (!donorAudioPlayable(mg.getFormat(i))) continue
+                    val key = "$audioIndex:${mg.hashCode()}:$i"
+                    dualTriedDonorTracks.add(key)
+                    dual.trackSelectionParameters = dual.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(TrackSelectionOverride(mg, ImmutableList.of(i)))
+                        .build()
+                    runCatching { player?.currentPosition?.let { dual.seekTo(it) } }
+                    com.hikari.app.data.Logs.log(
+                        "Player",
+                        "dual audio pinned playable donor track $i (${mg.getFormat(i).sampleMimeType})",
+                    )
+                    pinned = true
+                    break
+                }
+            }
+            if (!pinned) {
+                com.hikari.app.data.Logs.log("Player", "dual audio donor has no phone-playable tracks on \"${srcName.take(80)}\" — releasing")
+                runOnUiThread {
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        I18n.t("Your phone can't decode that server's sound — video sound restored."),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -14493,16 +14594,20 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         val rows = mutableListOf<TrackRow>()
+        val playableFlags = mutableListOf<Boolean>()
         for (group in groups) {
             val mg = group.mediaTrackGroup
             for (i in 0 until mg.length) {
                 val f = mg.getFormat(i)
                 val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                val playable = donorAudioPlayable(f)
+                playableFlags.add(playable)
                 rows.add(
                     TrackRow(
                         label = label,
                         sub = trackSub(label, f.label, f.id),
-                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        badge = if (!playable) I18n.t("Not playable")
+                        else channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
                         group = group,
                         index = i,
                     )
@@ -14525,6 +14630,16 @@ class PlayerActivity : ComponentActivity() {
             iconRes = R.drawable.ic_audio,
         ) { which ->
             val row = rows.getOrNull(which) ?: return@showGlassMenu
+            if (playableFlags.getOrElse(which) { true } != true) {
+                Toast.makeText(
+                    this,
+                    I18n.t("Your phone can't decode that track — pick another."),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                showDualAudioTrackPicker(waited = true)
+                return@showGlassMenu
+            }
+            dualTriedDonorTracks.add("$dualAudioIndex:${row.group.mediaTrackGroup.hashCode()}:${row.index}")
             dual.trackSelectionParameters = dual.trackSelectionParameters.buildUpon()
                 .setOverrideForType(
                     TrackSelectionOverride(row.group.mediaTrackGroup, ImmutableList.of(row.index))
