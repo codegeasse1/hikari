@@ -1,7 +1,18 @@
 
 ## 0.12.132
 
-- Direct play now honors the default quality at server choice: with "don't play directly" off and a real default (e.g. 1080p), playback starts on a healthy server whose name carries that quality (best at-or-below, lowest-above when everything is taller; ties keep probe-verified then own-provider then order). Chooser mode is untouched, remembered last-servers still win, Auto disables it, and a mislabeled server falls back through the normal error cycle
+- Added default quality and audio select
+- Added Hikari Music
+- Added new integrations
+- Added a new servers page
+- Added new customize options
+- Divided manga and novel section
+- Fixed TV UI
+- Fixed lagging issues
+- Added tracker status — shows which episode/chapter you have watched or read
+- Fixed audio donor — you can now select audio from another server (earlier it wasn't working)
+- Fixed wrong episode issues
+- Direct play now starts on a server matching your default quality
 
 ## 0.12.131
 
