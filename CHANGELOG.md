@@ -1,4 +1,11 @@
 
+## 0.12.130
+
+- Dual-audio EAC3 now actually plays: the second player uses the same FFmpeg-backed renderers as the main player, so Dolby Digital Plus / AC-3 Hindi/English/Spanish dubs decode in software where the phone has no hardware decoder (the exact "same server plays as video but fails as donor" case — the video player always had FFmpeg, the donor didn't); zero APK growth, the library was already bundled
+- Detail page feels instant without stale data: episode rows paint as soon as names land instead of waiting out the slow backfill/stills enrichment, and cast / production / trailers sections show shimmer skeletons while their shelves pass is still resolving — placeholders, never yesterday's rows
+- Fresh-install defaults: AioMetadata legs (movies/series + anime) default OFF until the user adds their own endpoint/key, Season & episode ordering defaults OFF until enabled; both TMDB toggles stay ON; anyone who already flipped a toggle keeps their choice
+- Cut-off settings text fixed: tapping any toggle's description expands it to full text (tap again to collapse)
+
 ## 0.12.129
 
 - Dual audio survives undecodable donor tracks: the donor now starts on the first track this phone can actually decode (your log's FSL EAC3 5.1 case — the phone has no Dolby Digital Plus decoder — no longer errors on the default track), a decoder failure steps to the next playable track on the same donor with a "Trying compatible audio…" toast instead of killing the pairing, the track picker badges undecodable tracks as Not playable, and only a donor with nothing playable releases with video sound restored

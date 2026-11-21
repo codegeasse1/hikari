@@ -4636,7 +4636,7 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
-        if (!runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(true)) {
+        if (!runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(false)) {
             com.hikari.app.data.Logs.log(
                 "Meta",
                 "ordering off: keeping ${episodes.size} rows untouched for \"${item.title.take(50)}\"",
@@ -4848,7 +4848,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 return@withContext finishEpisodes(item, selKey, epsKey, aioNamed, publish)
             }
         }
-        if (!ownsEpisodeNumbering(item) && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(true) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        if (!ownsEpisodeNumbering(item) && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && runCatching { HikariApp.instance.store.episodeOrdering() }.getOrDefault(false) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
             fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
             val tmdbId = if (TrackerAnimeResolver.isTrackerAnime(item)) {
@@ -5417,6 +5417,12 @@ class ContentRepository(private val manager: ProviderManager) {
         val withNames = if (enrichLeft() > 0L) {
             withTimeoutOrNull(enrichLeft()) { withRealEpisodeNames(item, restored) } ?: restored
         } else restored
+        // Paint rows BEFORE the slow enrichment below: the list appears as
+        // soon as names land, and details/stills fill in after. Previously
+        // the backfill + stills (each with multi-second budgets) all ran
+        // before the first publish, which is what kept the page on
+        // "Loading episodes…" after the rows were already known.
+        publish(withNames)
         val filled = if (enrichLeft() > 0L) {
             withTimeoutOrNull(enrichLeft()) { backfillEpisodeDetails(item, publish(withNames)) } ?: withNames
         } else withNames

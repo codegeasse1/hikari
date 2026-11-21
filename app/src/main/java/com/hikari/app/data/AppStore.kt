@@ -382,7 +382,9 @@ class AppStore(private val ctx: Context) {
         /** Optional Simkl app ID (free at simkl.com/developer, no login) so
          *  Simkl metadata works without connecting the Simkl tracker. */
         val ANIME_SIMKL_APP_ID = stringPreferencesKey("animeMetaSimklAppId")
-        /** AioMetadata first-leg for anime (see [AioMetadata]). On by default. */
+        /** AioMetadata first-leg for anime (see [AioMetadata]). Off by default:
+         *  it needs the user's own endpoint/key, so the user turns it on
+         *  after adding those. */
         val ANIME_AIO = booleanPreferencesKey("animeMetaAio")
         /** Manga metadata: keyless AniList manga records for every title
          *  (blurbs, genres, covers). On unless the user switches it off. */
@@ -395,11 +397,13 @@ class AppStore(private val ctx: Context) {
         val PORNHWA_API_KEY = stringPreferencesKey("pornhwaApiKey")
         /** Movies & series metadata from TMDB (no login, bundled keys). */
         val VIDEO_TMDB = booleanPreferencesKey("videoMetaTmdb")
-        /** AioMetadata first-leg for movies & series. On by default. */
+        /** AioMetadata first-leg for movies & series. Off by default: it needs
+         *  the user's own endpoint/key (see [AIO_BASE_URL]). */
         val VIDEO_AIO = booleanPreferencesKey("videoMetaAio")
         /** Season & episode ordering: when on, flat season-1 lists may be cut
          *  into per-season numbering and TMDB may supply a missing list.
-         *  Enrichment (names, images) never depends on this. On by default. */
+         *  Enrichment (names, images) never depends on this. Off by default;
+         *  the user can enable it later. */
         val EPISODE_ORDERING = booleanPreferencesKey("episodeOrdering")
         /** AioMetadata backend endpoint + key (Settings -> Integrations -> Metadata sources). Blank endpoint = Aio legs skip. */
         val AIO_BASE_URL = stringPreferencesKey("aioBaseUrl")
@@ -830,7 +834,7 @@ class AppStore(private val ctx: Context) {
     fun animeSimklAppIdFlow(): Flow<String> = store.data.map { it[K.ANIME_SIMKL_APP_ID] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeSimklAppId(): String = animeSimklAppIdFlow().first()
     suspend fun setAnimeSimklAppId(value: String) { write("ANIME_SIMKL_APP_ID") { it[K.ANIME_SIMKL_APP_ID] = value } }
-    fun animeAioFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    fun animeAioFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_AIO] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeAio(): Boolean = animeAioFlow().first()
     suspend fun setAnimeAio(value: Boolean) { write("ANIME_AIO") { it[K.ANIME_AIO] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun mangaAnilistFlow(): Flow<Boolean> = store.data.map { it[K.MANGA_ANILIST] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -845,10 +849,10 @@ class AppStore(private val ctx: Context) {
     fun videoTmdbFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoTmdb(): Boolean = videoTmdbFlow().first()
     suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
-    fun videoAioFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    fun videoAioFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_AIO] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoAio(): Boolean = videoAioFlow().first()
     suspend fun setVideoAio(value: Boolean) { write("VIDEO_AIO") { it[K.VIDEO_AIO] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
-    fun episodeOrderingFlow(): Flow<Boolean> = store.data.map { it[K.EPISODE_ORDERING] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    fun episodeOrderingFlow(): Flow<Boolean> = store.data.map { it[K.EPISODE_ORDERING] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun episodeOrdering(): Boolean = episodeOrderingFlow().first()
     suspend fun setEpisodeOrdering(value: Boolean) { write("EPISODE_ORDERING") { it[K.EPISODE_ORDERING] = value }; runCatching { MetaCache.bumpSourcesEpoch() } }
     fun aioBaseUrlFlow(): Flow<String> = store.data.map { it[K.AIO_BASE_URL].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)

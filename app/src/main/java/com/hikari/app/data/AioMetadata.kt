@@ -95,13 +95,13 @@ object AioMetadata {
     suspend fun isConfigured(): Boolean = addonRoot() != null
 
     suspend fun animeEnabled(): Boolean =
-        runCatching { HikariApp.instance.store.animeAio() }.getOrDefault(true)
+        runCatching { HikariApp.instance.store.animeAio() }.getOrDefault(false)
 
     suspend fun moviesEnabled(): Boolean =
-        runCatching { HikariApp.instance.store.videoAio() }.getOrDefault(true)
+        runCatching { HikariApp.instance.store.videoAio() }.getOrDefault(false)
 
     /** The toggle that owns [item]: the Anime toggle for anime, the Movies &
-     *  series toggle for everything else. Both default ON (see AppStore). */
+     *  series toggle for everything else. Both default OFF (see AppStore). */
     suspend fun enabledFor(item: MediaItem): Boolean =
         if (item.type == MediaType.MOVIE) moviesEnabled()
         else if (item.rawType.contains("anime", true)) animeEnabled()

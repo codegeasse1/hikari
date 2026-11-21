@@ -1698,13 +1698,19 @@ class PlayerActivity : ComponentActivity() {
      *  the codec fallback walks to the next untried playable track instead
      *  of replaying the one that just failed to decode. */
     private var dualTriedDonorTracks = mutableSetOf<String>()
-    /** True when this phone has a decoder for [f]'s codec. A donor can resolve
-     *  fine and still be undecodeable here (the FSL EAC3 5.1 case on MediaTek:
-     *  MediaCodecAudioRenderer NO_UNSUPPORTED_TYPE) — those tracks are badged,
-     *  never auto-picked, and skipped by the error fallback. Unknown mime-type
-     *  gets the benefit of the doubt. */
+    /** True when this phone can decode [f]'s codec. Platform MediaCodec is
+     *  asked first; the bundled FFmpeg software decoders (see the donor
+     *  player's NextRenderersFactory below — same net as the main player)
+     *  cover Dolby EAC-3/AC-3, which is exactly what used to toast
+     *  "your phone can't decode that server's sound" on MediaTek phones.
+     *  Unknown mime-type gets the benefit of the doubt. */
     private fun donorAudioPlayable(f: Format): Boolean {
         val mime = f.sampleMimeType ?: return true
+        // FFmpeg software net (bundled via nextlib, no extra download):
+        // these play on the donor even with no platform decoder.
+        if (mime.equals("audio/eac3", ignoreCase = true) ||
+            mime.equals("audio/ac3", ignoreCase = true)
+        ) return true
         return runCatching {
             androidx.media3.exoplayer.mediacodec.MediaCodecUtil.getDecoderInfo(mime, false, false) != null
         }.getOrDefault(true)
@@ -14249,6 +14255,18 @@ class PlayerActivity : ComponentActivity() {
                 .setLoadErrorHandlingPolicy(RetryFriendlyLoadErrorPolicy())
             val dual = ExoPlayer.Builder(this)
                 .setMediaSourceFactory(mediaFactory)
+                // Same software-decode safety net as the main player (see the
+                // BoostRenderersFactory above): nextlib's NextRenderersFactory
+                // registers FFmpeg audio decoders that kick in ONLY when the
+                // platform MediaCodec has nothing for the track. Without this
+                // the donor ran on MediaCodec alone, so an EAC-3 5.1 Hindi dub
+                // that plays fine as video (FFmpeg there) failed as a donor
+                // with NO_UNSUPPORTED_TYPE. No APK growth: nextlib is already
+                // bundled for the main player.
+                .setRenderersFactory(
+                    NextRenderersFactory(this)
+                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+                )
                 .setLoadControl(buildLoadControl())
                 .setAudioAttributes(
                     androidx.media3.common.AudioAttributes.Builder()

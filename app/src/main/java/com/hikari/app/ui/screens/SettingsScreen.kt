@@ -3151,6 +3151,12 @@ private fun SettingsToggle(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    // Long explanations are cut at one line — tap the description to expand
+    // it to full text (tap again to collapse), so nothing is only readable
+    // as "AioMeta...".
+    var supportingExpanded by androidx.compose.runtime.remember(label) {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -3168,8 +3174,11 @@ private fun SettingsToggle(
                     supporting,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    maxLines = if (supportingExpanded) Int.MAX_VALUE else 1,
+                    overflow = if (supportingExpanded) TextOverflow.Visible else TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable(
+                        onClickLabel = tr(if (supportingExpanded) "Collapse" else "Expand"),
+                    ) { supportingExpanded = !supportingExpanded },
                 )
             }
         }

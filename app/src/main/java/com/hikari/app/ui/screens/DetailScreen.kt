@@ -192,6 +192,7 @@ import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.components.HeroArtwork
+import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.Cs3
@@ -588,6 +589,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _extras = MutableStateFlow<TitleExtras?>(null)
     val extras: StateFlow<TitleExtras?> = _extras.asStateFlow()
 
+    /** True once the shelves upgrade pass for the current page has finished
+     *  (or shelves were skipped entirely, e.g. IPTV/error). While false with
+     *  empty sections, the page shows skeleton placeholders instead of blank
+     *  space — never stale rows, never a settled look mid-load. */
+    private val _shelvesSettled = MutableStateFlow(true)
+    val shelvesSettled: StateFlow<Boolean> = _shelvesSettled.asStateFlow()
+
     /** Title logo from the addon legs (Aio/Cinemeta `logo`), for the detail
      *  hero when TMDB — the usual logo source — is off. */
     private val _addonLogo = MutableStateFlow<String?>(null)
@@ -809,11 +817,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _episodesLoaded.value = false
             _episodesLoading.value = false
             _episodesFailed.value = false
+            _extras.value = null
+            _shelvesSettled.value = false
             _related.value = emptyList()
             _similar.value = emptyList()
             _relatedFromPlugin.value = false
             _recommended.value = emptyList()
-            _extras.value = null
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
                 "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
@@ -841,6 +850,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         "title from Search."
                 _loading.value = false
                 _episodesLoaded.value = true
+                _shelvesSettled.value = true
                 return@launch
             }
             val base = MediaItem(
@@ -862,6 +872,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val sgFast = newShelvesGeneration()
             if (!com.hikari.app.data.IptvMark.of(base)) {
                 launch { loadShelves(base, sgFast, fastPass = true) }
+            } else {
+                // IPTV channels get no shelves passes at all: settle now so
+                // no skeleton ever waits on a pass that will never run.
+                _shelvesSettled.value = true
             }
             _vegaPacks.value = emptyList()
             _vegaMovieOptions.value = emptyList()
@@ -892,6 +906,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 val fullMeta = metaDeferred.await()
                 if (gen == episodeGeneration && !com.hikari.app.data.IptvMark.of(fullMeta)) {
                     loadShelves(fullMeta, newShelvesGeneration())
+                } else if (gen == episodeGeneration) {
+                    // No upgrade pass will run (e.g. IPTV full meta): settle
+                    // so skeletons never wait on a pass that never comes.
+                    _shelvesSettled.value = true
                 }
             }
             val fastMeta = withTimeoutOrNull(3_000L) { metaDeferred.await() }
@@ -1288,6 +1306,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _relatedFromPlugin.value = true
                 _similar.value = emptyList()
                 _recommended.value = emptyList()
+                if (!fastPass && shelvesGen == shelvesGeneration) _shelvesSettled.value = true
                 return@withContext
             }
             _relatedFromPlugin.value = false
@@ -1317,6 +1336,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             } else if (shelvesGen == shelvesGeneration) {
                 _recommended.value = emptyList()
             }
+            // The upgrade (non-fast) pass is the final shelves word for this
+            // page: sections render from here on without skeletons. The fast
+            // pass deliberately does NOT settle — it paints partial rows while
+            // the full answer is still coming.
+            if (!fastPass && shelvesGen == shelvesGeneration) _shelvesSettled.value = true
         }
     }
 
@@ -1724,6 +1748,7 @@ fun DetailScreen(
     val similar by vm.similar.collectAsState()
     val recommended by vm.recommended.collectAsState()
     val extras by vm.extras.collectAsState()
+    val shelvesSettled by vm.shelvesSettled.collectAsState()
     val ratings by vm.ratings.collectAsState()
     val tmdbSectionsOk by vm.tmdbSectionsOk.collectAsState()
     val addonLogo by vm.addonLogo.collectAsState()
@@ -5213,6 +5238,12 @@ fun DetailScreen(
                         }
                     }
                 }
+                // Shelves still resolving with nothing to show yet: skeletons
+                // hold each row's place instead of blank space — real rows
+                // replace them in place, so nothing stale is ever painted.
+                if (!isTvLayout && extras?.companies.isNullOrEmpty() && !shelvesSettled) {
+                    item(key = "shelves-skel-companies") { ShimmerRow() }
+                }
                 val extrasNow = extras
                 if (extrasNow != null && extrasNow.cast.isNotEmpty()) {
                     val cast = extrasNow.cast
@@ -5325,6 +5356,9 @@ fun DetailScreen(
                         }
                     }
                 }
+                if ((extrasNow == null || extrasNow.cast.isEmpty()) && !shelvesSettled) {
+                    item(key = "shelves-skel-cast") { ShimmerRow() }
+                }
                 extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
                     if (isTvLayout) {
                         item {
@@ -5369,6 +5403,9 @@ fun DetailScreen(
                             }
                         }
                     }
+                }
+                if (extras?.trailers.isNullOrEmpty() && !shelvesSettled) {
+                    item(key = "shelves-skel-trailers") { ShimmerRow() }
                 }
                 if (isTvLayout && tvScreenshots.isNotEmpty()) {
                     item(key = "tv-screenshots") {
