@@ -906,6 +906,25 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         // (see below): a late meta must not uncorrect that.
                         type = if (cur?.type == MediaType.SERIES) MediaType.SERIES else full.type,
                     )
+                    // A row that ARRIVED as a movie but IS a series (the Bleach
+                    // case: 4K HDHUB's row said movie and the first TMDB resolve
+                    // agreed, tv only won later): the movie shortcut below has
+                    // already settled episodes to empty+loaded by now, so a
+                    // mere header correction would leave Episodes (0) until
+                    // reopen. Restart the lookup once instead — but only when
+                    // it already settled (loaded && !loading), never while a
+                    // lookup is still in flight.
+                    val corrected = _meta.value
+                    if (corrected?.type == MediaType.SERIES && cur?.type != MediaType.SERIES &&
+                        _episodesLoaded.value && !_episodesLoading.value &&
+                        _episodes.value.isNullOrEmpty()
+                    ) {
+                        com.hikari.app.data.Logs.log(
+                            "Episodes",
+                            "\"${corrected.title.take(60)}\" type corrected to series — (re)loading episode list",
+                        )
+                        reloadEpisodes()
+                    }
                 }
             }
             withContext(Dispatchers.IO) {

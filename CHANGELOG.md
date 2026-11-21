@@ -1,4 +1,8 @@
 
+## 0.12.128
+
+- Series rows that arrive typed as movies no longer stick at Episodes (0): when the late full meta corrects the page to series after the movie shortcut already settled episodes empty, the lookup restarts once automatically (the Bleach: Thousand-Year Blood War case — 4K HDHUB's row said movie and the first TMDB resolve agreed before tv won), proven by a "type corrected to series" log line; real movies behave exactly as before
+
 ## 0.12.127
 
 - Episode list no longer flashes a false "No episode list available": every lookup resets the finished flags first so the page shows Loading until it really settles, series get one bounded second chance only on fast/transient misses (a full exhausted sweep settles at once with the retry button instead of searching twice as long), partial rows publish as they land, and only a genuinely empty final shows the empty text
