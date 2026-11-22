@@ -827,7 +827,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // the app (origin /meta + TMDB + shelves + episode art). When the
             // heap is nearly full, drop the re-fetchable image caches first
             // (see HikariApp.relieveHeapPressure) — a no-op without pressure.
-            runCatching { (app as HikariApp).relieveHeapPressure("detail") }
+            runCatching { HikariApp.instance.relieveHeapPressure("detail") }
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
                 "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
