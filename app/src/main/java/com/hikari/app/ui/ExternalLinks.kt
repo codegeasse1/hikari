@@ -16,7 +16,7 @@ const val TELEGRAM_CHANNEL_URL = "https://t.me/CodegeasseHikari"
 const val REDDIT_COMMUNITY_URL = "https://www.reddit.com/r/HikariApp"
 
 /** Hikari's Discord server — help, discussion and release news. */
-const val DISCORD_INVITE_URL = "https://discord.gg/hdwB78Ahq"
+const val DISCORD_INVITE_URL = "https://discord.gg/h8cDgZGY9p"
 
 fun openYouTubeVideo(context: Context, videoId: String, title: String? = null): Boolean {
     val id = videoId.trim()

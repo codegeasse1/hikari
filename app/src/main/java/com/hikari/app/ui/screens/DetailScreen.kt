@@ -823,6 +823,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _similar.value = emptyList()
             _relatedFromPlugin.value = false
             _recommended.value = emptyList()
+            // Memory choke point: a detail open is the heaviest transient in
+            // the app (origin /meta + TMDB + shelves + episode art). When the
+            // heap is nearly full, drop the re-fetchable image caches first
+            // (see HikariApp.relieveHeapPressure) — a no-op without pressure.
+            runCatching { (app as HikariApp).relieveHeapPressure("detail") }
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
                 "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
@@ -862,6 +867,29 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 originalTitle = originalName.orEmpty(),
             )
             _meta.value = base
+            // Stale-while-revalidate: paint last visit's shelves instantly
+            // (see DetailSnapshotCache — episodes publish first from the
+            // repository's own episode cache and are NOT snapshotted here).
+            // The fast + upgrade passes below overwrite every section as
+            // fresher data lands. Key is type-agnostic on purpose: a row that
+            // arrives as MOVIE but resolves to SERIES (the Bleach case) must
+            // hit the same entry on reopen.
+            runCatching {
+                val snapFamily = manager.byId(base.providerId)?.config?.type
+                val snapAddonsKey = manager.providers.value
+                    .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                    .joinToString("|") { it.config.id + ":" + it.config.enabled }
+                val snapFp = com.hikari.app.data.MetaSources.fingerprint(base, snapFamily, snapAddonsKey)
+                com.hikari.app.data.DetailSnapshotCache.get(
+                    "${base.providerId}|${base.id}", snapFp,
+                )?.let { snap ->
+                    _extras.value = snap.extras
+                    _related.value = snap.related
+                    _similar.value = snap.similar
+                    _recommended.value = snap.recommended
+                    _addonLogo.value = snap.addonLogo
+                }
+            }
             _loading.value = false
             // TMDB shelves from the nav args RIGHT NOW (title/poster are all
             // TMDB needs to resolve): waiting for the origin's /meta first is
@@ -1340,7 +1368,31 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // page: sections render from here on without skeletons. The fast
             // pass deliberately does NOT settle — it paints partial rows while
             // the full answer is still coming.
-            if (!fastPass && shelvesGen == shelvesGeneration) _shelvesSettled.value = true
+            if (!fastPass && shelvesGen == shelvesGeneration) {
+                // Remember this page for the next open (see the seed in
+                // load()): same type-agnostic key, same fingerprint inputs.
+                runCatching {
+                    val snapFamily = manager.byId(item.providerId)?.config?.type
+                    val snapAddonsKey = manager.providers.value
+                        .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                        .joinToString("|") { it.config.id + ":" + it.config.enabled }
+                    val snapFp = com.hikari.app.data.MetaSources.fingerprint(item, snapFamily, snapAddonsKey)
+                    com.hikari.app.data.DetailSnapshotCache.put(
+                        "${item.providerId}|${item.id}",
+                        com.hikari.app.data.DetailSnapshotCache.Snapshot(
+                            meta = item,
+                            extras = _extras.value,
+                            related = _related.value,
+                            similar = _similar.value,
+                            recommended = _recommended.value,
+                            addonLogo = _addonLogo.value,
+                            fingerprint = snapFp,
+                            atMs = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+                _shelvesSettled.value = true
+            }
         }
     }
 

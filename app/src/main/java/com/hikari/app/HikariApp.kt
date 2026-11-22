@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.protobuf.ProtoBuf
 import okhttp3.ConnectionPool
@@ -207,6 +209,7 @@ class HikariApp : Application() {
         Logs.log("App", "onCreate · version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) sha ${BuildConfig.GIT_SHA}")
         installCrashHandler()
         watchForTheUserClosingTheApp()
+        startHeapWatcher()
         // Which kind of device this is — a phone/tablet or a television — asked
         // here, before anything can draw. ONE APK runs on both, and the answer
         // decides the whole layout (see com.hikari.app.tv.TvMode); it is asked
@@ -685,7 +688,56 @@ class HikariApp : Application() {
 
     private fun heapPressure(): Boolean {
         val rt = Runtime.getRuntime()
-        return rt.totalMemory() - rt.freeMemory() > rt.maxMemory() * 4 / 5
+        return rt.totalMemory() - rt.freeMemory() > rt.maxMemory() * memHardRatio
+    }
+
+    /** Early warning below the hard line: stills and other small fry go,
+     *  the full poster cache stays. */
+    private fun heapSoftPressure(): Boolean {
+        val rt = Runtime.getRuntime()
+        return rt.totalMemory() - rt.freeMemory() > rt.maxMemory() * memSoftRatio
+    }
+
+    /** Pressure points as fractions of THIS device's heap budget — a low-RAM
+     *  box cleans earlier, a flagship later; no fixed MB number anywhere. */
+    private val memTiers: Pair<Float, Float> by lazy {
+        val low = runCatching {
+            (getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)
+                ?.isLowRamDevice
+        }.getOrDefault(false) == true
+        if (low) 0.60f to 0.70f else 0.70f to 0.80f
+    }
+    private val memSoftRatio: Float get() = memTiers.first
+    private val memHardRatio: Float get() = memTiers.second
+
+    /** Activities between onStart and onStop (see the lifecycle callbacks):
+     *  the heap watcher only ticks while something of ours is on screen. */
+    private val foregroundActivities = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Foreground heap watch: between the system's own trim callbacks, poll
+     *  the ratio every 20s and clean in tiers — stills first, the full image
+     *  cache at the hard line. Two Runtime reads per tick; nothing else. */
+    private fun startHeapWatcher() {
+        appScope.launch {
+            while (isActive) {
+                delay(20_000)
+                if (foregroundActivities.get() <= 0) continue
+                runCatching {
+                    if (heapPressure()) relieveHeapPressure("watch")
+                    else if (heapSoftPressure()) softRelieve("watch")
+                }
+            }
+        }
+    }
+
+    /** Soft cleanup: drop decoded still frames only (see PosterLoader), no
+     *  full clear, no GC nudge. No-op without soft pressure. */
+    fun softRelieve(caller: String) {
+        if (!heapSoftPressure()) return
+        runCatching { com.hikari.app.ui.PosterLoader.clearMemory() }
+        runCatching {
+            Logs.log("Memory", "heap soft ($caller) · ${com.hikari.app.data.MemoryReport.short()} → dropped stills")
+        }
     }
 
     /** Drop the re-fetchable image caches when the heap is nearly full (see
@@ -764,6 +816,7 @@ class HikariApp : Application() {
 
             override fun onActivityStarted(activity: Activity) {
                 started++
+                foregroundActivities.incrementAndGet()
                 // An Activity is up: background work may hold the process again
                 // (see BackgroundWork.reopen — closing the app latches it shut).
                 com.hikari.app.work.BackgroundWork.reopen()
@@ -771,6 +824,7 @@ class HikariApp : Application() {
 
             override fun onActivityStopped(activity: Activity) {
                 started = (started - 1).coerceAtLeast(0)
+                foregroundActivities.decrementAndGet()
             }
 
             override fun onActivityDestroyed(activity: Activity) {

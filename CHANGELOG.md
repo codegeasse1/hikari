@@ -1,4 +1,10 @@
 
+## 0.12.133
+
+- Detail pages reopen instantly: last visit's sections paint at once and refresh behind with fresh data
+- Fixed lagging issues: the app now watches heap pressure and drops re-fetchable image caches first, plus a cleanup when opening details
+- Updated Discord invite link
+
 ## 0.12.132
 
 - Added default quality and audio select

@@ -16,7 +16,7 @@ Need help, found a bug, or want to request a feature? Join the **Hikari Telegram
 
 - **Telegram:** <https://t.me/CodegeasseHikari>
 - Telegram channel: https://t.me/DiscussionHikari
-- Discord: https://discord.gg/FR3FZ6wgF
+- Discord: https://discord.gg/h8cDgZGY9p
 - Reddit: https://www.reddit.com/r/HikariApp/
 
 Everyone is welcome — post your questions, bug reports, and feature requests there and I'll help you out.
