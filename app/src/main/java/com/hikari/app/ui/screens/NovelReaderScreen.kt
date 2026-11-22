@@ -212,7 +212,11 @@ fun NovelReaderScreen(
         Logs.log("Novel", "chapter [$providerId] ${mangaUrl.take(60)} tap idx=$idx0/${chapters.size} id=${chapter.take(80)} attempt=$reload")
         val xt0 = SystemClock.elapsedRealtime()
         val p = app.providers.byId(providerId)
-        if (p == null) {
+        // Offline first: a downloaded chapter reads from disk with no engine.
+        val offlineParts = withContext(Dispatchers.IO) {
+            com.hikari.app.manga.MangaOffline.offlineText(key, chapter)
+        }
+        if (p == null && offlineParts == null) {
             Logs.log("Novel", "chapter [$providerId] ${mangaUrl.take(60)} FAIL engine not installed")
             error = "This novel engine is not installed"
             loading = false
@@ -227,10 +231,10 @@ fun NovelReaderScreen(
             image = null,
             season = 1,
         )
-        val streams = withContext(Dispatchers.IO) {
+        val streams = if (p == null) emptyList() else withContext(Dispatchers.IO) {
             runCatching { p.getStreams(item, ep) }.getOrNull().orEmpty()
         }
-        val parts = streams.mapNotNull { it.text.takeIf { t -> t.isNotBlank() } }
+        val parts = offlineParts ?: streams.mapNotNull { it.text.takeIf { t -> t.isNotBlank() } }
         if (parts.isEmpty()) {
             Logs.log("Novel", "chapter [$providerId] ${mangaUrl.take(60)} id=${chapter.take(60)} FAIL no text in ${SystemClock.elapsedRealtime() - xt0}ms")
             error = "Chapter text unavailable"

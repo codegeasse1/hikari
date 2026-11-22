@@ -18,6 +18,14 @@ class HikariPageSource(
 
     override suspend fun downloadPageImage(page: MangaSource.PageDescriptor, target: File): File =
         withContext(Dispatchers.IO) {
+            // Offline chapters carry the local file as the image URL (see
+            // MangaOffline): serve it straight from disk, no network.
+            val local = File(page.imageUrl)
+            if (!page.imageUrl.startsWith("http") && local.isFile) {
+                target.parentFile?.mkdirs()
+                local.copyTo(target, overwrite = true)
+                return@withContext target
+            }
             val ext = httpSource
             if (ext == null) return@withContext downloadPlain(page, target)
             val spage = Page(0, url = page.pageUrl, imageUrl = page.imageUrl)

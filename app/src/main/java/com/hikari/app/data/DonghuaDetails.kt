@@ -57,6 +57,13 @@ object DonghuaDetails {
             p in setOf("anilist", "simkl", "mal", "kitsu", "shikimori", "trakt")
         ) return Pick.Tmdb
         if (isTmdbAnimation(item)) return Pick.Tmdb
+        // Live-action veto (see [isConfidentLiveActionTmdb]): a title TMDB
+        // confidently resolves as a NON-Animation entry must not be hijacked
+        // by an exact anime namesake ("Iron Man" 2008 vs Marvel Anime), which
+        // otherwise blanks its cast/trailers/Related rows and wears the
+        // anime's score. True anime films keep the Animation genre, so they
+        // still pick anime below. Fail-closed (unknown -> old behaviour).
+        if (runCatching { isConfidentLiveActionTmdb(item) }.getOrDefault(false)) return Pick.Tmdb
         val info = secondChanceAnime(item)
             ?: runCatching { load(item) }.getOrNull()?.takeIf { li ->
                 val qs = (item.allTitles + TmdbMeta.queryVariants(item.searchTitle))
@@ -65,6 +72,61 @@ object DonghuaDetails {
             }
             ?: return Pick.None
         return if (isUsable(info)) Pick.Anime(info) else Pick.None
+    }
+
+    /** True when TMDB confidently identifies [item] as a NON-Animation entry:
+     *  same >=40 title bar as the shelves trust gate, year within 2 when both
+     *  sides know it, and a genres list that names no Animation. Anything
+     *  unknown (unresolvable, nameless, genreless, network miss) returns false
+     *  so the caller keeps today's behaviour. The pure decision lives in
+     *  [liveActionVeto] (JVM-tested); this is just the network wrapper. */
+    private suspend fun isConfidentLiveActionTmdb(item: MediaItem): Boolean =
+        withContext(Dispatchers.IO) {
+            val resolved = com.hikari.app.nuvio.TmdbResolver.resolve(item) ?: return@withContext false
+            if (resolved.tmdbId.toLongOrNull() == null) return@withContext false
+            val seg = if (resolved.mediaType == "movie") "movie" else "tv"
+            val d = com.hikari.app.nuvio.TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap())
+                ?: return@withContext false
+            val names = listOf(
+                d.optString("title"), d.optString("name"),
+                d.optString("original_title"), d.optString("original_name"),
+            ).filter { it.isNotBlank() && it != "null" }
+            val variants = (item.allTitles + TmdbMeta.queryVariants(item.searchTitle))
+                .distinct().filter { it.isNotBlank() }
+            val raw = d.optString("release_date").ifBlank { d.optString("first_air_date") }
+            val genres = d.optJSONArray("genres")
+            val ids = ArrayList<Int>(genres?.length() ?: 0)
+            val gnames = ArrayList<String>(genres?.length() ?: 0)
+            for (i in 0 until (genres?.length() ?: 0)) {
+                val g = genres?.optJSONObject(i) ?: continue
+                ids.add(g.optInt("id", 0))
+                gnames.add(g.optString("name"))
+            }
+            liveActionVeto(names, variants, item.year, raw.take(4).toIntOrNull(), ids, gnames)
+        }
+
+    /** Pure live-action veto decision (see [isConfidentLiveActionTmdb]):
+     *  confident title match, no year clash, genres known with no Animation.
+     *  Plain data in/out so the JVM unit tests cover it. */
+    fun liveActionVeto(
+        tmdbNames: List<String>,
+        titleVariants: List<String>,
+        itemYear: Int?,
+        tmdbYear: Int?,
+        genreIds: List<Int>,
+        genreNames: List<String>,
+    ): Boolean {
+        if (tmdbNames.isEmpty() || titleVariants.isEmpty()) return false
+        var best = 0
+        for (v in titleVariants) for (n in tmdbNames) best = maxOf(best, TmdbMeta.titleScore(v, n))
+        if (best < 40) return false
+        if (itemYear != null && itemYear > 0 && tmdbYear != null &&
+            kotlin.math.abs(tmdbYear - itemYear) > 2
+        ) return false
+        if (genreIds.isEmpty()) return false
+        if (genreIds.any { it == 16 }) return false
+        if (genreNames.any { it.equals("animation", ignoreCase = true) }) return false
+        return true
     }
 
     /** Stable-miss memory for the second-chance probe: an AniList answer that

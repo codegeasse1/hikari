@@ -122,4 +122,85 @@ class PipelineUnitTest {
         val b = Episode(number = 1, id = "b", name = "Something Else Entirely", season = 1)
         assertEquals(2, EpisodeDubSub.mergedFor("k3", listOf(a, b)).size)
     }
+
+    @Test
+    fun liveActionVeto_savesIronManFromItsAnimeNamesake() {
+        // "Iron Man" (2008, Action/Sci-Fi) vs Marvel Anime's exact namesake:
+        // TMDB is confident and non-Animation, so the anime pick is vetoed and
+        // the live-action page keeps its cast/trailers/shelves.
+        assertTrue(
+            DonghuaDetails.liveActionVeto(
+                tmdbNames = listOf("Iron Man"),
+                titleVariants = listOf("Iron Man"),
+                itemYear = 2008,
+                tmdbYear = 2008,
+                genreIds = listOf(28, 878, 12),
+                genreNames = listOf("Action", "Science Fiction", "Adventure"),
+            )
+        )
+    }
+
+    @Test
+    fun liveActionVeto_keepsTrueAnimeAndFailsClosed() {        // A real anime film carries the Animation genre: no veto, anime wins.
+        assertFalse(
+            DonghuaDetails.liveActionVeto(
+                tmdbNames = listOf("Your Name."),
+                titleVariants = listOf("Your Name."),
+                itemYear = 2016,
+                tmdbYear = 2016,
+                genreIds = listOf(16, 18, 14),
+                genreNames = listOf("Animation", "Drama", "Fantasy"),
+            )
+        )
+        // Weak title match: no veto (old behaviour — anime may still win).
+        assertFalse(
+            DonghuaDetails.liveActionVeto(
+                tmdbNames = listOf("Totally Different Film"),
+                titleVariants = listOf("Iron Man"),
+                itemYear = 2008,
+                tmdbYear = 2008,
+                genreIds = listOf(28),
+                genreNames = listOf("Action"),
+            )
+        )
+        // Year clash: no veto.
+        assertFalse(
+            DonghuaDetails.liveActionVeto(
+                tmdbNames = listOf("Iron Man"),
+                titleVariants = listOf("Iron Man"),
+                itemYear = 2008,
+                tmdbYear = 2020,
+                genreIds = listOf(28),
+                genreNames = listOf("Action"),
+            )
+        )
+        // Unknown genres: fail closed, no veto.
+        assertFalse(
+            DonghuaDetails.liveActionVeto(
+                tmdbNames = listOf("Iron Man"),
+                titleVariants = listOf("Iron Man"),
+                itemYear = 2008,
+                tmdbYear = 2008,
+                genreIds = emptyList(),
+                genreNames = emptyList(),
+            )
+        )
+    }
+
+    @Test
+    fun offlineExt_prefersContentTypeThenUrlThenMagic() {
+        // Offline page files need the right extension: reply type wins, then
+        // the URL, then the bytes' magic, then jpg.
+        assertEquals("png", MangaOffline.extForContentType("image/png", "https://x/y", null))
+        assertEquals("jpg", MangaOffline.extForContentType("image/jpeg", "https://x/y.webp", null))
+        assertEquals("webp", MangaOffline.extForContentType(null, "https://x/y.webp?sig=1", null))
+        assertEquals(
+            "png",
+            MangaOffline.extForContentType(
+                null, "https://x/y",
+                byteArrayOf(0x89.toByte(), 0x50.toByte(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            )
+        )
+        assertEquals("jpg", MangaOffline.extForContentType(null, "https://x/y", null))
+    }
 }

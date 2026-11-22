@@ -30,6 +30,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -42,6 +45,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -51,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -76,8 +81,10 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.MetaCache
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
+import com.hikari.app.manga.DlStatus
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaMark
+import com.hikari.app.manga.MangaOffline
 import com.hikari.app.manga.MangaProvider
 import com.hikari.app.manga.MangaRecord
 import com.hikari.app.manga.MangaStore
@@ -114,6 +121,9 @@ fun MangaDetailScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var meta by remember { mutableStateOf<MediaItem?>(null) }
     var chapters by remember { mutableStateOf<List<MangaChapter>>(MangaStore.chaptersFor(key).orEmpty()) }
+    // Offline download states: one revision counter drives every row, so a
+    // 500-chapter list never does file IO during composition.
+    val dlRev by MangaOffline.rev().collectAsState()
     var followed by remember { mutableStateOf(MangaStore.isFollowed(key)) }
     var newestFirst by remember { mutableStateOf(true) }
     // Chapters | Comments tab below the characters row — tappable AND
@@ -623,6 +633,71 @@ fun MangaDetailScreen(
                 }
             }
 
+            if (tab == 0 && chapters.isNotEmpty()) {
+            item(key = "detail-dl-all") {
+                dlRev
+                val dlStates = remember(chapters, dlRev) {
+                    chapters.map { MangaOffline.stateFor(key, it.url) }
+                }
+                val doneCount = dlStates.count { it.status == DlStatus.DONE }
+                val running = dlStates.any {
+                    it.status == DlStatus.RUNNING || it.status == DlStatus.QUEUED
+                }
+                val runningDone = dlStates.sumOf { it.done }
+                val runningTotal = dlStates.sumOf { it.total }
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (doneCount >= chapters.size) tr("Downloaded for offline")
+                            else tr("%s of %s downloaded")
+                                .replaceFirst("%s", doneCount.toString())
+                                .replaceFirst("%s", chapters.size.toString()),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (running) {
+                            TextButton(onClick = { MangaOffline.cancelManga(key) }) {
+                                Text(tr("Cancel"))
+                            }
+                        } else if (doneCount < chapters.size) {
+                            FilledTonalButton(
+                                onClick = {
+                                    MangaOffline.downloadAll(
+                                        providerId, mangaUrl,
+                                        title, posterUrl, chapters,
+                                    )
+                                },
+                            ) {
+                                Icon(
+                                    Icons.Filled.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(tr("Download all"))
+                            }
+                        }
+                    }
+                    if (running && runningTotal > 0) {
+                        LinearProgressIndicator(
+                            progress = (runningDone.toFloat() / runningTotal).coerceIn(0f, 1f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
+            }
+
             if (loading && chapters.isEmpty()) {
                 item(key = "detail-loading") {
                     Box(
@@ -658,12 +733,24 @@ fun MangaDetailScreen(
 
             items(shown.size, key = { i -> "ch-" + shown[i].url + "#" + i }) { i ->
                 val chapter = shown[i]
+                val dl = MangaOffline.stateFor(key, chapter.url)
                 ChapterRow(
                     chapter = chapter,
                     isCurrent = progress?.chapterUrl == chapter.url,
                     pageLabel = progress?.takeIf { it.chapterUrl == chapter.url }?.pageLabel,
                     readState = readMarks[chapter.url],
                     hint = chapterHintFor(chapter, chapterHints),
+                    dl = dl,
+                    onDownload = {
+                        when (MangaOffline.stateFor(key, chapter.url).status) {
+                            DlStatus.DONE -> MangaOffline.deleteChapter(key, chapter.url)
+                            DlStatus.RUNNING, DlStatus.QUEUED ->
+                                MangaOffline.cancelChapter(key, chapter.url)
+                            else -> MangaOffline.downloadChapter(
+                                providerId, mangaUrl, title, posterUrl, chapter,
+                            )
+                        }
+                    },
                     onClick = {
                         openChapter(nav, providerId, mangaUrl, title, posterUrl, chapter)
                     },
@@ -1088,6 +1175,8 @@ private fun ChapterRow(
     pageLabel: String?,
     readState: com.hikari.app.manga.MangaChapterRead?,
     hint: String? = null,
+    dl: com.hikari.app.manga.DlState = com.hikari.app.manga.DlState(),
+    onDownload: () -> Unit = {},
     onClick: () -> Unit,
 ) {
     Row(
@@ -1152,6 +1241,62 @@ private fun ChapterRow(
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+        // Offline: per-chapter download state. DONE taps delete the files,
+        // RUNNING taps cancel, everything else (tap) downloads.
+        Spacer(Modifier.width(4.dp))
+        when (dl.status) {
+            DlStatus.DONE -> IconButton(
+                onClick = onDownload,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = tr("Downloaded — tap to delete"),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            DlStatus.RUNNING, DlStatus.QUEUED -> IconButton(
+                onClick = onDownload,
+                modifier = Modifier.size(36.dp),
+            ) {
+                val frac = if (dl.total > 0) (dl.done.toFloat() / dl.total).coerceIn(0f, 1f) else -1f
+                if (frac >= 0f) {
+                    CircularProgressIndicator(
+                        progress = frac,
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                }
+            }
+            DlStatus.FAILED -> IconButton(
+                onClick = onDownload,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Filled.ErrorOutline,
+                    contentDescription = dl.error ?: tr("Download failed — tap to retry"),
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            else -> IconButton(
+                onClick = onDownload,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = tr("Download chapter"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }

@@ -246,6 +246,13 @@ fun MangaReaderScreen(
         chapters.firstOrNull { it.url == url }?.label.orEmpty()
 
     suspend fun fetchPages(url: String): List<StreamSource> = withContext(Dispatchers.IO) {
+        // Offline first: a downloaded chapter reads from disk with no engine.
+        com.hikari.app.manga.MangaOffline.offlinePages(key, url)
+            ?.takeIf { it.isNotEmpty() }?.let { off ->
+                return@withContext off.mapIndexed { i, pg ->
+                    StreamSource(name = "Page ${i + 1}", url = pg.file, pageUrl = pg.pageUrl)
+                }
+            }
         val p = app.providers.byId(providerId) ?: return@withContext emptyList()
         val idx = chapters.indexOfFirst { it.url == url }
         val ep = Episode(number = idx + 1, id = url, name = null, season = 1)
@@ -271,7 +278,9 @@ fun MangaReaderScreen(
         loading = true
         error = null
         pages = emptyList()
-        if (app.providers.byId(providerId) == null) {
+        if (app.providers.byId(providerId) == null &&
+            com.hikari.app.manga.MangaOffline.offlinePages(key, chapter).isNullOrEmpty()
+        ) {
             error = I18n.t("This manga engine is not installed.") // any ContentProvider is ok
             loading = false
             return@LaunchedEffect

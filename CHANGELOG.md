@@ -1,4 +1,9 @@
 
+## 0.12.136
+
+- Fixed famous live-action movies showing no cast, trailers, or recommendations: an exact anime namesake (e.g. Marvel Anime's "Iron Man") no longer hijacks the movie's detail page — when TMDB confidently identifies the title as non-animation, the live-action page wins and cast, trailers, production, and shelves all show
+- Manga and novel chapters now download for offline reading: per-chapter download buttons plus Download all on the detail page, with progress, cancel, and delete; downloaded chapters open in the readers with no connection (works even if the engine is later uninstalled)
+
 ## 0.12.135
 
 - Downloads now run multi-connection (1DM parity): direct files split into up to 16 parallel Range parts, so speed is the server's total allowance instead of one connection's share; strict hosts auto-step down (16 → 8 → 4 → 1) and are remembered per host, with single-stream fallback when ranges are refused
