@@ -97,7 +97,10 @@ object DetailSnapshotCache {
     private fun saveDisk() {
         val arr = JSONArray()
         // Newest last-wins: LinkedHashMap is access-ordered, eldest first.
-        for ((key, snap) in map.entries.takeLast(DISK_MAX)) {
+        val all = ArrayList(map.entries)
+        val start = (all.size - DISK_MAX).coerceAtLeast(0)
+        for (i in start until all.size) {
+            val (key, snap) = all[i]
             runCatching {
                 val o = writeSnapshot(snap)
                 o.put("key", key)
