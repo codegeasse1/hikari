@@ -45,6 +45,24 @@ object DonghuaDetails {
         info.overview.isNotBlank() || info.score10 > 0.0 || info.votes > 0
 
     suspend fun pick(item: MediaItem): Pick {
+        // Memoized per open: extras(), every shelf() row and the anime
+        // fallback each call pick() for the same title, and every miss used
+        // to cost its own AniList round-trip. 10-min TTL, bounded.
+        val key = "pick|" + item.providerId.lowercase() + "|" + item.type + "|" +
+            item.id.lowercase() + "|" + item.searchTitle.lowercase()
+        pickMem[key]?.let { (at, p) ->
+            if (System.currentTimeMillis() - at < PICK_TTL_MS) return p
+        }
+        val p = pickUncached(item)
+        pickMem[key] = System.currentTimeMillis() to p
+        if (pickMem.size > 200) pickMem.keys.firstOrNull()?.let { pickMem.remove(it) }
+        return p
+    }
+
+    private val pickMem = ConcurrentHashMap<String, Pair<Long, Pick>>()
+    private const val PICK_TTL_MS = 10 * 60 * 1000L
+
+    private suspend fun pickUncached(item: MediaItem): Pick {
         if (!isAnimeCandidate(item)) return secondChancePick(item)
         if (isTmdbAnimation(item)) return Pick.Tmdb
         val info = load(item) ?: return Pick.None

@@ -472,6 +472,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun newShelvesGeneration(): Int = ++shelvesGeneration
 
+    /** True when the origin's full meta changed the title's identity enough
+     *  that the immediate shelves pass (built from nav args) must re-run.
+     *  Anything else (poster/backdrop/overview refinements) is already
+     *  patched into _meta above and needs no shelf rebuild. */
+    private fun shelvesIdentityChanged(a: MediaItem, b: MediaItem): Boolean {
+        if (a.type != b.type || a.id != b.id || a.providerId != b.providerId) return true
+        if (a.title != b.title || a.originalTitle != b.originalTitle) return true
+        if (a.year != b.year || a.rawType != b.rawType) return true
+        if (a.genres != b.genres) return true
+        return false
+    }
+
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -898,12 +910,19 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // meta when it lands; the generation tickets keep the newer pass
             // winning no matter which finishes last.
             val sgFast = newShelvesGeneration()
-            if (!com.hikari.app.data.IptvMark.of(base)) {
+            // The full (docs-carrying) pass runs IMMEDIATELY from the nav
+            // args instead of waiting on the origin's /meta: that wait held
+            // every shelf for seconds on slow sources. The origin meta below
+            // only triggers a correction pass when it actually changes the
+            // title's identity (type/year/ids) — see shelvesIdentityChanged.
+            val fullShelvesJob: Job? = if (!com.hikari.app.data.IptvMark.of(base)) {
                 launch { loadShelves(base, sgFast, fastPass = true) }
+                launch { loadShelves(base, newShelvesGeneration()) }
             } else {
                 // IPTV channels get no shelves passes at all: settle now so
                 // no skeleton ever waits on a pass that will never run.
                 _shelvesSettled.value = true
+                null
             }
             _vegaPacks.value = emptyList()
             _vegaMovieOptions.value = emptyList()
@@ -933,7 +952,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             launch {
                 val fullMeta = metaDeferred.await()
                 if (gen == episodeGeneration && !com.hikari.app.data.IptvMark.of(fullMeta)) {
-                    loadShelves(fullMeta, newShelvesGeneration())
+                    // Bounded wait for the immediate full pass, then re-run
+                    // only when the origin meta changed the title's identity —
+                    // the common case is already painted and settled.
+                    runCatching { withTimeoutOrNull(20_000L) { fullShelvesJob?.join() } }
+                    if (gen == episodeGeneration && shelvesIdentityChanged(base, fullMeta)) {
+                        loadShelves(fullMeta, newShelvesGeneration())
+                    }
                 } else if (gen == episodeGeneration) {
                     // No upgrade pass will run (e.g. IPTV full meta): settle
                     // so skeletons never wait on a pass that never comes.
@@ -1276,7 +1301,45 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val resolved = if (tmdbOk) runCatching {
                 com.hikari.app.data.MetaSources.resolveForShelves(item, docs)
             }.getOrNull() else null
-            val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item, resolved) }.getOrNull() else null
+            // CloudStream (.cs3) titles: "plugin" shows the plugin's OWN
+            // recommendations in the Related row; "tmdb" always shows TMDB's
+            // Related/Similar; "both" (TMDB + plugin) shows TMDB's Related and
+            // Similar plus a standalone Recommended row with the plugin list.
+            // TMDB fills in whenever the plugin row is not used. The first
+            // (nav-args) pass leaves the plugin shelf to the second one: the
+            // plugin's load() response is cached by then, so the site is not
+            // asked twice — except in "both" mode, where the TMDB shelves
+            // still load on every pass.
+            val recSrc = runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
+                .getOrDefault("plugin")
+            val cs3 = manager.byId(item.providerId) as? com.hikari.app.cs3.Cs3MainApiProvider
+            // Every leg below only shares `resolved`: fan them out
+            // concurrently instead of awaiting each in turn, so one pass
+            // costs ~the slowest leg instead of the sum (instant detail).
+            // The fast plugin pass still skips the TMDB shelves entirely.
+            val skipTmdbShelves = fastPass && recSrc == "plugin" && cs3 != null
+            val exD = async {
+                if (tmdbOk) runCatching { TmdbMeta.extras(item, resolved) }.getOrNull() else null
+            }
+            val relD = if (skipTmdbShelves) null else async {
+                if (tmdbOk) runCatching { TmdbMeta.related(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
+            }
+            val simTmdbD = if (skipTmdbShelves) null else async {
+                if (tmdbOk) runCatching { TmdbMeta.similar(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
+            }
+            val wantCs3 = cs3 != null && (recSrc == "plugin" || recSrc == "both") && !fastPass
+            val cs3D = async {
+                val p = cs3
+                if (!wantCs3 || p == null) emptyList()
+                else try {
+                    withTimeoutOrNull(15_000L) { p.getRecommendations(item) }.orEmpty()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    emptyList()
+                }
+            }
+            val ex = exD.await()
             val addonEx = if (externalOn && !fastPass) {
                 runCatching {
                     com.hikari.app.data.MetaSources.addonExtrasDocs(item, docs)
@@ -1291,45 +1354,32 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val merged = mergeShelfExtras(addonEx, ex, item)
             if (shelvesGen != shelvesGeneration) return@withContext
             _extras.value = merged
-            runCatching {
-                Ratings.load(
-                    item,
-                    ex?.details?.imdbId,
-                    ex?.details?.rating,
-                    ex?.details?.voteCount,
-                    // A source that had nothing to say just now is re-asked in
-                    // the background; when it finally answers, the strip grows
-                    // instead of staying frozen on the first attempt's misses.
-                    onUpdate = { if (shelvesGen == shelvesGeneration) _ratings.value = it },
-                )
-            }.getOrDefault(emptyList()).let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
-            // CloudStream (.cs3) titles: "plugin" shows the plugin's OWN
-            // recommendations in the Related row; "tmdb" always shows TMDB's
-            // Related/Similar; "both" (TMDB + plugin) shows TMDB's Related and
-            // Similar plus a standalone Recommended row with the plugin list.
-            // TMDB fills in whenever the plugin row is not used. The first
-            // (nav-args) pass leaves the plugin shelf to the second one: the
-            // plugin's load() response is cached by then, so the site is not
-            // asked twice — except in "both" mode, where the TMDB shelves
-            // still load on every pass.
-            val recSrc = runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
-                .getOrDefault("plugin")
-            val cs3 = manager.byId(item.providerId) as? com.hikari.app.cs3.Cs3MainApiProvider
-            var pluginRecs: List<MediaItem> = emptyList()
-            if (cs3 != null && (recSrc == "plugin" || recSrc == "both")) {
-                if (fastPass && recSrc != "both") return@withContext
-                if (!fastPass) {
-                    pluginRecs = try {
-                        withTimeoutOrNull(15_000L) { cs3.getRecommendations(item) }.orEmpty()
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        emptyList()
-                    }
-                    if (shelvesGen != shelvesGeneration) return@withContext
-                }
+            // Ratings need the extras' ids, so they start here — but run
+            // alongside the shelf awaits instead of ahead of them.
+            val ratingsD = async {
+                runCatching {
+                    Ratings.load(
+                        item,
+                        ex?.details?.imdbId,
+                        ex?.details?.rating,
+                        ex?.details?.voteCount,
+                        // A source that had nothing to say just now is re-asked in
+                        // the background; when it finally answers, the strip grows
+                        // instead of staying frozen on the first attempt's misses.
+                        onUpdate = { if (shelvesGen == shelvesGeneration) _ratings.value = it },
+                    )
+                }.getOrDefault(emptyList())
             }
+            if (skipTmdbShelves) {
+                ratingsD.await().let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
+                cs3D.cancel()
+                return@withContext
+            }
+            val pluginRecs = cs3D.await()
             if (recSrc == "plugin" && pluginRecs.isNotEmpty()) {
+                relD?.cancel()
+                simTmdbD?.cancel()
+                ratingsD.await().let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
                 _related.value = pluginRecs
                 _relatedFromPlugin.value = true
                 _similar.value = emptyList()
@@ -1338,9 +1388,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 return@withContext
             }
             _relatedFromPlugin.value = false
-            val rel = if (tmdbOk) runCatching { TmdbMeta.related(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
+            val rel = relD?.await().orEmpty()
             if (shelvesGen == shelvesGeneration) _related.value = rel
-            var sim = if (tmdbOk) runCatching { TmdbMeta.similar(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
+            var sim = simTmdbD?.await().orEmpty()
             // Addon recommendations (Aio serves these inside its meta doc,
             // merged across every trusted doc now): fill the Similar row
             // when TMDB is off or answered nothing.
@@ -1350,6 +1400,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }.getOrDefault(emptyList())
             }
             if (shelvesGen == shelvesGeneration) _similar.value = sim
+            ratingsD.await().let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
             if (!fastPass) {
                 com.hikari.app.data.Logs.log(
                     "Meta",

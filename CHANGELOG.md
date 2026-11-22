@@ -1,4 +1,8 @@
 
+## 0.12.137
+
+- Detail pages now load in a blink: cast, trailers, production, and recommendation rows fetch at the same time instead of one after another, the full pass starts immediately instead of waiting on slow sources, and last visit's sections survive app restarts
+
 ## 0.12.136
 
 - Fixed famous live-action movies showing no cast, trailers, or recommendations: an exact anime namesake (e.g. Marvel Anime's "Iron Man") no longer hijacks the movie's detail page — when TMDB confidently identifies the title as non-animation, the live-action page wins and cast, trailers, production, and shelves all show
