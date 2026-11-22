@@ -1,7 +1,11 @@
 package com.hikari.app.download
 
 import android.content.Context
+import androidx.media3.common.MimeTypes
 import com.hikari.app.HikariApp
+import com.hikari.app.data.Logs
+import com.hikari.app.net.Http
+import com.hikari.app.net.StreamProbe
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,7 +19,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -100,6 +106,11 @@ object DownloadsRepository {
             ensureLoaded(ctx)
             _tasks.update { list -> list.filterNot { it.id == task.id } + task }
             flush(ctx, true)
+            Logs.log(
+                "Download",
+                "enqueue ${task.id} kind=${task.kind} src=${task.sourceName.take(40)} " +
+                    "host=${runCatching { java.net.URI(task.url).host }.getOrDefault("?")}",
+            )
             DownloadService.start(ctx)
         }
     }
@@ -244,13 +255,31 @@ object DownloadsRepository {
         flush(ctx, true)
         val flag = cancelFlag(task.id)
         val workDir = workDirFor(ctx, task.id)
+        Logs.log("Download", "start ${task.id} kind=${task.kind} urlLen=${task.url.length}")
+        // Resolve-then-download: server rows often carry wrapper/landing URLs
+        // (text/html), not media — playback resolves these via StreamProbe,
+        // and the downloader now does the same BEFORE fetching a byte, so a
+        // wrapper page can never become a fake instant DONE ("Available
+        // offline" with nothing on disk). Falls back to the raw URL when
+        // nothing resolves; the engine's content guard still rejects pages
+        // loudly instead of saving them.
+        val effTask = try {
+            resolveForDownload(task, flag)
+        } catch (t: Throwable) {
+            if (t is DownloadCancelledException) throw t
+            Logs.log("Download", "not starting ${task.id} — ${t.message}")
+            update(ctx, task.id, force = true) {
+                it.copy(status = DownloadStatus.FAILED, error = t.message, bytesPerSec = 0L)
+            }
+            return
+        }
         var lastBytes = 0L
         var lastSample = System.currentTimeMillis()
         var speedEma = 0.0
         try {
             val result = DownloadEngine.run(
                 ctx = ctx,
-                task = task,
+                task = effTask,
                 workDir = workDir,
                 onProgress = { p ->
                     // Smoothed (EMA) transfer rate from the byte deltas between
@@ -277,11 +306,17 @@ object DownloadsRepository {
                     }
                 },
                 onConverting = {
+                    Logs.log("Download", "converting ${task.id}")
                     update(ctx, task.id, force = true) {
                         it.copy(status = DownloadStatus.CONVERTING, bytesPerSec = 0L)
                     }
                 },
                 isCancelled = { flag.get() },
+            )
+            Logs.log(
+                "Download",
+                "done ${task.id} kind=${task.kind} " +
+                    "local=${result.localPath ?: "-"} saved=${result.savedUri ?: "-"}",
             )
             update(ctx, task.id, force = true) {
                 it.copy(
@@ -299,15 +334,18 @@ object DownloadsRepository {
                 )
             }
         } catch (c: DownloadCancelledException) {
+            Logs.log("Download", "cancelled ${task.id}")
             update(ctx, task.id, force = true) {
                 it.copy(status = DownloadStatus.PAUSED, error = null, bytesPerSec = 0L)
             }
         } catch (t: Throwable) {
             if (flag.get()) {
+                Logs.log("Download", "cancelled ${task.id}")
                 update(ctx, task.id, force = true) {
                     it.copy(status = DownloadStatus.PAUSED, error = null, bytesPerSec = 0L)
                 }
             } else {
+                Logs.log("Download", "failed ${task.id} — ${t.message ?: t.javaClass.simpleName}")
                 update(ctx, task.id, force = true) {
                     it.copy(
                         status = DownloadStatus.FAILED,
@@ -317,5 +355,48 @@ object DownloadsRepository {
                 }
             }
         }
+    }
+
+    /** Resolve-then-download: the [task]'s URL rewritten to its playable form
+     *  (or the task unchanged when there is nothing to resolve or nothing
+     *  resolved — the engine's content guard still rejects pages loudly
+     *  instead of saving them). Throws only for DASH manifests (which the
+     *  engine cannot fetch) and cancellation; everything else falls back to
+     *  the raw URL. */
+    private suspend fun resolveForDownload(task: DownloadTask, flag: AtomicBoolean): DownloadTask {
+        val url = task.url
+        if (url.isBlank()) return task
+        // Already a media URL (extension, HLS/DASH flag, loopback proxy):
+        // probing it would only burn a single-use token or waste time.
+        if (!StreamProbe.needsResolve(url, false, task.isM3u8, false)) return task
+        if (flag.get()) throw DownloadCancelledException()
+        val ua = task.headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+        val cached = StreamProbe.cached(url)
+        if (cached != null) {
+            Logs.log("Download", "resolve mem-hit ${task.id}")
+            return applyResolved(task, cached)
+        }
+        val resolved = runCatching {
+            withTimeoutOrNull(30_000L) { StreamProbe.resolve(url, task.headers + ("User-Agent" to ua)) }
+        }.getOrNull()
+        if (resolved == null || resolved.url.isBlank()) {
+            Logs.log("Download", "resolve miss ${task.id} — trying raw URL")
+            return task
+        }
+        Logs.log("Download", "resolve hit ${task.id} mime=${resolved.mime ?: "-"}")
+        return applyResolved(task, resolved)
+    }
+
+    private fun applyResolved(task: DownloadTask, resolved: StreamProbe.Resolved): DownloadTask {
+        val m = resolved.mime
+        val low = resolved.url.substringBefore('?').lowercase()
+        // The engine has no DASH path: a manifest fetched as a file would be
+        // another fake DONE, so refuse it here with a clear error instead.
+        if (m == MimeTypes.APPLICATION_MPD || (m == null && low.contains(".mpd"))) {
+            throw IOException("Server gave a DASH stream — DASH downloads are not supported yet")
+        }
+        val m3u8 = m == MimeTypes.APPLICATION_M3U8 || (m == null && low.contains(".m3u8"))
+        if (resolved.url == task.url && m3u8 == task.isM3u8) return task
+        return task.copy(url = resolved.url, isM3u8 = m3u8)
     }
 }

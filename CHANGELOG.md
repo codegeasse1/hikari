@@ -1,4 +1,9 @@
 
+## 0.12.134
+
+- In-Hikari downloads no longer fake success: the downloader resolves the server link first (same as playback), and a web-page or empty reply now fails loudly instead of showing "Available offline" with nothing on disk
+- Downloads are now logged, so any future miss is provable from Settings → Logs & diagnostics
+
 ## 0.12.133
 
 - Detail pages reopen instantly: last visit's sections paint at once and refresh behind with fresh data

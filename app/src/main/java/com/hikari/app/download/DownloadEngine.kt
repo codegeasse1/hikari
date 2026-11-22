@@ -237,6 +237,7 @@ object DownloadEngine {
         isCancelled: () -> Boolean,
     ): HlsResult {
         val (text, finalUrl) = fetchText(masterUrl, headers, ua)
+        if (looksLikeWebPage(text)) throw IOException("Server returned a web page, not a stream")
         val top = parsePlaylist(text, finalUrl)
 
         val videoUrl: String
@@ -345,6 +346,7 @@ object DownloadEngine {
         ua: String,
     ): Long = try {
         val (text, finalUrl) = fetchText(playlistUrl, headers, ua)
+        if (looksLikeWebPage(text)) throw IOException("Server returned a web page, not a stream")
         var pl = parsePlaylist(text, finalUrl)
         if (pl.isMaster) {
             val best = pl.variants.maxByOrNull { it.bandwidth }
@@ -369,6 +371,7 @@ object DownloadEngine {
         isCancelled: () -> Boolean,
     ): Rendition {
         val (text, finalUrl) = fetchText(playlistUrl, headers, ua)
+        if (looksLikeWebPage(text)) throw IOException("Server returned a web page, not a stream")
         var pl = parsePlaylist(text, finalUrl)
         if (pl.isMaster) {
             val best = pl.variants.maxByOrNull { it.bandwidth } ?: pl.variants.firstOrNull()
@@ -581,6 +584,16 @@ object DownloadEngine {
                         return@use
                     }
                     if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                    // A wrapper/landing page saved as video.mp4 is exactly the
+                    // fake instant DONE ("Available offline" with nothing on
+                    // disk): reject non-media answers loudly instead.
+                    val ctype = resp.header("Content-Type").orEmpty()
+                    if (ctype.contains("text/html", ignoreCase = true)) {
+                        throw IOException("Server returned a web page (content-type text/html), not a video file")
+                    }
+                    if (ctype.contains("dash+xml", ignoreCase = true)) {
+                        throw IOException("Server gave a DASH stream — DASH downloads are not supported yet")
+                    }
                     val body = resp.body ?: throw IOException("Empty response body")
                     val append = byteRange == null && rangeStart != null && rangeStart!! > 0L && resp.code == 206
                     if (!append && byteRange == null && file.exists()) file.delete()
@@ -608,6 +621,9 @@ object DownloadEngine {
                             }
                         }
                     }
+                    // Zero bytes is never a video: without this a 200 with an
+                    // empty body becomes the same fake instant DONE as a page.
+                    if (file.length() == 0L) throw IOException("Server returned an empty file")
                 }
             } catch (e: IOException) {
                 // A thrown 428 (via fetch paths that throw) also falls through.
@@ -997,6 +1013,15 @@ object DownloadEngine {
             targetDuration = targetDur,
             mediaSequence = mediaSeq,
         )
+    }
+
+    /** A playlist fetch that answered with a web page (wrapper/landing URL
+     *  queued by mistake, or an expired signed link bouncing to a login
+     *  wall): fail loudly instead of parsing HTML lines as segments. */
+    private fun looksLikeWebPage(text: String): Boolean {
+        val t = text.trimStart()
+        if (t.length < 16) return false
+        return t.startsWith("<!DOCTYPE", ignoreCase = true) || t.startsWith("<html", ignoreCase = true)
     }
 
     /** `KEY=VAL,KEY2="quoted, with comma"` → map. */
