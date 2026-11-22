@@ -1,4 +1,8 @@
 
+## 0.12.135
+
+- Downloads now run multi-connection (1DM parity): direct files split into up to 16 parallel Range parts, so speed is the server's total allowance instead of one connection's share; strict hosts auto-step down (16 → 8 → 4 → 1) and are remembered per host, with single-stream fallback when ranges are refused
+
 ## 0.12.134
 
 - In-Hikari downloads no longer fake success: the downloader resolves the server link first (same as playback), and a web-page or empty reply now fails loudly instead of showing "Available offline" with nothing on disk

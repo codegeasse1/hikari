@@ -10,6 +10,7 @@ import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.hikari.app.data.Logs
 import com.hikari.app.net.Http
 import com.hikari.app.net.PlayerHttp
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,14 @@ import javax.crypto.spec.SecretKeySpec
  *  left intact so a later resume can continue it. */
 class DownloadCancelledException : IOException("Download cancelled")
 
+/** The host is throttling parallel connections (429/503): step the part
+ *  count down instead of failing. */
+private class ThrottledException : IOException("throttled")
+
+/** The host ignored the Range request: the split is impossible, fall back
+ *  to the single stream. */
+private class RangeUnsupportedException : IOException("range unsupported")
+
 data class DlProgress(
     val doneBytes: Long,
     val totalBytes: Long,
@@ -54,7 +63,21 @@ object DownloadEngine {
     private const val BUFFER = 1 shl 16
     private const val MAX_MEM_SEGMENT = 96L * 1024 * 1024
 
-    private const val SEGMENT_CONCURRENCY = 4
+    private const val SEGMENT_CONCURRENCY = 8
+
+    /** First-contact part count for multi-connection direct downloads (1DM
+     *  parity): stepped down per host on throttle signals, remembered after,
+     *  so a strong host + fast line runs at the ceiling and a strict host
+     *  still runs at the fastest IT allows. */
+    private const val MULTI_START_PARTS = 16
+
+    /** Smallest a part may be (a 10 MB file splits into 5, not 16 slivers). */
+    private const val PART_MIN_BYTES = 2L * 1024 * 1024
+
+    private const val PART_BUFFER = 1 shl 18
+
+    /** Last-good part count per host (see MULTI_START_PARTS). */
+    private val hostParts = ConcurrentHashMap<String, Int>()
 
     /** Segment fetches are retried this many times (rate-limit aware backoff,
      *  honoring Retry-After) so a transient 5xx/429 on one of the parallel
@@ -523,6 +546,11 @@ object DownloadEngine {
 
     // --------------------------------------------------------------- Direct --
 
+    /** Direct-file downloads go multi-connection (1DM parity): the file is
+     *  split into Range parts fetched in parallel, so the speed is the
+     *  server's total allowance instead of one connection's share. Falls
+     *  back to the single stream when the size is unknown, ranges are
+     *  refused, or the host throttles all the way down to 1. */
     private suspend fun downloadDirect(
         task: DownloadTask,
         headers: Map<String, String>,
@@ -536,12 +564,184 @@ object DownloadEngine {
             .takeIf { it.length in 1..4 && it.all { c -> c.isLetterOrDigit() } }
             ?: "mp4"
         val file = File(workDir, "video.$ext")
-        downloadToFile(
-            task.url, headers, ua, file, null, resume = true,
-            onBytes = { done, total -> reporter.video(done, total, 0L, 0L) },
-            isCancelled = isCancelled,
-        )
-        return file
+        val single = suspend {
+            downloadToFile(
+                task.url, headers, ua, file, null, resume = true,
+                onBytes = { done, total -> reporter.video(done, total, 0L, 0L) },
+                isCancelled = isCancelled,
+            )
+            file
+        }
+        val total = runCatching { probeLength(task.url, headers, ua) }.getOrDefault(-1L)
+        if (total <= 0L) return single()
+        val host = runCatching { java.net.URI(task.url).host ?: "?" }.getOrDefault("?")
+        var parts = (hostParts[host] ?: MULTI_START_PARTS)
+            .coerceAtMost(maxOf(1, (total / PART_MIN_BYTES).toInt()))
+        if (parts <= 1) return single()
+        var resumeParts = task.resumePartial
+        while (true) {
+            try {
+                Logs.log("Download", "multi $host ${total / 1048576}MB x$parts")
+                return fetchPartsMulti(
+                    task.url, headers, ua, workDir, file, total, parts,
+                    reporter, resumeParts, isCancelled,
+                ).also {
+                    hostParts[host] = parts
+                    Logs.log("Download", "multi done $host x$parts")
+                }
+            } catch (u: RangeUnsupportedException) {
+                Logs.log("Download", "multi fallback single $host — ${u.message}")
+                return single()
+            } catch (t: ThrottledException) {
+                if (isCancelled()) throw DownloadCancelledException()
+                val next = when {
+                    parts > 8 -> 8
+                    parts > 4 -> 4
+                    parts > 1 -> 1
+                    else -> throw IOException("Server is throttling downloads (429) — try again later")
+                }
+                Logs.log("Download", "multi throttled $host x$parts → x$next")
+                if (next <= 1) {
+                    hostParts.remove(host)
+                    return single()
+                }
+                hostParts[host] = next
+                parts = next
+                resumeParts = true
+            }
+        }
+    }
+
+    /** Total file size when the server honors Range requests, else -1 (the
+     *  split is impossible without it — the single stream takes over). */
+    private suspend fun probeLength(url: String, headers: Map<String, String>, ua: String): Long =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder().url(url)
+            applyHeaders(req, headers, ua)
+            req.header("Range", "bytes=0-0")
+            PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                if (resp.code != 206) return@withContext -1L
+                val cr = resp.header("Content-Range") ?: return@withContext -1L
+                cr.substringAfter('/').trim().toLongOrNull()?.takeIf { it > 0L } ?: -1L
+            }
+        }
+
+    private suspend fun fetchPartsMulti(
+        url: String,
+        headers: Map<String, String>,
+        ua: String,
+        workDir: File,
+        out: File,
+        total: Long,
+        n: Int,
+        reporter: Reporter,
+        resumeParts: Boolean,
+        isCancelled: () -> Boolean,
+    ): File = coroutineScope {
+        if (out.exists()) runCatching { out.delete() }
+        val base = total / n
+        val doneAcc = AtomicLong(0L)
+        suspend fun emit() {
+            reporter.video(doneAcc.get(), total, 0L, 0L)
+        }
+        val parts = (0 until n).map { i ->
+            val start = i * base
+            val end = if (i == n - 1) total - 1 else (i + 1) * base - 1
+            File(workDir, "part_" + i.toString().padStart(5, '0') + ".tmp") to (start to end)
+        }
+        parts.map { (part, range) ->
+            async {
+                fetchRangePart(
+                    url, headers, ua, part, range.first, range.second, resumeParts,
+                    onBytes = { delta -> emitFor(doneAcc, delta, reporter, total) },
+                    isCancelled = isCancelled,
+                )
+            }
+        }.awaitAll()
+        parts.forEachIndexed { i, (part, range) ->
+            val want = range.second - range.first + 1
+            if (!part.exists() || part.length() != want) {
+                throw IOException("Part ${i + 1}/${parts.size} incomplete")
+            }
+        }
+        FileOutputStream(out).use { os ->
+            parts.forEach { (part, _) -> part.inputStream().use { it.copyTo(os, BUFFER) } }
+        }
+        parts.forEach { (part, _) -> runCatching { part.delete() } }
+        out
+    }
+
+    private suspend fun emitFor(doneAcc: AtomicLong, delta: Long, reporter: Reporter, total: Long) {
+        if (delta == 0L) return
+        val g = doneAcc.addAndGet(delta)
+        reporter.video(g, total, 0L, 0L)
+    }
+
+    private suspend fun fetchRangePart(
+        url: String,
+        headers: Map<String, String>,
+        ua: String,
+        file: File,
+        start: Long,
+        end: Long,
+        resume: Boolean,
+        onBytes: suspend (Long) -> Unit,
+        isCancelled: () -> Boolean,
+    ) {
+        val expected = end - start + 1
+        var have = if (resume && file.exists()) file.length().coerceIn(0L, expected) else 0L
+        if (have >= expected) {
+            if (have > 0L) onBytes(have)
+            return
+        }
+        var attempt = 0
+        while (true) {
+            if (isCancelled()) throw DownloadCancelledException()
+            val req = Request.Builder().url(url)
+            applyHeaders(req, headers, ua)
+            req.header("Range", "bytes=${start + have}-$end")
+            try {
+                PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                    val code = resp.code
+                    if (code == 429 || code == 503) throw ThrottledException()
+                    if (code == 200) throw RangeUnsupportedException()
+                    if (code != 206) throw IOException("HTTP $code")
+                    val ct = resp.header("Content-Type").orEmpty()
+                    if (ct.contains("text/html", ignoreCase = true)) {
+                        throw IOException("Server returned a web page, not a video file")
+                    }
+                    val body = resp.body ?: throw IOException("Empty response body")
+                    FileOutputStream(file, have > 0L).use { out ->
+                        body.byteStream().use { input ->
+                            val buf = ByteArray(PART_BUFFER)
+                            while (true) {
+                                if (isCancelled()) throw DownloadCancelledException()
+                                val room = (expected - have).coerceAtMost(buf.size.toLong()).toInt()
+                                if (room <= 0) break
+                                val r = input.read(buf, 0, room)
+                                if (r < 0) break
+                                out.write(buf, 0, r)
+                                have += r
+                                onBytes(r.toLong())
+                            }
+                        }
+                    }
+                }
+                if (have >= expected) return
+                if (++attempt > 2) throw IOException("Part incomplete ($have/$expected bytes)")
+                delay(400L * attempt)
+            } catch (t: ThrottledException) {
+                throw t
+            } catch (r: RangeUnsupportedException) {
+                throw r
+            } catch (c: DownloadCancelledException) {
+                throw c
+            } catch (e: IOException) {
+                if (isCancelled()) throw DownloadCancelledException()
+                if (++attempt > 2) throw e
+                delay(500L * attempt)
+            }
+        }
     }
 
     private suspend fun downloadToFile(
