@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+import com.hikari.app.manga.MangaOffline
+
 /**
  * Pure-JVM regression guards (no Android, no network, no org.json — that class
  * stays off the classpath on purpose). They lock the two production-logo and
