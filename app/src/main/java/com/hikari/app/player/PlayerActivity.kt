@@ -57,6 +57,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.ui.platform.ComposeView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -153,6 +156,9 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.FileNotFoundException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /** The `Format.label` every user-added subtitle carries, so a track in the
@@ -1353,6 +1359,18 @@ class PlayerActivity : ComponentActivity() {
     /** True while the activity is in picture-in-picture mode — every overlay
      *  is stripped so only the video shows in the small window. */
     private var inPip = false
+
+    /** Testing Player UI skin: the overlay view plus the per-tick target maps
+     *  (option key → live track group/index or server index) rebuilt with
+     *  every state poll, and the last good state for a failed poll. */
+    private var testingOverlay: ComposeView? = null
+    private var testingActionsCached: TActions? = null
+    private val testingQualityTargets = HashMap<Int, Pair<Tracks.Group, Int>>()
+    private val testingAudioTargets = HashMap<Int, Pair<Tracks.Group, Int>>()
+    private val testingSubTargets = HashMap<Int, Pair<Tracks.Group, Int>>()
+    private val testingAudioVariantTargets = HashMap<Int, Int>()
+    private val testingEnhanceKeys = ArrayList<String>()
+    private var lastTestingState: TState? = null
 
     /** Armed while a PiP window is up. Dismissing the window stops here WITHOUT
      *  finishing on some devices: the video is gone but both players keep going
@@ -2572,6 +2590,7 @@ class PlayerActivity : ComponentActivity() {
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
             override fun onVisibilityChanged(visibility: Int) {
                 controllerVisible = visibility == View.VISIBLE
+                syncTestingOverlay()
                 // The pill row is a HorizontalScrollView. A focused pill (the
                 // media3 control view asks for focus, and a scroll view reveals
                 // a focused descendant) could pull the row to one end and leave
@@ -2606,6 +2625,7 @@ class PlayerActivity : ComponentActivity() {
             }
         })
         installPlayerFocusRings()
+        setupTestingOverlay()
         speedChip = findViewById(R.id.speed_btn)
         favBtn = findViewById(R.id.fav_btn)
         playHint = findViewById(R.id.play_hint)
@@ -4079,6 +4099,7 @@ class PlayerActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         inPip = isInPictureInPictureMode
+        syncTestingOverlay()
         // Arm the dismiss guard (see [pipExitSilenceArmed]); the exit branch
         // below leaves it armed until onResume clears it.
         if (isInPictureInPictureMode) {
@@ -4323,6 +4344,7 @@ class PlayerActivity : ComponentActivity() {
         // staying on the picture for the whole film.
         flashUnlockIcon()
         hideSystemUi()
+        syncTestingOverlay()
     }
 
     private fun unlockControls() {
@@ -4332,6 +4354,7 @@ class PlayerActivity : ComponentActivity() {
         pv.useController = true
         unlockBtn?.visibility = View.GONE
         pv.showController()
+        syncTestingOverlay()
     }
 
     /** How long the unlock icon stays up before it fades out, in ms. */
@@ -5459,6 +5482,7 @@ class PlayerActivity : ComponentActivity() {
 
         applyAccentPalette()
         applyControlLabels()
+        syncTestingOverlay()
     }
 
     /** A single-colour vertical fade used by the Minimal skin's bars. */
@@ -14763,7 +14787,7 @@ class PlayerActivity : ComponentActivity() {
 
     /** Flips the feature switch (the Audio sheet's own toggle) and re-opens
      *  the sheet so the server rows immediately show what the new state does. */
-    private fun toggleDualAudio() {
+    private fun toggleDualAudio(reopenSheet: Boolean = true) {
         dualAudioOn = !dualAudioOn
         val on = dualAudioOn
         lifecycleScope.launch {
@@ -14779,7 +14803,7 @@ class PlayerActivity : ComponentActivity() {
                 Toast.LENGTH_SHORT,
             ).show()
         }
-        showAudioDialog(waitedForTracks = true)
+        if (reopenSheet) showAudioDialog(waitedForTracks = true)
     }
 
     /**
@@ -16639,6 +16663,770 @@ class PlayerActivity : ComponentActivity() {
                 override fun onChildViewRemoved(parent: android.view.View, child: android.view.View) {}
             })
         } catch (_: Throwable) {}
+    }
+
+    // ---- Testing Player UI skin -------------------------------------------
+    //
+    // The Testing skin paints its own Compose chrome (see TestingPlayerUi.kt):
+    // every classic bar, pill row, progress block and centre button goes GONE
+    // while it is on, and comes back when it is off. media3 still owns the
+    // controller's visibility (the 3s timeout, the tap toggle, lock, PiP), so
+    // the overlay simply follows [controllerVisible] and every overlay action
+    // pokes the controller to restart its hide countdown.
+
+    private fun isTestingSkin(): Boolean = PlayerSkins.normalize(skin) == PlayerSkins.TESTING
+
+    private fun setClassicChromeVisible(v: Boolean) {
+        val vis = if (v) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.player_top_bar)?.visibility = vis
+        exoView("exo_bottom_bar")?.visibility = vis
+        findViewById<View>(R.id.player_pill_scroll)?.visibility = vis
+        exoView("exo_center_controls")?.visibility = vis
+        exoView("exo_minimal_controls")?.visibility = vis
+        exoView("exo_controls_background")?.visibility = vis
+        findViewById<View>(R.id.play_hint)?.visibility = vis
+    }
+
+    private fun syncTestingOverlay() {
+        val testing = isTestingSkin() && !inPip
+        setClassicChromeVisible(!testing)
+        testingOverlay?.visibility =
+            if (testing && controllerVisible && !controlsLocked) View.VISIBLE else View.GONE
+    }
+
+    private fun setupTestingOverlay() {
+        val content = findViewById<ViewGroup>(android.R.id.content) ?: return
+        val root = (content.getChildAt(0) as? ViewGroup) ?: content
+        val cv = ComposeView(this)
+        cv.visibility = View.GONE
+        cv.setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                TestingPlayerOverlay(::testingState, testingActions())
+            }
+        }
+        // Below the loading cover, error panel and unlock button: those stay
+        // on top of the Testing chrome the way they sit above the classic one.
+        val cover = (0 until root.childCount).firstOrNull { root.getChildAt(it)?.id == R.id.loading_banner }
+        root.addView(
+            cv,
+            (cover ?: (root.childCount - 1).coerceAtLeast(0)),
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        testingOverlay = cv
+        syncTestingOverlay()
+    }
+
+    /** Keeps the Testing overlay up while it is being used: showing the
+     *  controller restarts media3's own 3s hide countdown. */
+    private fun pokeTesting() {
+        if (isTestingSkin() && !inPip) playerView?.showController()
+    }
+
+    private fun testingState(): TState {
+        lastTestingState?.let { fb ->
+            return try {
+                buildTestingState().also { lastTestingState = it }
+            } catch (_: Throwable) { fb }
+        }
+        return try {
+            buildTestingState().also { lastTestingState = it }
+        } catch (_: Throwable) {
+            TState(
+                title = "",
+                serverLine = "",
+                badge = null,
+                posMs = 0L,
+                durMs = 0L,
+                endsAt = "--:--",
+                playing = false,
+                locked = true,
+                captionsOn = false,
+                servers = emptyList(),
+                qualities = emptyList(),
+                audioCurrent = null,
+                audioOthers = emptyList(),
+                soundRows = emptyList(),
+                subOff = TOption(label = "Off", sub = null, badge = null, selected = true, key = 0),
+                subAuto = TOption(label = "Auto", sub = null, badge = null, selected = false, key = 1),
+                subTracks = emptyList(),
+                subStyle = TSubStyle(sizePct = 100, colorArgb = 0xFFFFFFFF.toInt(), bold = false),
+                speeds = emptyList(),
+                aspects = emptyList(),
+                zoomPct = 100,
+                enhance = emptyList(),
+            )
+        }
+    }
+
+    /** Mirrors the classic sheets' rows (quality, audio, subtitles, enhance)
+     *  so the Testing panel shows the same options, and rebuilds the
+     *  key → target maps the actions select from. */
+    private fun buildTestingState(): TState {
+        val p = player
+        val pos = p?.currentPosition ?: 0L
+        val dur = p?.duration?.takeIf { it > 0L } ?: 0L
+        val speed = SPEEDS.getOrNull(speedIndex) ?: 1f
+        val endsAt = if (dur > 0L) {
+            val remainMs = ((dur - pos).coerceAtLeast(0L) / speed).toLong()
+            runCatching {
+                SimpleDateFormat("h:mm a", Locale.getDefault())
+                    .format(Date(System.currentTimeMillis() + remainMs))
+            }.getOrDefault("--:--")
+        } else "--:--"
+        val src = sources.getOrNull(currentIndex)
+        val height = p?.videoSize?.height ?: 0
+
+        val servers = sources.mapIndexed { i, s ->
+            TServer(
+                name = serverLabel(s),
+                detail = s.providerName.trim().takeIf { it.isNotBlank() } ?: hostOf(s.url),
+                quality = ServerMeta.sizeOf(s.name, s.details) ?: when {
+                    s.local -> "Offline"
+                    s.torrentStream || s.isTorrent -> "Torrent"
+                    s.isM3u8 -> "HLS"
+                    s.isMpd -> "DASH"
+                    else -> null
+                },
+                selected = isSelectedRow(i),
+                index = i,
+            )
+        }
+
+        testingQualityTargets.clear()
+        val qrows = ArrayList<TrackRow>()
+        var qOverride = false
+        for (group in p?.currentTracks?.groups?.filter { it.type == C.TRACK_TYPE_VIDEO } ?: emptyList()) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = listOfNotNull(
+                    f.height.takeIf { it > 0 }?.let { "${it}p" },
+                    f.width.takeIf { it > 0 }?.let { "${it}px" },
+                ).joinToString(" · ").ifBlank { "Track ${i + 1}" }
+                val bitrate = (if (f.averageBitrate > 0) f.averageBitrate else f.bitrate).toLong()
+                if (p != null && overrideSelects(p, group, i)) qOverride = true
+                qrows.add(
+                    TrackRow(
+                        label = label,
+                        sub = null,
+                        badge = bitrateBadge(bitrate),
+                        group = group,
+                        index = i,
+                    )
+                )
+            }
+        }
+        val qualities = ArrayList<TOption>()
+        qrows.forEachIndexed { i, row ->
+            val key = i + 1
+            testingQualityTargets[key] = row.group to row.index
+            qualities.add(
+                TOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = p != null && overrideSelects(p, row.group, row.index),
+                    key = key,
+                )
+            )
+        }
+        qualities.add(
+            0,
+            TOption(
+                label = I18n.t("Auto (adaptive)"),
+                sub = I18n.t("Automatically adjusts to your connection"),
+                badge = null,
+                selected = !qOverride,
+                key = 0,
+            ),
+        )
+
+        testingAudioTargets.clear()
+        testingAudioVariantTargets.clear()
+        val arows = ArrayList<TrackRow>()
+        var aOverride = false
+        for (group in p?.currentTracks?.groups?.filter { it.type == C.TRACK_TYPE_AUDIO } ?: emptyList()) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                if (p != null && overrideSelects(p, group, i)) aOverride = true
+                arows.add(
+                    TrackRow(
+                        label = label,
+                        sub = trackSub(label, f.label, f.id),
+                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
+            }
+        }
+        val aPickRow = pickedRow(arows, pickAudio)
+        if (aPickRow != null) aOverride = true
+        val atrack = HashMap<Int, TOption>()
+        atrack[0] = TOption(
+            label = I18n.t("Default (adaptive)"),
+            sub = I18n.t("Use the track this stream marks as default"),
+            badge = null,
+            selected = !aOverride,
+            key = 0,
+        )
+        arows.forEachIndexed { i, row ->
+            val key = i + 1
+            testingAudioTargets[key] = row.group to row.index
+            atrack[key] = TOption(
+                label = row.label,
+                sub = row.sub,
+                badge = row.badge,
+                selected = (p != null && overrideSelects(p, row.group, row.index)) || row === aPickRow,
+                key = key,
+            )
+        }
+        val audioCurrent = atrack.entries.sortedBy { it.key }.firstOrNull { it.value.selected }?.value
+            ?: atrack[0]
+        val audioOthers = ArrayList<TOption>()
+        for ((label, index, tagged) in audioVariantsFor(currentIndex)) {
+            val key = 1000 + index
+            testingAudioVariantTargets[key] = index
+            val donorActive = index == dualAudioIndex
+            audioOthers.add(
+                TOption(
+                    label = label,
+                    sub = if (index == currentIndex) {
+                        I18n.t("Playing now — %s").replace("%s", sources[index].name)
+                    } else if (donorActive) {
+                        I18n.t("Sound playing — tap to stop")
+                    } else if (tagged) {
+                        sources[index].name
+                    } else {
+                        I18n.t("Audio language unknown — tap for its sound")
+                    },
+                    badge = if (donorActive) I18n.t("Sound") else I18n.t("Server"),
+                    selected = index == currentIndex || donorActive,
+                    key = key,
+                )
+            )
+        }
+        val soundRows = ArrayList<TOption>()
+        soundRows.add(
+            TOption(
+                label = I18n.t("Dual-server audio"),
+                sub = if (dualAudioOn) I18n.t("On — a server below plays only its sound")
+                else I18n.t("Off — a server switch moves picture and sound together"),
+                badge = if (dualAudioOn) I18n.t("On") else I18n.t("Off"),
+                selected = dualAudioOn,
+                key = -1,
+            )
+        )
+        if (dualAudioIndex >= 0) {
+            soundRows.add(
+                TOption(
+                    label = I18n.t("Stop paired sound"),
+                    sub = sources.getOrNull(dualAudioIndex)?.name,
+                    badge = null,
+                    selected = false,
+                    key = -2,
+                )
+            )
+        }
+        soundRows.add(
+            TOption(
+                label = I18n.t("AI Dub"),
+                sub = aiDubStatus(),
+                badge = if (aiDub.enabled) I18n.t("On") else I18n.t("Off"),
+                selected = aiDub.enabled,
+                key = -3,
+            )
+        )
+        soundRows.add(
+            TOption(
+                label = I18n.t("Dub audio"),
+                sub = dubAudioStatus(),
+                badge = if (dubEngineRunning()) I18n.t("On") else I18n.t("Off"),
+                selected = dubEngineRunning(),
+                key = -4,
+            )
+        )
+
+        testingSubTargets.clear()
+        val tgroups = p?.currentTracks?.groups?.filter { it.type == C.TRACK_TYPE_TEXT } ?: emptyList()
+        val textDisabled = p?.trackSelectionParameters?.disabledTrackTypes?.contains(C.TRACK_TYPE_TEXT) == true
+        val trows = ArrayList<TrackRow>()
+        var tOverride = false
+        for (group in tgroups) {
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                val f = mediaGroup.getFormat(i)
+                val lang = languageOf(f.language)
+                val userFile = f.label?.takeIf { isUserSubLabel(it) }?.removePrefix(USER_SUB_PREFIX)
+                val primary = when {
+                    userFile != null -> userFile
+                    else -> lang ?: trackLabel(f.label ?: f.id, i)
+                }
+                val sub = if (userFile != null) lang else trackSub(primary, f.label, f.id)
+                if (!textDisabled && p != null && overrideSelects(p, group, i)) tOverride = true
+                trows.add(
+                    TrackRow(
+                        label = primary,
+                        sub = sub,
+                        badge = codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
+            }
+        }
+        val tPickRow = pickedRow(trows, pickText)
+        if (!textDisabled && tPickRow != null) tOverride = true
+        val subOff = TOption(
+            label = I18n.t("Off"),
+            sub = I18n.t("Hide captions completely"),
+            badge = null,
+            selected = textDisabled,
+            key = 0,
+        )
+        val subAuto = TOption(
+            label = I18n.t("Auto"),
+            sub = I18n.t("Follow the stream's default captions"),
+            badge = null,
+            selected = !textDisabled && !tOverride,
+            key = 1,
+        )
+        val subTracks = ArrayList<TOption>()
+        trows.forEachIndexed { i, row ->
+            val key = 10 + i
+            testingSubTargets[key] = row.group to row.index
+            subTracks.add(
+                TOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = !textDisabled &&
+                        ((p != null && overrideSelects(p, row.group, row.index)) || row === tPickRow),
+                    key = key,
+                )
+            )
+        }
+
+        val speeds = SPEEDS.mapIndexed { i, s ->
+            TOption(
+                label = if (s % 1f == 0f) "${s.toInt()}×" else "${s}×",
+                sub = null,
+                badge = null,
+                selected = i == speedIndex,
+                key = i,
+            )
+        }
+        val aspects = listOf(I18n.t("Fit"), I18n.t("Crop"), I18n.t("Fill")).mapIndexed { i, name ->
+            TOption(label = name, sub = null, badge = null, selected = resizeIndex == i, key = i)
+        }
+
+        testingEnhanceKeys.clear()
+        val enhance = ArrayList<TOption>()
+        for (ep in EnhancePreset.entries) {
+            testingEnhanceKeys.add(ep.key)
+            enhance.add(
+                TOption(
+                    label = ep.label,
+                    sub = ep.desc,
+                    badge = null,
+                    selected = ep.key == enhancePresetKey,
+                    key = enhance.size,
+                )
+            )
+        }
+        for (c in customEnhanceList) {
+            testingEnhanceKeys.add(c.key())
+            enhance.add(
+                TOption(
+                    label = c.displayName(),
+                    sub = c.summary(),
+                    badge = I18n.t("Custom"),
+                    selected = c.key() == enhancePresetKey,
+                    key = enhance.size,
+                )
+            )
+        }
+        enhance.add(
+            TOption(
+                label = I18n.t("Create custom preset"),
+                sub = I18n.t("Brightness, saturation, contrast, gamma and hue sliders"),
+                badge = null,
+                selected = false,
+                key = -1,
+            )
+        )
+
+        return TState(
+            title = intent.getStringExtra("title").orEmpty(),
+            serverLine = src?.let { serverLabel(it) }.orEmpty(),
+            badge = height.takeIf { it > 0 }?.let { "${it}p" },
+            posMs = pos,
+            durMs = dur,
+            endsAt = endsAt,
+            playing = p?.isPlaying == true,
+            locked = controlsLocked,
+            captionsOn = !textOff,
+            servers = servers,
+            qualities = qualities,
+            audioCurrent = audioCurrent,
+            audioOthers = audioOthers,
+            soundRows = soundRows,
+            subOff = subOff,
+            subAuto = subAuto,
+            subTracks = subTracks,
+            subStyle = TSubStyle(
+                sizePct = (subtitleScale * 100).roundToInt(),
+                colorArgb = subtitleStyle.textColor,
+                bold = subtitleStyle.bold,
+            ),
+            speeds = speeds,
+            aspects = aspects,
+            zoomPct = (videoZoom * 100).roundToInt(),
+            enhance = enhance,
+        )
+    }
+
+    /** Every action the Testing overlay takes, wired to the same functions the
+     *  classic sheets call — no new engine, the reference layout only. */
+    private fun testingActions(): TActions = testingActionsCached ?: TActions(
+        back = {
+            silencePlaybackForExit()
+            finish()
+        },
+        collapse = { playerView?.hideController() },
+        toggleLock = { if (controlsLocked) unlockControls() else lockControls() },
+        togglePlay = {
+            player?.let { pl -> if (pl.isPlaying) pl.pause() else pl.play() }
+            pokeTesting()
+        },
+        back10 = {
+            player?.let { pl ->
+                val dur = pl.duration.takeIf { it > 0L }
+                seekBoth((pl.currentPosition - 10_000L).coerceIn(0L, dur ?: Long.MAX_VALUE))
+            }
+            showSeekFeedback(-10_000L)
+            pokeTesting()
+        },
+        fwd10 = {
+            player?.let { pl ->
+                val dur = pl.duration.takeIf { it > 0L }
+                seekBoth((pl.currentPosition + 10_000L).coerceIn(0L, dur ?: Long.MAX_VALUE))
+            }
+            showSeekFeedback(10_000L)
+            pokeTesting()
+        },
+        toggleControls = { toggleController() },
+        seekTo = { ms ->
+            seekBoth(ms)
+            pokeTesting()
+        },
+        selectServer = { i ->
+            if (i in sources.indices) {
+                playSource(i)
+                pickedByUser = true
+            }
+            pokeTesting()
+        },
+        selectQuality = { key ->
+            val pl = player
+            if (pl != null) {
+                userPickedQuality = true
+                if (key == 0) {
+                    pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                        .build()
+                } else {
+                    testingQualityTargets[key]?.let { target ->
+                        pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                            .setOverrideForType(
+                                TrackSelectionOverride(
+                                    target.first.mediaTrackGroup,
+                                    ImmutableList.of(target.second),
+                                )
+                            )
+                            .build()
+                    }
+                }
+            }
+            pokeTesting()
+        },
+        selectAudio = { key ->
+            val pl = player
+            if (pl != null) {
+                val variant = testingAudioVariantTargets[key]
+                if (variant != null) {
+                    userPickedAudio = true
+                    if (dualAudioOn) showDualAudioChoice(variant) else switchAudioVariant(variant)
+                } else if (key == 0) {
+                    userPickedAudio = true
+                    stopDualAudio()
+                    pickAudio = null
+                    pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                        .build()
+                } else {
+                    testingAudioTargets[key]?.let { target ->
+                        userPickedAudio = true
+                        stopDualAudio()
+                        val format = target.first.mediaTrackGroup.getFormat(target.second)
+                        pickAudio = TrackPick(
+                            C.TRACK_TYPE_AUDIO,
+                            format.language,
+                            format.label,
+                            target.second,
+                        )
+                        pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                            .setOverrideForType(
+                                TrackSelectionOverride(
+                                    target.first.mediaTrackGroup,
+                                    ImmutableList.of(target.second),
+                                )
+                            )
+                            .build()
+                        Toast.makeText(
+                            this,
+                            I18n.t("Audio: %s").replace(
+                                "%s",
+                                languageOf(format.language) ?: trackLabel(format.label ?: format.id, target.second),
+                            ),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        confirmTrackPick(C.TRACK_TYPE_AUDIO)
+                    }
+                }
+            }
+            pokeTesting()
+        },
+        toggleSound = { key ->
+            when (key) {
+                -1 -> toggleDualAudio(reopenSheet = false)
+                -2 -> {
+                    stopDualAudio()
+                    Toast.makeText(
+                        this,
+                        I18n.t("Dual audio off — sound back on video"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                -3 -> showAiDubSheet()
+                -4 -> showDubDialog()
+                else -> {
+                    if (key in sources.indices) {
+                        if (key == dualAudioIndex || key == currentIndex) stopDualAudio()
+                        else if (dualAudioOn) startDualAudio(key)
+                        else showDualAudioChoice(key)
+                    }
+                }
+            }
+            pokeTesting()
+        },
+        subOff = {
+            testingCaptions(false)
+            pokeTesting()
+        },
+        subAuto = {
+            testingCaptions(true)
+            pokeTesting()
+        },
+        selectSub = { key ->
+            val target = testingSubTargets[key]
+            val pl = player
+            if (target != null && pl != null) {
+                val format = runCatching {
+                    target.first.mediaTrackGroup.getFormat(target.second)
+                }.getOrNull()
+                if (format != null) {
+                    userPickedSubs = true
+                    textOff = false
+                    val pick = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, target.second)
+                    pickText = pick
+                    val liveGroups = pl.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                    var tg: Tracks.Group? = null
+                    var ti = -1
+                    outer@ for (loose in listOf(false, true)) {
+                        for (g in liveGroups) {
+                            val mg = g.mediaTrackGroup
+                            for (i in 0 until mg.length) {
+                                if (!pick.matches(mg.getFormat(i), i, loose)) continue
+                                tg = g
+                                ti = i
+                                break@outer
+                            }
+                        }
+                    }
+                    val live = tg
+                    if (live != null) {
+                        pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .setOverrideForType(
+                                TrackSelectionOverride(live.mediaTrackGroup, ImmutableList.of(ti))
+                            )
+                            .build()
+                        Toast.makeText(
+                            this,
+                            I18n.t("Subtitle: %s").replace(
+                                "%s",
+                                format.label ?: trackLabel(format.id, ti),
+                            ),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        confirmTrackPick(C.TRACK_TYPE_TEXT)
+                    } else {
+                        Toast.makeText(
+                            this,
+                            I18n.t("Subtitle will apply when tracks load"),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            }
+            pokeTesting()
+        },
+        openSubSearch = {
+            showSubtitleSearchDialog()
+            pokeTesting()
+        },
+        openSubAdd = {
+            externalSubLauncher?.launch(arrayOf("*/*"))
+            pokeTesting()
+        },
+        subSyncMinus = {
+            subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30_000L, 30_000L)
+            applyTestingSubSync()
+            pokeTesting()
+        },
+        subSyncPlus = {
+            subtitleOffsetMs = (subtitleOffsetMs + 500L).coerceIn(-30_000L, 30_000L)
+            applyTestingSubSync()
+            pokeTesting()
+        },
+        subSyncReset = {
+            subtitleOffsetMs = 0L
+            applyTestingSubSync()
+            pokeTesting()
+        },
+        subSizeMinus = {
+            subtitleScale = (subtitleScale - 0.1f).coerceIn(0.5f, 2.5f)
+            applyTestingSubSize()
+            pokeTesting()
+        },
+        subSizePlus = {
+            subtitleScale = (subtitleScale + 0.1f).coerceIn(0.5f, 2.5f)
+            applyTestingSubSize()
+            pokeTesting()
+        },
+        subColor = { c ->
+            subtitleStyle = subtitleStyle.copy(textColor = c, enabled = true).copySaved(subsPrefs)
+            applySubtitleStyle()
+            pokeTesting()
+        },
+        subBold = {
+            subtitleStyle = subtitleStyle.copy(bold = !subtitleStyle.bold, enabled = true).copySaved(subsPrefs)
+            applySubtitleStyle()
+            pokeTesting()
+        },
+        selectSpeed = { key ->
+            SPEEDS.getOrNull(key)?.let { s ->
+                speedIndex = key
+                applySpeed(s)
+                speedChip?.text = "${s}x"
+            }
+            pokeTesting()
+        },
+        selectAspect = { key ->
+            if (key in 0..2) {
+                resizeIndex = key
+                playerView?.resizeMode = when (key) {
+                    1 -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+                    2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                    else -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                }
+                updateResizeButton()
+                anchorSubtitlesToScreen()
+            }
+            pokeTesting()
+        },
+        zoomMinus = {
+            videoZoom = (videoZoom - 0.25f).coerceIn(1f, 4f)
+            applyVideoZoom()
+            pokeTesting()
+        },
+        zoomPlus = {
+            videoZoom = (videoZoom + 0.25f).coerceIn(1f, 4f)
+            applyVideoZoom()
+            pokeTesting()
+        },
+        selectEnhance = { key ->
+            if (key == -1) {
+                showCustomEnhanceEditor(null)
+            } else {
+                testingEnhanceKeys.getOrNull(key)?.let { ekey ->
+                    if (CustomEnhancePreset.isCustomKey(ekey)) {
+                        if (ekey == enhancePresetKey) {
+                            showCustomEnhanceEditor(customEnhanceList.firstOrNull { it.key() == ekey })
+                        } else {
+                            setEnhanceKey(ekey)
+                        }
+                    } else {
+                        setEnhancePreset(EnhancePreset.fromKey(ekey))
+                    }
+                }
+            }
+            pokeTesting()
+        },
+        pip = { enterPip() },
+        rotate = {
+            cycleRotation()
+            pokeTesting()
+        },
+        toggleCaptions = {
+            testingCaptions(textOff)
+            pokeTesting()
+        },
+    ).also { testingActionsCached = it }
+
+    private fun testingCaptions(on: Boolean) {
+        val pl = player ?: return
+        userPickedSubs = true
+        if (!on) {
+            textOff = true
+            pickText = null
+            pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+        } else {
+            textOff = false
+            pickText = null
+            pl.trackSelectionParameters = pl.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .build()
+        }
+    }
+
+    private fun applyTestingSubSync() {
+        subsPrefs.edit().putLong("sub_offset", subtitleOffsetMs).apply()
+        attachExternalSubtitles()
+        if (subtitleOffsetMs != 0L && pickText != null &&
+            !(pickText?.label?.startsWith(USER_SUB_PREFIX) == true)
+        ) {
+            Toast.makeText(
+                this,
+                I18n.t("Sync moves downloaded subtitles — this one is part of the stream"),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    private fun applyTestingSubSize() {
+        subsPrefs.edit().putFloat("sub_scale", subtitleScale).apply()
+        applySubtitleSize(subtitleScale)
     }
 
     private fun applyFocusRings(root: android.view.ViewGroup) {

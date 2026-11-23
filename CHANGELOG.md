@@ -1,4 +1,11 @@
 
+## 0.12.143
+
+- Home Discovery rows are back as a catalogue: Hot right now, If you like, Top 10, Series watching, In cinemas (Airing now for animation), Anime/Donghua picks, All-time greats and Coming soon, with badges, ratings and Show All everywhere — shifting with the picked extension, hideable from Settings → Customize → Discovery rows
+- Testing Player UI is now a full one-to-one rebuild of the reference player: same top bar, center play cluster, title/time/ends-at line, seek bar and pill, with Sources, Quality, Audio, Subtitles, Speed and More tabs holding every existing Hikari option
+- Explore genres has a More tile opening the full genre list in the same card UI with search; the top wide Genres card is gone
+- Streaming row carries real service logos including new Crunchyroll, bundled in-app so tiles paint instantly on the first frame with no network
+
 ## 0.12.142
 
 - Streaming tiles are instant real brand wordmarks (local, first frame, readable on brand colours) with taps arming in parallel in the background

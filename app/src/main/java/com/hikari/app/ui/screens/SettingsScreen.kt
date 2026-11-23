@@ -1035,6 +1035,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { Cs3RecommendationsCard(app) } }
                     item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
                     item { SettingsCard { PlayerGesturesCard(onOpen = { showPlayerGestures = true }) } }
+                    item { SettingsCard { DiscoveryRowsCard(app) } }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -1387,26 +1388,13 @@ fun SettingsScreen(nav: NavHostController) {
     // Television draws the categories and the folder side by side; the phone
     // keeps its single column. Both read the same body above.
     if (isTv) {
-        // TV FIX: the whole Settings page is drawn a little smaller on a television, so a
-        // folder's title and several rows fit on screen instead of the page being cut off
-        // at the bottom (see TvUi.settingsScale).
-        val tvBaseDensity = androidx.compose.ui.platform.LocalDensity.current
-        val tvSettingsScale = com.hikari.app.tv.TvUi.settingsScale()
-        androidx.compose.runtime.CompositionLocalProvider(
-            androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(
-                tvBaseDensity.density * tvSettingsScale,
-                tvBaseDensity.fontScale,
-            )
-        ) {
         Row(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = tvLeftState,
                 modifier = Modifier
                     .weight(0.36f)
                     .fillMaxHeight(),
-                // Generous bottom padding: the last row can always be scrolled fully
-                // into view instead of sitting half under the screen edge.
-                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 72.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 16.dp),
             ) {
                 item(key = "tv-left-title") {
                     Text(
@@ -1477,11 +1465,10 @@ fun SettingsScreen(nav: NavHostController) {
                 modifier = Modifier
                     .weight(0.64f)
                     .fillMaxHeight(),
-                contentPadding = PaddingValues(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 72.dp),
+                contentPadding = PaddingValues(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
             ) {
                 settingsListBody()
             }
-        }
         }
     } else {
         LazyColumn(
@@ -1814,6 +1801,45 @@ private fun HideHelpCard(app: HikariApp) {
                 // See [Modifier.tvToggle].
                 modifier = Modifier.tvToggle(!hidden) { on ->
                     scope.launch { runCatching { app.store.setHideHelp(!on) } }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryRowsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.discoveryRowsFlow() }
+    val on by flow.collectAsState(initial = true)
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Discovery rows"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                if (!LocalHideHelp.current) {
+                Text(
+                    tr(
+                        "Top 10, trending, anime picks, in cinemas and more on " +
+                            "Home, matched to the picked extension. Off hides them all."
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = on,
+                onCheckedChange = { v ->
+                    scope.launch { runCatching { app.store.setDiscoveryRows(v) } }
+                },
+                modifier = Modifier.tvToggle(on) { v ->
+                    scope.launch { runCatching { app.store.setDiscoveryRows(v) } }
                 },
             )
         }

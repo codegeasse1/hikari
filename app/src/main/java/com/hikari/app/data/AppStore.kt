@@ -105,6 +105,8 @@ class AppStore(private val ctx: Context) {
     val PLAYER_ENHANCE_CUSTOMS = stringPreferencesKey("playerEnhanceCustoms")
         val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
+        /** Home Discovery rows (Top 10, trending, anime picks, in cinemas…). */
+        val DISCOVERY_ROWS = booleanPreferencesKey("discoveryRows")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
@@ -3373,6 +3375,15 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     }
 
     // ---- In-app UI scale ----
+
+    /** Home Discovery rows (Top 10, trending, anime picks, in cinemas and
+     *  more, matched to the picked extension). ON by default. */
+    fun discoveryRowsFlow(): Flow<Boolean> =
+        store.data.map { it[K.DISCOVERY_ROWS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun setDiscoveryRows(enabled: Boolean) {
+        write("DISCOVERY_ROWS") { it[K.DISCOVERY_ROWS] = enabled }
+    }
 
     /** When ON the app ignores the phone's Font size AND Display size settings
      *  and scales its interface with [uiScaleFlow] instead — so it looks the

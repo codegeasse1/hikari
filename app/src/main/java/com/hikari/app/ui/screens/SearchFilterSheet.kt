@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -557,7 +559,7 @@ private fun CompanyGrid(
                         Surface(
                             onClick = { onSelect(name) },
                             shape = RoundedCornerShape(12.dp),
-                            color = StreamingBrands.of(name).bg,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
                             border = if (sel) BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
                             else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
                             modifier = Modifier.fillMaxWidth(),
@@ -570,15 +572,27 @@ private fun CompanyGrid(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 val brand = StreamingBrands.of(name)
-                                Text(
-                                    brand.label,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = brand.fg,
-                                    fontSize = 15.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                if (brand.resId != 0) {
+                                    Image(
+                                        painter = painterResource(brand.resId),
+                                        contentDescription = name,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Fit,
+                                    )
+                                } else {
+                                    Text(
+                                        brand.label,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         }
                         Text(

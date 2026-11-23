@@ -229,6 +229,7 @@ object SearchDiscovery {
         minVotes: Int,
         lang: String,
         page: Int,
+        sort: String = "popularity.desc",
     ): List<MediaItem> {
         val q = LinkedHashMap<String, String>()
         if (genreIds.isNotBlank()) q["with_genres"] = genreIds
@@ -236,7 +237,7 @@ object SearchDiscovery {
         if (minVote > 0) q["vote_average.gte"] = minVote.toString()
         if (minVotes > 0) q["vote_count.gte"] = minVotes.toString()
         if (lang.isNotBlank()) q["with_original_language"] = lang
-        q["sort_by"] = "popularity.desc"
+        q["sort_by"] = sort
         q["include_adult"] = "false"
         q["page"] = page.coerceIn(1, 500).toString()
         val d = TmdbResolver.apiGet("/discover/$kind", q) ?: return emptyList()
@@ -248,6 +249,81 @@ object SearchDiscovery {
         }
         return out
     }
+
+    /** Flexible discover for the Home Discovery rows: any media, genres,
+     *  language, sort and vote floor. One page per endpoint, merged. */
+    suspend fun discover(
+        kinds: List<String>,
+        genreIds: String,
+        lang: String,
+        sort: String,
+        minVotes: Int = 0,
+    ): List<MediaItem> = runCatching {
+        coroutineScope {
+            val jobs = kinds.map { k ->
+                async { discoverRaw(k, genreIds, 0, 0.0, minVotes, lang, 1, sort) }
+            }
+            val seen = HashSet<String>()
+            val out = ArrayList<MediaItem>(40)
+            for (job in jobs) {
+                for (m in job.await()) {
+                    if (seen.add(m.type.name + "|" + m.id)) out += m
+                }
+            }
+            if (sort.startsWith("vote_average")) out.sortedByDescending { it.rating ?: -1.0 }
+            else out
+        }
+    }.getOrDefault(emptyList())
+
+    /** Movies in cinemas right now. */
+    suspend fun nowPlaying(): List<MediaItem> = runCatching {
+        val d = TmdbResolver.apiGet("/movie/now_playing", mapOf("region" to "US")) ?: return@runCatching emptyList()
+        val arr = d.optJSONArray("results") ?: return@runCatching emptyList()
+        val out = ArrayList<MediaItem>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { tmdbItem(it, "movie") }?.let { out += it }
+        }
+        out
+    }.getOrDefault(emptyList())
+
+    /** Movies arriving soon. */
+    suspend fun comingSoon(): List<MediaItem> = runCatching {
+        val d = TmdbResolver.apiGet("/movie/upcoming", mapOf("region" to "US")) ?: return@runCatching emptyList()
+        val arr = d.optJSONArray("results") ?: return@runCatching emptyList()
+        val out = ArrayList<MediaItem>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { tmdbItem(it, "movie") }?.let { out += it }
+        }
+        out
+    }.getOrDefault(emptyList())
+
+    /** Series on the air this week (the "cinemas" equivalent for animation). */
+    suspend fun airingNow(genreIds: String = "", lang: String = ""): List<MediaItem> = runCatching {
+        val q = LinkedHashMap<String, String>()
+        if (genreIds.isNotBlank()) q["with_genres"] = genreIds
+        if (lang.isNotBlank()) q["with_original_language"] = lang
+        q["sort_by"] = "popularity.desc"
+        val d = TmdbResolver.apiGet("/tv/on_the_air", q) ?: return@runCatching emptyList()
+        val arr = d.optJSONArray("results") ?: return@runCatching emptyList()
+        val out = ArrayList<MediaItem>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { tmdbItem(it, "tv") }?.let { out += it }
+        }
+        out
+    }.getOrDefault(emptyList())
+
+    /** Titles like [item] (TMDB similar), for the "If you like" row. */
+    suspend fun similarFor(item: MediaItem): List<MediaItem> = runCatching {
+        val resolved = TmdbResolver.resolve(item) ?: return@runCatching emptyList()
+        val d = TmdbResolver.apiGet("/${resolved.mediaType}/${resolved.tmdbId}/similar", emptyMap<String, String>())
+            ?: return@runCatching emptyList()
+        val arr = d.optJSONArray("results") ?: return@runCatching emptyList()
+        val out = ArrayList<MediaItem>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { tmdbItem(it, resolved.mediaType) }?.let { out += it }
+        }
+        out.take(20)
+    }.getOrDefault(emptyList())
 
     /** One TMDB movie/tv object -> a detail-openable [MediaItem]. */
     fun tmdbItem(o: JSONObject, kind: String): MediaItem? {
