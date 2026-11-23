@@ -557,7 +557,7 @@ private fun CompanyGrid(
                         Surface(
                             onClick = { onSelect(name) },
                             shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+                            color = StreamingBrands.of(name).bg,
                             border = if (sel) BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
                             else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
                             modifier = Modifier.fillMaxWidth(),
@@ -580,11 +580,12 @@ private fun CompanyGrid(
                                         contentScale = ContentScale.Fit,
                                     )
                                 } else {
+                                    val brand = StreamingBrands.of(name)
                                     Text(
-                                        name.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString(""),
+                                        brand.short,
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = brand.fg,
                                         fontSize = 18.sp,
                                     )
                                 }

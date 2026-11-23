@@ -1,4 +1,10 @@
 
+## 0.12.141
+
+- Immersive 2 banner is taller like the reference (about seven tenths of the screen), with tighter bottom spacing
+- Odyssey-style art no longer beheads: Immersive 2 never hard-crops, portrait art shows full on a blurred fill, and same-URL poster/backdrop mixups no longer flag as wide
+- Streaming services tiles paint instantly with local brand badges, network logos swap in when they arrive
+
 ## 0.12.140
 
 - Immersive 2 banner is now big like the reference: taller frame owning the top of the screen with the header floating over the art, and portrait art shows as a full poster on a blurred fill instead of a beheading crop

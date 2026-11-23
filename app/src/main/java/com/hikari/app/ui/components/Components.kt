@@ -1449,7 +1449,7 @@ private fun HeroImmersive(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 34.dp)
+                        .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
                         .graphicsLayer {
                             val o = offsetOf()
                             translationX = o * size.width * 0.35f
@@ -1594,9 +1594,9 @@ private fun HeroImmersive2(
     val screenH = configuration.screenHeightDp.toFloat()
     val s = config.scale.coerceIn(0.5f, 1.5f)
     val verticalFactor = s * com.hikari.app.ui.HeaderPrefs.heightFactorFor(s)
-    // Reference proportion: the hero owns the top of the screen (about three
-    // fifths of it), so the art reads full-bleed like the reference app.
-    val heroHeight = (screenH * 0.58f * verticalFactor).coerceIn(180f, screenH * 0.85f).dp
+    // Reference proportion: the hero owns the top of the screen (about
+    // seven tenths of it), so the art reads full-bleed like the reference app.
+    val heroHeight = (screenH * 0.72f * verticalFactor).coerceIn(220f, screenH * 0.92f).dp
     val bg = MaterialTheme.colorScheme.background
     Box(modifier.fillMaxWidth().height(heroHeight)) {
         HorizontalPager(
@@ -1618,17 +1618,17 @@ private fun HeroImmersive2(
                     .clickable { onClick(item) }
             ) {
                 val hero = Artwork.heroModel(item)
-                if (hero.second || hero.first == null) {
-                    HeroArtwork(
-                        model = hero.first,
-                        wide = hero.second,
-                        contentDescription = item.title,
-                        modifier = Modifier.fillMaxSize(),
+                if (hero.first == null) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
                     )
                 } else {
-                    // Portrait art in a wide frame: a blurred full-bleed fill
-                    // behind the whole poster, never a hard crop that beheads
-                    // the artwork (the zoomed "DYSSEY" band).
+                    // Never hard-crop in Immersive 2: a blurred full-bleed fill
+                    // behind the whole poster/art, never a beheading crop (the
+                    // zoomed "DYSSEY" band came from a portrait flagged wide).
+                    // True backdrops still fill the frame via the blurred fill.
                     Box(Modifier.fillMaxSize()) {
                         PosterImage(
                             model = hero.first,
@@ -1670,7 +1670,7 @@ private fun HeroImmersive2(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 34.dp)
+                        .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
                         .graphicsLayer {
                             val o = offsetOf()
                             translationX = o * size.width * 0.35f

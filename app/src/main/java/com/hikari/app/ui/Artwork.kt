@@ -101,9 +101,14 @@ object Artwork {
         if (IptvMark.of(item) && item.rawType == "channel") {
             item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to false }
         }
-        backdrop(item)?.let { return PosterLoader.model(it) to true }
+        // Never flag a portrait as wide: if the "backdrop" is just the poster
+        // URL again (extension rows often store the poster in backdropUrl, and
+        // a lookup can bank the poster under both keys), fall through to the
+        // poster path so heroes never hard-crop text art (the "DYSSEY" band).
+        val posterUrl = poster(item) ?: item.posterUrl?.takeIf { it.isNotBlank() }
+        backdrop(item)?.takeIf { it != posterUrl }?.let { return PosterLoader.model(it) to true }
         if (!skipExtensionBackdrop) {
-            item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to true }
+            item.backdropUrl?.takeIf { it.isNotBlank() && it != posterUrl }?.let { return PosterLoader.model(it) to true }
         }
         poster(item)?.let { return PosterLoader.model(it) to false }
         item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to false }
