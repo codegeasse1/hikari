@@ -25,6 +25,14 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -170,8 +178,8 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
                             contentScale = ContentScale.Crop,
                             alignment = Artwork.CINEMA_ALIGNMENT,
                             modifier = Modifier
-                                .fillMaxWidth(0.74f)
-                                .fillMaxHeight(0.72f)
+                                .fillMaxWidth(0.80f)
+                                .fillMaxHeight(0.80f)
                                 .align(Alignment.TopEnd),
                         )
                     }
@@ -301,14 +309,30 @@ private fun tvHeroRuntime(minutes: Int?): String? {
 }
 
 /**
- * The TV home header — laid out like the title's detail page header:
- * provider name, title logo, "TV Series [TV-14] • 24m • Genres", the IMDb /
- * TMDB badges and the plot. Everything beyond the catalogue row's own fields
- * comes from the same lookups the detail page makes (see [tvLoadHeroMeta]),
- * for every title; nothing is invented while they are still running.
+ * The TV home header — laid out like the reference Home: the title logo, one
+ * "Movie · Thriller [18+]" line, the rating badges, the plot, one
+ * "2026 · 1h 50m · United States" line, then the Discover / bookmark / next
+ * buttons, with the carousel dots under them and the "Starring …" credit on
+ * the right. Everything beyond the catalogue row's own fields comes from the
+ * same lookups the detail page makes (see [tvLoadHeroMeta]), for every title;
+ * nothing is invented while they are still running.
+ *
+ * The buttons are optional: leave [onDiscover] null and none are drawn.
+ * [onActionsFocused] fires when the remote lands on one of them, so the Home
+ * can hand the header back to the featured carousel.
  */
 @Composable
-fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
+fun TvHomeHeroInfo(
+    item: MediaItem?,
+    modifier: Modifier = Modifier,
+    bookmarked: Boolean = false,
+    dotCount: Int = 0,
+    dotActive: Int = -1,
+    onDiscover: (() -> Unit)? = null,
+    onToggleBookmark: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
+    onActionsFocused: (() -> Unit)? = null,
+) {
     val ts = TvUi.scale()
     val compact = TvHomeMetrics.compactInfo()
     var logo by remember(item?.uniqueId) { mutableStateOf<String?>(null) }
@@ -348,150 +372,209 @@ fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
         }
     }
 
-    val providerName = remember(item?.providerId) {
-        item?.providerId?.let { pid ->
-            runCatching { HikariApp.instance.providers.byId(pid)?.config?.name?.trim() }
-                .getOrNull()?.takeIf { it.isNotEmpty() }
-        }
-    }
     val ratingsFlow = remember {
         runCatching { HikariApp.instance.store.showDetailRatingFlow() }.getOrNull()
             ?: kotlinx.coroutines.flow.flowOf(true)
     }
     val showRatings by ratingsFlow.collectAsState(initial = true)
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth(0.56f)
-            .padding(start = 18.dp, end = 12.dp, bottom = 6.dp),
-        verticalArrangement = Arrangement.Bottom,
-    ) {
-        if (item != null) {
-            val details = meta?.extras?.details
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth(0.56f)
+                .padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            if (item != null) {
+                val details = meta?.extras?.details
 
-            // Provider eyebrow, as on the detail page.
-            if (!providerName.isNullOrBlank()) {
-                Text(
-                    text = providerName,
-                    color = Color(0xFF4DA3FF),
-                    fontSize = 12.sp * ts,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                // 1. The title: its TMDB logo, or the name in plain capitals.
+                val logoUrl = logo
+                if (!logoUrl.isNullOrBlank()) {
+                    PosterImage(
+                        model = logoUrl,
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Fit,
+                        alignment = Alignment.BottomStart,
+                        modifier = Modifier
+                            .fillMaxWidth(0.66f)
+                            .heightIn(max = if (compact) 38.dp else 52.dp),
+                    )
+                } else {
+                    Text(
+                        text = item.title.uppercase(),
+                        color = Color.White,
+                        fontSize = (if (compact) 22.sp else 26.sp) * ts,
+                        lineHeight = (if (compact) 26.sp else 31.sp) * ts,
+                        letterSpacing = 1.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
                 Spacer(Modifier.height(4.dp))
-            }
 
-            val logoUrl = logo
-            if (!logoUrl.isNullOrBlank()) {
-                PosterImage(
-                    model = logoUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Fit,
-                    alignment = Alignment.BottomStart,
-                    modifier = Modifier
-                        .fillMaxWidth(0.68f)
-                        .heightIn(max = if (compact) 42.dp else 54.dp),
-                )
-            } else {
-                Text(
-                    text = item.title.uppercase(),
-                    color = Color.White,
-                    fontSize = (if (compact) 22.sp else 26.sp) * ts,
-                    lineHeight = (if (compact) 26.sp else 31.sp) * ts,
-                    letterSpacing = 1.5.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = if (compact) 1 else 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            // One meta line, like the detail page: year, type, age-rating
-            // chip, runtime, genres.
-            val typeLabel = when (item.type) {
-                MediaType.SERIES -> tr("TV Series")
-                MediaType.MOVIE -> tr("Movie")
-                else -> item.rawType.replaceFirstChar { it.uppercase() }.takeIf { it.isNotBlank() }
-            }
-            val metaHead = listOfNotNull(
-                (item.year ?: details?.year)?.toString(),
-                typeLabel?.takeIf { it.isNotBlank() },
-            ).joinToString("  •  ")
-            val certLabel = details?.certification?.trim()?.takeIf { it.isNotEmpty() }
-            val genreLine = item.genres.take(3).ifEmpty { details?.genres.orEmpty().take(3) }
-                .joinToString(", ")
-            val metaTail = listOfNotNull(
-                tvHeroRuntime(details?.runtimeMinutes),
-                genreLine.takeIf { it.isNotBlank() },
-            ).joinToString("  •  ")
-            if (metaHead.isNotBlank() || certLabel != null || metaTail.isNotBlank()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (metaHead.isNotBlank()) {
-                        Text(
-                            text = metaHead,
-                            color = Color.White.copy(alpha = 0.88f),
-                            fontSize = 12.sp * ts,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                        )
-                    }
-                    if (certLabel != null) TvCertChip(certLabel)
-                    if (metaTail.isNotBlank()) {
-                        Text(
-                            text = (if (metaHead.isNotBlank() || certLabel != null) "•  " else "") + metaTail,
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 12.sp * ts,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
+                // 2. "Movie · Thriller" + the age-rating chip.
+                val typeLabel = when (item.type) {
+                    MediaType.SERIES -> tr("TV Show")
+                    MediaType.MOVIE -> tr("Movie")
+                    else -> item.rawType.replaceFirstChar { it.uppercase() }.takeIf { it.isNotBlank() }
+                }
+                val firstGenre = item.genres.firstOrNull()
+                    ?: details?.genres.orEmpty().firstOrNull()
+                val typeLine = listOfNotNull(
+                    typeLabel?.takeIf { it.isNotBlank() },
+                    firstGenre?.takeIf { it.isNotBlank() },
+                ).joinToString("  ·  ")
+                val certLabel = details?.certification?.trim()?.takeIf { it.isNotEmpty() }
+                if (typeLine.isNotBlank() || certLabel != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (typeLine.isNotBlank()) {
+                            Text(
+                                text = typeLine,
+                                color = Color.White.copy(alpha = 0.92f),
+                                fontSize = 12.sp * ts,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
+                        if (certLabel != null) TvCertChip(certLabel)
                     }
                 }
-            }
 
-            // IMDb + TMDB (+ AniList for anime) badges — the detail page's row.
-            if (showRatings) {
-                val badges = meta?.ratings.orEmpty()
-                    .filter {
-                        it.source == RatingSource.IMDB ||
+                // 3. Rating badges: TMDB, IMDb, Rotten Tomatoes, Metacritic.
+                if (showRatings) {
+                    val badges = meta?.ratings.orEmpty()
+                        .filter {
                             it.source == RatingSource.TMDB ||
-                            it.source == RatingSource.ANILIST
+                                it.source == RatingSource.IMDB ||
+                                it.source == RatingSource.TOMATOMETER ||
+                                it.source == RatingSource.METACRITIC ||
+                                it.source == RatingSource.ANILIST
+                        }
+                        .sortedBy {
+                            when (it.source) {
+                                RatingSource.TMDB -> 0
+                                RatingSource.IMDB -> 1
+                                RatingSource.TOMATOMETER -> 2
+                                RatingSource.METACRITIC -> 3
+                                else -> 4
+                            }
+                        }
+                        .take(4)
+                    if (badges.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        TvHeroRatingBadges(badges, ts)
                     }
-                    .sortedBy {
-                        when (it.source) {
-                            RatingSource.IMDB -> 0
-                            RatingSource.TMDB -> 1
-                            else -> 2
+                }
+
+                // 4. The plot: TMDB's localized text first (like the detail
+                // page), the catalogue row's own blurb only where that is blank.
+                val overview = meta?.extras?.overview?.trim().orEmpty()
+                    .ifEmpty { item.overview?.trim().orEmpty() }
+                if (overview.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = overview,
+                        color = Color.White.copy(alpha = 0.82f),
+                        fontSize = 12.sp * ts,
+                        lineHeight = 16.sp * ts,
+                        maxLines = if (compact) 2 else 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // 5. "2026 · 1h 50m · United States".
+                val infoLine = listOfNotNull(
+                    (item.year ?: details?.year)?.toString(),
+                    tvHeroRuntime(details?.runtimeMinutes),
+                    details?.country?.trim()?.takeIf { it.isNotEmpty() },
+                ).joinToString("  ·  ")
+                if (infoLine.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = infoLine,
+                        color = Color.White.copy(alpha = 0.78f),
+                        fontSize = 12.sp * ts,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // 6. Discover / bookmark / next.
+                if (onDiscover != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TvHeroPillButton(
+                            label = tr("Discover"),
+                            ts = ts,
+                            onClick = onDiscover,
+                            onFocused = onActionsFocused,
+                        )
+                        if (onToggleBookmark != null) {
+                            TvHeroCircleButton(
+                                icon = if (bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                description = tr("Bookmark"),
+                                onClick = onToggleBookmark,
+                                onFocused = onActionsFocused,
+                            )
+                        }
+                        if (onNext != null) {
+                            TvHeroCircleButton(
+                                icon = Icons.Filled.ChevronRight,
+                                description = tr("Next"),
+                                onClick = onNext,
+                                onFocused = onActionsFocused,
+                            )
                         }
                     }
-                if (badges.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    TvHeroRatingBadges(badges, ts)
                 }
             }
+        }
 
-            // The plot: TMDB's localized text first (like the detail page),
-            // the catalogue row's own blurb only where that is blank.
-            val overview = meta?.extras?.overview?.trim().orEmpty()
-                .ifEmpty { item.overview?.trim().orEmpty() }
-            if (overview.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = overview,
-                    color = Color.White.copy(alpha = 0.88f),
-                    fontSize = 12.5.sp * ts,
-                    lineHeight = 17.sp * ts,
-                    maxLines = if (compact) 2 else 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        // The "Starring …" credit, bottom right (never for anime, where the
+        // lookup returns characters, not actors).
+        val extras = meta?.extras
+        val starring = if (item != null && extras != null && !extras.castIsCharacters) {
+            extras.cast.take(3).map { it.name.trim() }.filter { it.isNotEmpty() }.joinToString(", ")
+        } else {
+            ""
+        }
+        if (starring.isNotEmpty()) {
+            Text(
+                text = tr("Starring") + " " + starring,
+                color = Color.White.copy(alpha = 0.70f),
+                fontSize = 11.sp * ts,
+                lineHeight = 14.sp * ts,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 28.dp, bottom = 12.dp)
+                    .widthIn(max = 240.dp),
+            )
+        }
+
+        // Carousel dots, centred under the buttons.
+        if (dotCount > 1) {
+            TvHomeHeroDots(
+                count = dotCount,
+                active = dotActive,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 3.dp),
+            )
         }
     }
 }
@@ -509,47 +592,139 @@ private fun tvHeroRatingColor(source: RatingSource): Color = when (source) {
 private fun tvHeroRatingLabel(source: RatingSource): String = when (source) {
     RatingSource.IMDB -> "IMDb"
     RatingSource.TMDB -> "TMDB"
-    RatingSource.ANILIST -> "AL"
+    RatingSource.ANILIST -> "AniList"
     RatingSource.TOMATOMETER -> "RT"
     RatingSource.POPCORN -> "RT"
-    RatingSource.METACRITIC -> "MC"
+    RatingSource.METACRITIC -> "Metacritic"
     RatingSource.LETTERBOXD -> "LB"
 }
 
-/** The detail page's small dark rating pills, minus the click: the header is
- *  display-only, so it never takes D-pad focus away from the shelves. */
+/** The small tinted rating pills (TMDB 6.8 · IMDb 7.0 · RT 86% · Metacritic
+ *  68), display-only: the header never takes D-pad focus away from the
+ *  shelves because of them. */
 @Composable
 private fun TvHeroRatingBadges(ratings: List<TitleRating>, scale: Float) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ratings.forEach { r ->
+            val tint = tvHeroRatingColor(r.source)
             val shape = RoundedCornerShape(6.dp)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .clip(shape)
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.18f), shape)
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
+                    .background(tint.copy(alpha = 0.16f))
+                    .border(0.5.dp, tint.copy(alpha = 0.40f), shape)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             ) {
                 Text(
                     text = tvHeroRatingLabel(r.source),
-                    fontSize = 11.sp * scale,
+                    fontSize = 10.5.sp * scale,
                     fontWeight = FontWeight.ExtraBold,
-                    color = tvHeroRatingColor(r.source),
+                    color = tint,
                     maxLines = 1,
                 )
                 Text(
                     text = r.value,
-                    fontSize = 12.sp * scale,
+                    fontSize = 11.5.sp * scale,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = tint,
                     maxLines = 1,
                 )
             }
+        }
+    }
+}
+
+/** "Discover": a dark glass pill that turns solid white under the remote. */
+@Composable
+private fun TvHeroPillButton(
+    label: String,
+    ts: Float,
+    onClick: () -> Unit,
+    onFocused: (() -> Unit)?,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(50)
+    Box(
+        modifier = Modifier
+            .height(32.dp)
+            .onFocusChanged { st ->
+                val now = st.hasFocus
+                if (focused != now) {
+                    focused = now
+                    if (now) onFocused?.invoke()
+                }
+            }
+            .clip(shape)
+            .background(if (focused) Color.White else Color.Black.copy(alpha = 0.50f))
+            .border(1.dp, Color.White.copy(alpha = if (focused) 0f else 0.20f), shape)
+            .tvPress(onClick = onClick)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = if (focused) Color(0xFF0A0B10) else Color.White,
+            fontSize = 12.5.sp * ts,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+/** The round icon buttons next to Discover (bookmark, next title). */
+@Composable
+private fun TvHeroCircleButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    onFocused: (() -> Unit)?,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .onFocusChanged { st ->
+                val now = st.hasFocus
+                if (focused != now) {
+                    focused = now
+                    if (now) onFocused?.invoke()
+                }
+            }
+            .clip(CircleShape)
+            .background(if (focused) Color.White else Color.Black.copy(alpha = 0.50f))
+            .border(1.dp, Color.White.copy(alpha = if (focused) 0f else 0.20f), CircleShape)
+            .tvPress(onClick = onClick)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = if (focused) Color(0xFF0A0B10) else Color.White,
+            modifier = Modifier.size(17.dp),
+        )
+    }
+}
+
+/** Tiny carousel dots; the lit one is a wider white bar. */
+@Composable
+private fun TvHomeHeroDots(count: Int, active: Int, modifier: Modifier = Modifier) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (i in 0 until count.coerceAtMost(8)) {
+            Box(
+                Modifier
+                    .size(width = if (i == active) 14.dp else 4.dp, height = 4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(
+                        if (i == active) Color.White else Color.White.copy(alpha = 0.35f)
+                    )
+            )
         }
     }
 }

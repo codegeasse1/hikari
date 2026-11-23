@@ -1393,8 +1393,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
-        // The rail steps out of the way only while the full-screen music player is open.
-        if (isTv && (showBar || tvMusicOn) && !tvMusicPlayerOpen) {
+        // The rail steps out of the way while the full-screen music player is open, and on
+        // Home, where the same tabs sit in the Home screen's own top bar (TvHomeTopNav).
+        val tvHomeHasTopNav = tabRoute == Routes.HOME && !tvMusicOn
+        if (isTv && (showBar || tvMusicOn) && !tvMusicPlayerOpen && !tvHomeHasTopNav) {
             TvNavRail(
                 currentRoute = tabRoute,
                 hidden = visibleTabs,

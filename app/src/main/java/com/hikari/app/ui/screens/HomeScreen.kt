@@ -140,6 +140,8 @@ import com.hikari.app.data.Profiles
 import com.hikari.app.tv.TvCinematicHero
 import com.hikari.app.tv.TvHomeBackdrop
 import com.hikari.app.tv.TvHomeHeaderBar
+import com.hikari.app.tv.TvHomeTopNav
+import com.hikari.app.tv.TV_MUSIC_ROUTE
 import com.hikari.app.tv.TvManageFeedDialog
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvProfileMenuDialog
@@ -854,8 +856,11 @@ fun HomeScreen(nav: NavHostController) {
     // the shelf it sits in is snapped to the top of the rows area.
     val tvFocus = remember { com.hikari.app.tv.TvHomeFocus() }
     LaunchedEffect(selection) { tvFocus.item = null }
+    // The header's own carousel position (the dots + the round "next" button):
+    // it picks the featured title shown while the remote is NOT on a shelf card.
+    var tvHeroIndex by remember(selection) { mutableStateOf(0) }
     val tvShown = com.hikari.app.tv.rememberTvSettled(
-        item = tvFocus.item ?: featured.firstOrNull(),
+        item = tvFocus.item ?: featured.getOrNull(tvHeroIndex) ?: featured.firstOrNull(),
         resetKey = selection,
     )
     val tvOnFocus: (String, MediaItem) -> Unit = { rowKey, picked ->
@@ -1171,16 +1176,31 @@ fun HomeScreen(nav: NavHostController) {
             }
         }
         if (TvMode.current()) {
-            // Nuvio-style layout: header bar (provider pill) on top, the fixed
-            // info block under it, and only the shelves scroll below that.
+            // Reference-style Home: a top bar (brand + clock, the tab pill, the
+            // round buttons + avatar), the fixed hero block under it, and only
+            // the shelves scroll below that. The side rail is not drawn on Home
+            // any more (see AppNav) — its tabs live in the pill.
             Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(start = com.hikari.app.tv.TvUi.railWidth())
+                Modifier.fillMaxSize()
             ) {
                 val pillProvider = providers.firstOrNull { it.config.id == selected }
                 val pillProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
-                TvHomeHeaderBar(
+                TvHomeTopNav(
+                    onNavigate = { route ->
+                        when (route) {
+                            Routes.HOME -> Unit
+                            TV_MUSIC_ROUTE -> {
+                                // Music is a layer over Hikari, not a NavHost page.
+                                com.hikari.app.music.MusicMode.setActive(context, true)
+                            }
+                            else -> {
+                                if (com.hikari.app.music.MusicMode.active) {
+                                    com.hikari.app.music.MusicMode.setActive(context, false)
+                                }
+                                Routes.navigateTab(nav, route)
+                            }
+                        }
+                    },
                     providerName = when {
                         selection.size > 1 -> selectedName
                         else -> pillProvider?.config?.name ?: selectedName
@@ -1195,17 +1215,64 @@ fun HomeScreen(nav: NavHostController) {
                     onVerify = openVerify,
                     onMouse = { com.hikari.app.tv.MouseMode.toggle() },
                     mouseOn = com.hikari.app.tv.MouseMode.enabled,
-                    onSettings = openSettings,
-                    compact = true,
                 )
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .height(com.hikari.app.tv.TvHomeMetrics.infoHeight())
                 ) {
+                    val shownId = tvShown?.uniqueId
+                    val dotTotal = featured.size.coerceAtMost(8)
                     com.hikari.app.tv.TvHomeHeroInfo(
                         item = tvShown,
                         modifier = Modifier.fillMaxSize(),
+                        bookmarked = shownId != null && shownId in favoriteIds,
+                        dotCount = dotTotal,
+                        dotActive = if (shownId == null) -1 else {
+                            featured.take(dotTotal).indexOfFirst { it.uniqueId == shownId }
+                        },
+                        onDiscover = if (tvShown != null) {
+                            {
+                                tvShown?.let { item ->
+                                    Routes.safeNavigate(
+                                        nav,
+                                        if (item.rawType == "manga") {
+                                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+                                        } else {
+                                            Routes.detail(
+                                                item.providerId, item.type, item.id,
+                                                item.title, item.posterUrl, item.rawType
+                                            )
+                                        }
+                                    )
+                                }
+                                Unit
+                            }
+                        } else null,
+                        onToggleBookmark = if (tvShown != null) {
+                            {
+                                tvShown?.let { item ->
+                                    scope.launch {
+                                        runCatching {
+                                            if (item.uniqueId in favoriteIds) {
+                                                app.store.removeFavorite(item.uniqueId)
+                                            } else {
+                                                app.store.addFavorite(item)
+                                            }
+                                        }
+                                    }
+                                }
+                                Unit
+                            }
+                        } else null,
+                        onNext = if (featured.size > 1) {
+                            {
+                                tvHeroIndex = (tvHeroIndex + 1) % featured.size
+                            }
+                        } else null,
+                        // The remote moved up onto the buttons: the header goes
+                        // back to the featured carousel title.
+                        onActionsFocused = { tvFocus.item = null },
                     )
                 }
                 LazyColumn(
@@ -1302,10 +1369,7 @@ fun HomeScreen(nav: NavHostController) {
                 selection.isNotEmpty() -> selectedName
                 else -> tr("All providers")
             }
-            Box(
-                if (TvMode.current()) Modifier.padding(start = com.hikari.app.tv.TvUi.railWidth())
-                else Modifier
-            ) {
+            Box(Modifier) {
             HomeSearchOverlay(
                 providerIds = remember(overlayIds) { overlayIds.toSet() },
                 providerName = overlayName,
