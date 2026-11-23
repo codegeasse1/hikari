@@ -237,13 +237,20 @@ object Genres {
     }
 
     fun tmdbGenreFilter(name: String): String {
-        val key = name.trim().lowercase()
-        if (key.isEmpty()) return ""
+        val raw = name.trim().lowercase()
+        if (raw.isEmpty()) return ""
+        // Try the literal name first (it covers punctuated TMDB names like
+        // "action & adventure" and "sci-fi & fantasy"), then the normalized
+        // form (it covers aliases like "sci-fi" -> "science fiction" — the
+        // Explore card says "Sci-Fi" while TMDB calls it "Science Fiction").
+        val keys = linkedSetOf(raw, normalize(name)).filter { it.isNotEmpty() }.toSet()
         val ids = LinkedHashSet<Int>()
-        MOVIE_IDS[key]?.let { ids += it }
-        TV_IDS[key]?.let { ids += it }
-        TV_FOR_MOVIE[key]?.let { ids += it }
-        MOVIE_FOR_TV[key]?.let { ids += it }
+        for (key in keys) {
+            MOVIE_IDS[key]?.let { ids += it }
+            TV_IDS[key]?.let { ids += it }
+            TV_FOR_MOVIE[key]?.let { ids += it }
+            MOVIE_FOR_TV[key]?.let { ids += it }
+        }
         return ids.joinToString("|")
     }
 

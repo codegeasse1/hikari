@@ -50,7 +50,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -183,34 +186,7 @@ private fun MediaRowVertical(
     keeperKey: String,
 ) {
     Column(Modifier.padding(top = 20.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr(title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (providerName.isNotBlank()) {
-                    Text(
-                        providerName.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            if (onShowAll != null && showViewAll) {
-                TextButton(onClick = onShowAll) {
-                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
+        ShelfHeader(title, providerName, showViewAll, onShowAll)
         val uniqueItems = rememberVisibleItems(items)
         val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
         // Instant vertical: warm portrait art with the row, symmetric to cinema.
@@ -241,6 +217,57 @@ private fun MediaRowVertical(
     }
 }
 
+/** Shelf header in the reference app's shape: a red accent bar before the
+ *  title, the provider as a small red caps line, and a red "Show All". */
+@Composable
+private fun ShelfHeader(
+    title: String,
+    providerName: String,
+    showViewAll: Boolean,
+    onShowAll: (() -> Unit)?,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                tr(title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (providerName.isNotBlank()) {
+                Text(
+                    providerName.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        if (onShowAll != null && showViewAll) {
+            TextButton(onClick = onShowAll) {
+                Text(
+                    tr("Show All"),
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun MediaRowCinema(
     title: String,
@@ -261,34 +288,7 @@ private fun MediaRowCinema(
         }
     }
     Column(Modifier.padding(top = 20.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr(title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (providerName.isNotBlank()) {
-                    Text(
-                        providerName.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            if (onShowAll != null && showViewAll) {
-                TextButton(onClick = onShowAll) {
-                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
-                }
-            }
-        }
+        ShelfHeader(title, providerName, showViewAll, onShowAll)
         // Settings -> Customize -> Poster cards: the landscape size (280dp at
         // "Default"), never wider than the screen.
         val cinemaScreenWidth = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
@@ -1309,13 +1309,16 @@ object HeroStyles {
     const val SHOWCASE = "showcase"
     /** Full-width cinematic header: big centred title, one pill button, morphing dots. */
     const val IMMERSIVE = "immersive"
+    /** Reference-style hero: Play pill, add/info buttons, morphing dots. */
+    const val IMMERSIVE2 = "immersive2"
 
-    val ALL = listOf(IMMERSIVE, CAROUSEL, SPOTLIGHT, COMPACT, SHOWCASE)
+    val ALL = listOf(IMMERSIVE2, IMMERSIVE, CAROUSEL, SPOTLIGHT, COMPACT, SHOWCASE)
 
     fun normalize(key: String?): String = if (key != null && key in ALL) key else CAROUSEL
 
     fun label(key: String): String = when (normalize(key)) {
         IMMERSIVE -> "Immersive"
+        IMMERSIVE2 -> "Immersive 2"
         SPOTLIGHT -> "Spotlight"
         COMPACT -> "Compact strip"
         SHOWCASE -> "Showcase"
@@ -1324,6 +1327,7 @@ object HeroStyles {
 
     fun description(key: String): String = when (normalize(key)) {
         IMMERSIVE -> "Edge-to-edge artwork with a big centred title"
+        IMMERSIVE2 -> "Reference hero: Play, add and info buttons"
         SPOTLIGHT -> "Full-width cinematic banner with the plot"
         COMPACT -> "A short strip, so the feed starts sooner"
         SHOWCASE -> "Poster beside the details, never cropped"
@@ -1346,6 +1350,11 @@ fun HeroBanner(
     onClick: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
     config: HeroConfig = HeroConfig(),
+    /** Reference-hero Play target (detail autoplay); plain detail open when null. */
+    onPlay: ((MediaItem) -> Unit)? = null,
+    /** Reference-hero + button: null hides it. */
+    isFavorite: ((MediaItem) -> Boolean)? = null,
+    onToggleFavorite: ((MediaItem) -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
     if (TvMode.current()) {
@@ -1354,6 +1363,7 @@ fun HeroBanner(
     }
     when (HeroStyles.normalize(config.style)) {
         HeroStyles.IMMERSIVE -> HeroImmersive(items, onClick, modifier, config)
+        HeroStyles.IMMERSIVE2 -> HeroImmersive2(items, onClick, modifier, config, onPlay, isFavorite, onToggleFavorite)
         HeroStyles.SPOTLIGHT -> HeroSpotlight(items, onClick, modifier, config)
         HeroStyles.COMPACT -> HeroCompact(items, onClick, modifier, config)
         HeroStyles.SHOWCASE -> HeroShowcase(items, onClick, modifier, config)
@@ -1519,6 +1529,238 @@ private fun HeroImmersive(
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                         )
+                    }
+                }
+            }
+        }
+        if (items.size > 1) {
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // Follows the finger: the dot nearest the pager's position
+                // stretches into a pill, the others shrink back.
+                val position = pagerState.currentPage + pagerState.currentPageOffsetFraction
+                items.indices.forEach { i ->
+                    val near = (1f - kotlin.math.abs(position - i)).coerceIn(0f, 1f)
+                    Box(
+                        Modifier
+                            .size(width = (6f + 18f * near).dp, height = 6.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.38f + 0.62f * near))
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Reference-style hero ("Immersive 2"): like [HeroImmersive], but the pill
+ *  says Play (it plays when [onPlay] is set, otherwise it opens details) and
+ *  carries circular add/info buttons beside it. */
+@Composable
+private fun HeroImmersive2(
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+    onPlay: ((MediaItem) -> Unit)? = null,
+    isFavorite: ((MediaItem) -> Boolean)? = null,
+    onToggleFavorite: ((MediaItem) -> Unit)? = null,
+) {
+    if (items.isEmpty()) return
+    val pagerState = rememberPagerState { items.size }
+    LaunchedEffect(pagerState, items) {
+        if (items.size <= 1) return@LaunchedEffect
+        while (true) {
+            delay(6500)
+            if (!pagerState.isScrollInProgress) {
+                pagerState.animateScrollToPage(
+                    (pagerState.currentPage + 1) % items.size,
+                    animationSpec = tween(
+                        durationMillis = 800,
+                        easing = androidx.compose.animation.core.FastOutSlowInEasing,
+                    ),
+                )
+            }
+        }
+    }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenW = configuration.screenWidthDp.toFloat()
+    val screenH = configuration.screenHeightDp.toFloat()
+    val s = config.scale.coerceIn(0.5f, 1.5f)
+    val verticalFactor = s * com.hikari.app.ui.HeaderPrefs.heightFactorFor(s)
+    val heroHeight = (screenW * 1.1f * verticalFactor).coerceIn(180f, screenH * 0.75f).dp
+    val bg = MaterialTheme.colorScheme.background
+    Box(modifier.fillMaxWidth().height(heroHeight)) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            val item = items[page]
+            val heroScore = if (config.showRating) rememberHeroScore(item) else null
+            val heroEn = rememberHeroEnriched(item)
+            // 0 while this page is centred, +1 / -1 one page to the right / left.
+            val offsetOf = { (page - pagerState.currentPage) - pagerState.currentPageOffsetFraction }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val o = kotlin.math.abs(offsetOf()).coerceAtMost(1f)
+                        alpha = 1f - 0.6f * o
+                    }
+                    .clickable { onClick(item) }
+            ) {
+                val hero = Artwork.heroModel(item)
+                HeroArtwork(
+                    model = hero.first,
+                    wide = hero.second,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // Soft top (so the art grows out of the app bar) and a long
+                // bottom fade into the page colour (so it melts into the feed).
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to bg.copy(alpha = 0.85f),
+                                0.12f to Color.Transparent,
+                                0.45f to Color.Transparent,
+                                0.72f to bg.copy(alpha = 0.55f),
+                                1f to bg,
+                            )
+                        )
+                )
+                Column(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(start = 24.dp, end = 24.dp, bottom = 34.dp)
+                        .graphicsLayer {
+                            val o = offsetOf()
+                            translationX = o * size.width * 0.35f
+                            alpha = (1f - kotlin.math.abs(o) * 1.6f).coerceIn(0f, 1f)
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        item.title,
+                        style = (
+                            if (item.title.length > 24) MaterialTheme.typography.headlineMedium
+                            else MaterialTheme.typography.displaySmall
+                            ).copy(
+                            shadow = androidx.compose.ui.graphics.Shadow(
+                                color = Color.Black.copy(alpha = 0.6f),
+                                offset = androidx.compose.ui.geometry.Offset(0f, 3f),
+                                blurRadius = 14f,
+                            )
+                        ),
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val metaLine = buildList {
+                        when (item.type) {
+                            MediaType.MOVIE -> add("Movie")
+                            MediaType.SERIES -> add("Series")
+                            else -> {}
+                        }
+                        (if (item.genres.isNotEmpty()) item.genres else heroEn?.genres.orEmpty()).take(1).forEach { add(it) }
+                        (item.year ?: heroEn?.year)?.let { add(it.toString()) }
+                    }.joinToString("  \u2022  ")
+                    if ((config.showMeta && metaLine.isNotBlank()) || heroScore != null) {
+                        Row(
+                            Modifier.padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (heroScore != null) {
+                                HeroScoreChip(heroScore)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            if (config.showMeta && metaLine.isNotBlank()) {
+                                Text(
+                                    metaLine,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                    if (config.showOverview && !heroOverview(item).isNullOrBlank()) {
+                        Text(
+                            heroOverview(item)!!.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.72f),
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Button(
+                            onClick = { (onPlay ?: onClick)(item) },
+                            shape = RoundedCornerShape(50),
+                            contentPadding = PaddingValues(horizontal = 26.dp, vertical = 9.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black,
+                            ),
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                tr("Play"),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        if (onToggleFavorite != null && isFavorite != null) {
+                            val fav = isFavorite(item)
+                            Surface(
+                                onClick = { onToggleFavorite(item) },
+                                shape = androidx.compose.foundation.shape.CircleShape,
+                                color = Color.White.copy(alpha = 0.18f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+                            ) {
+                                Icon(
+                                    if (fav) Icons.Filled.Check else Icons.Filled.Add,
+                                    contentDescription = tr(if (fav) "Remove from library" else "Add to library"),
+                                    tint = Color.White,
+                                    modifier = Modifier.padding(11.dp).size(20.dp),
+                                )
+                            }
+                        }
+                        Surface(
+                            onClick = { onClick(item) },
+                            shape = androidx.compose.foundation.shape.CircleShape,
+                            color = Color.White.copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+                        ) {
+                            Icon(
+                                Icons.Filled.Info,
+                                contentDescription = tr("Details"),
+                                tint = Color.White,
+                                modifier = Modifier.padding(11.dp).size(20.dp),
+                            )
+                        }
                     }
                 }
             }

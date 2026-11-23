@@ -62,6 +62,31 @@ private val DECADE_CHIPS: List<Pair<String, IntRange>> = listOf(
     "Older" to (1900..1989),
 )
 
+/** The core TMDB genres, laid out inline like the reference app — the full
+ *  100+ list (with every anime tag) stays behind the "More genres" button. */
+private val CORE_GENRES: List<String> = listOf(
+    "Action",
+    "Adventure",
+    "Animation",
+    "Comedy",
+    "Crime",
+    "Documentary",
+    "Drama",
+    "Family",
+    "Fantasy",
+    "History",
+    "Horror",
+    "Kids",
+    "Music",
+    "Mystery",
+    "Reality",
+    "Romance",
+    "Sci-Fi",
+    "Thriller",
+    "War",
+    "Western",
+)
+
 /** The Discover-style filter sheet: type, genres, years, upcoming, rating,
  *  votes, language and the production-company grid. Every section writes
  *  straight back into the search tab's filter state; closing applies. */
@@ -75,6 +100,9 @@ fun SearchFilterSheet(
     genreLabel: String,
     genreActive: Boolean,
     onOpenGenres: () -> Unit,
+    /** Inline core-genre chips (same filter keys the dialog writes). */
+    pickedGenreKeys: Set<String> = emptySet(),
+    onToggleGenre: (String) -> Unit = {},
     years: Set<Int>,
     currentYear: Int,
     onSetYears: (Set<Int>) -> Unit,
@@ -180,40 +208,33 @@ fun SearchFilterSheet(
             }
             item {
                 FilterSectionTitle(tr("Genres"))
-                Surface(
-                    onClick = onOpenGenres,
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (genreActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                    else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                    border = BorderStroke(
-                        1.dp,
-                        if (genreActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                    ),
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            genreLabel,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (genreActive) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Icon(
-                            Icons.Filled.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+                    for (name in CORE_GENRES) {
+                        val key = name.trim().lowercase()
+                        SheetChip(
+                            label = tr(name),
+                            selected = key in pickedGenreKeys,
+                            onClick = { onToggleGenre(name) },
                         )
                     }
+                    SheetChip(
+                        label = tr("More genres…"),
+                        selected = false,
+                        onClick = onOpenGenres,
+                    )
+                }
+                if (genreActive) {
+                    Text(
+                        genreLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
                 }
             }
             item {

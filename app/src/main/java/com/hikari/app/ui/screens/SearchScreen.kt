@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -54,6 +55,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -469,9 +471,53 @@ fun SearchScreen(
     }
 
     // ---- TMDB-backed browsing (production grid + genre explore cards) ----
+    // Pages 1-3 load first; "Load more" below appends further pages until an
+    // endpoint comes back short (TMDB caps discover at page 500), so a big
+    // studio like Netflix is never cut off after the first pages.
     var tmdbItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var tmdbExtra by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var tmdbLoading by remember { mutableStateOf(false) }
+    var tmdbLoadingMore by remember { mutableStateOf(false) }
+    var tmdbNextPage by remember { mutableStateOf(4) }
+    var tmdbMaybeMore by remember { mutableStateOf(true) }
+    fun currentBrowseQuery(): BrowseQuery? {
+        if (companyKey.isBlank() && exploreGenreKey.isBlank()) return null
+        if (companyKey.isNotBlank() && companyResolved?.first != companyKey) return null
+        val genreIds = when {
+            kindFilter == SearchKindFilter.ANIME -> "16"
+            exploreGenreKey.isNotBlank() ->
+                com.hikari.app.data.Genres.tmdbGenreFilter(exploreGenreKey)
+            else -> ""
+        }
+        val movie = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.MOVIES
+        val tv = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.SERIES ||
+            kindFilter == SearchKindFilter.ANIME
+        val cid = if (companyKey.isNotBlank()) (companyResolved?.second?.id ?: -1) else 0
+        return BrowseQuery(genreIds, cid, movie, tv)
+    }
+    fun loadMoreBrowse() {
+        val q = currentBrowseQuery() ?: return
+        if (tmdbLoading || tmdbLoadingMore || !tmdbMaybeMore || q.cid < 0) return
+        tmdbLoadingMore = true
+        scope.launch {
+            val pages = (tmdbNextPage..minOf(tmdbNextPage + 1, 500)).toList()
+            val res = SearchDiscovery.browsePages(
+                q.genreIds, q.cid, q.movie, q.tv,
+                minVoteKey.toDouble(), minVotesKey, langKey, pages,
+            )
+            val seen = HashSet<String>()
+            (tmdbItems + tmdbExtra).forEach { seen.add(it.type.name + "|" + it.id) }
+            tmdbExtra = tmdbExtra + res.items.filter { seen.add(it.type.name + "|" + it.id) }
+            tmdbMaybeMore = res.maybeMore && tmdbNextPage + 1 < 500
+            tmdbNextPage += 2
+            tmdbLoadingMore = false
+        }
+    }
     LaunchedEffect(companyResolved, exploreGenreKey, kindFilter, minVoteKey, minVotesKey, langKey) {
+        tmdbExtra = emptyList()
+        tmdbNextPage = 4
+        tmdbMaybeMore = true
+        tmdbLoadingMore = false
         if (companyKey.isBlank() && exploreGenreKey.isBlank()) {
             tmdbItems = emptyList()
             tmdbLoading = false
@@ -483,25 +529,23 @@ fun SearchScreen(
             return@LaunchedEffect
         }
         tmdbLoading = true
-        val genreIds = when {
-            kindFilter == SearchKindFilter.ANIME -> "16"
-            exploreGenreKey.isNotBlank() ->
-                com.hikari.app.data.Genres.tmdbGenreFilter(exploreGenreKey)
-            else -> ""
+        val q = currentBrowseQuery()
+        if (q == null || (companyKey.isNotBlank() && q.cid <= 0)) {
+            tmdbItems = emptyList()
+            tmdbMaybeMore = false
+        } else {
+            val res = SearchDiscovery.browsePages(
+                q.genreIds, q.cid, q.movie, q.tv,
+                minVoteKey.toDouble(), minVotesKey, langKey, listOf(1, 2, 3),
+            )
+            tmdbItems = res.items
+            tmdbMaybeMore = res.maybeMore
         }
-        val movie = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.MOVIES
-        val tv = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.SERIES ||
-            kindFilter == SearchKindFilter.ANIME
-        val cid = if (companyKey.isNotBlank()) (companyResolved?.second?.id ?: -1) else 0
-        tmdbItems = if (companyKey.isNotBlank() && cid <= 0) emptyList()
-        else SearchDiscovery.browse(
-            genreIds, cid, movie, tv,
-            minVoteKey.toDouble(), minVotesKey, langKey,
-        )
         tmdbLoading = false
     }
-    val tmdbVisible = remember(tmdbItems, kindFilter, yearsKey, genreKey, upcomingKey, minVoteKey) {
-        tmdbItems.filter {
+    val tmdbAll = remember(tmdbItems, tmdbExtra) { tmdbItems + tmdbExtra }
+    val tmdbVisible = remember(tmdbAll, kindFilter, yearsKey, genreKey, upcomingKey, minVoteKey) {
+        tmdbAll.filter {
             it.passesSearchFilter(kindFilter, yearsFilter, genreFilter, upcomingKey) &&
                 (minVoteKey <= 0f || (it.rating ?: Double.MAX_VALUE) >= minVoteKey.toDouble())
         }
@@ -765,6 +809,8 @@ fun SearchScreen(
                 genreLabel = genreSheetLabel,
                 genreActive = genreFilter.isNotEmpty(),
                 onOpenGenres = { showFilterSheet = false; showGenreDialog = true },
+                pickedGenreKeys = genreFilter,
+                onToggleGenre = { toggleGenre(it) },
                 years = yearsFilter,
                 currentYear = CURRENT_YEAR,
                 onSetYears = { setYears(it) },
@@ -786,7 +832,7 @@ fun SearchScreen(
                     }
                 },
                 resultCount = if (tmdbMode) {
-                    if (tmdbLoading && tmdbItems.isEmpty()) null else tmdbVisible.size
+                    if (tmdbLoading && tmdbAll.isEmpty()) null else tmdbVisible.size
                 } else if (resultsMode) visible.size else null,
                 onClearAll = {
                     kindFilterKey = "all"
@@ -899,7 +945,8 @@ fun SearchScreen(
             }
         } else if (tmdbMode) {
             // TMDB-backed browsing: production grid picks and genre explore
-            // cards land here, filtered by the sheet.
+            // cards land here, filtered by the sheet. Pages 1-3 load first;
+            // the footer keeps appending further pages until TMDB runs dry.
             val browseTitle = if (companyKey.isNotBlank()) companyKey
             else exploreGenreKey + " " + tr("movies & shows")
             Column(Modifier.fillMaxSize()) {
@@ -909,14 +956,25 @@ fun SearchScreen(
                         .padding(start = 16.dp, end = 8.dp, top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        browseTitle,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            browseTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (!tmdbLoading) {
+                            Text(
+                                I18n.t("%s titles").replace("%s", tmdbVisible.size.toString()) +
+                                    if (tmdbMaybeMore && tmdbVisible.isNotEmpty()) " · " + tr("more available") else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                     if (tmdbLoading) {
                         CircularProgressIndicator(
                             Modifier
@@ -958,6 +1016,15 @@ fun SearchScreen(
                                 onOpen = { openSearchItem(item) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
+                        }
+                        if (!tmdbLoading && tmdbMaybeMore && tmdbVisible.isNotEmpty()) {
+                            item(span = { GridItemSpan(browseCols) }) {
+                                BrowseLoadMoreFooter(
+                                    loading = tmdbLoadingMore,
+                                    shown = tmdbVisible.size,
+                                    onLoad = { loadMoreBrowse() },
+                                )
+                            }
                         }
                     }
                 }
@@ -1329,6 +1396,15 @@ private fun CollectionHitsRow(
         }
     }
 }
+
+/** One TMDB browse query (production and/or genre): the first pages load in the
+ *  effect, further pages append through [loadMoreBrowse] in the grid footer. */
+private data class BrowseQuery(
+    val genreIds: String,
+    val cid: Int,
+    val movie: Boolean,
+    val tv: Boolean,
+)
 
 /** Which kind of result the grid keeps: everything, only films, only shows, or
  *  only anime. */
@@ -1711,7 +1787,7 @@ private fun IdleSearchLanding(
                         for (g in row) {
                             GenreExploreCard(
                                 genre = g,
-                                art = genreArt[g].orEmpty(),
+                                art = genreArt[g],
                                 onOpenItem = onOpenItem,
                                 onExplore = { onExploreGenre(g) },
                                 modifier = Modifier.weight(1f),
@@ -1750,11 +1826,32 @@ private fun LandingSectionTitle(text: String) {
     }
 }
 
+/** Browse-grid footer: keeps appending TMDB pages until an endpoint runs dry. */
+@Composable
+private fun BrowseLoadMoreFooter(loading: Boolean, shown: Int, onLoad: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.5.dp)
+        } else {
+            OutlinedButton(onClick = onLoad, shape = RoundedCornerShape(50)) {
+                Text(I18n.t("Load more (%s so far)").replace("%s", shown.toString()))
+            }
+        }
+    }
+}
+
 /** One genre card: fanned posters over a tinted tile, name below the art. */
 @Composable
 private fun GenreExploreCard(
     genre: String,
-    art: List<MediaItem>,
+    /** Null while still loading (spinner); empty when loaded-but-bare, which
+     *  draws a monogram tile instead of spinning forever. */
+    art: List<MediaItem>?,
     onOpenItem: (MediaItem) -> Unit,
     onExplore: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1767,41 +1864,51 @@ private fun GenreExploreCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
         ) {
-            val posters = art.take(3)
-            if (posters.isNotEmpty()) {
-                Row(Modifier.fillMaxSize()) {
-                    for ((i, p) in posters.withIndex()) {
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxSize()
-                                .padding(
-                                    start = if (i == 0) 0.dp else 3.dp,
-                                    top = (i * 7).dp,
-                                    bottom = ((posters.size - 1 - i) * 7).dp,
-                                )
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onOpenItem(p) },
-                        ) {
-                            AsyncImage(
-                                model = p.backdropUrl ?: p.posterUrl,
-                                contentDescription = p.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                            )
-                        }
-                    }
-                    if (posters.size < 3) {
-                        repeat(3 - posters.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
-            } else {
+            val posters = art.orEmpty().take(3)
+            if (art == null) {
                 CircularProgressIndicator(
                     Modifier
                         .align(Alignment.Center)
                         .size(24.dp),
                     strokeWidth = 2.dp,
                 )
+            } else {
+                if (posters.isNotEmpty()) {
+                    Row(Modifier.fillMaxSize()) {
+                        for ((i, p) in posters.withIndex()) {
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxSize()
+                                    .padding(
+                                        start = if (i == 0) 0.dp else 3.dp,
+                                        top = (i * 7).dp,
+                                        bottom = ((posters.size - 1 - i) * 7).dp,
+                                    )
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onOpenItem(p) },
+                            ) {
+                                AsyncImage(
+                                    model = p.backdropUrl ?: p.posterUrl,
+                                    contentDescription = p.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                        }
+                        if (posters.size < 3) {
+                            repeat(3 - posters.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
+                } else {
+                    Text(
+                        genre.take(1).uppercase(),
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
             }
             Box(
                 Modifier

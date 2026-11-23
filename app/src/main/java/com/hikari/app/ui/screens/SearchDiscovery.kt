@@ -173,29 +173,53 @@ object SearchDiscovery {
         minVote: Double,
         minVotes: Int,
         lang: String,
-    ): List<MediaItem> = runCatching {
+    ): List<MediaItem> =
+        browsePages(genreIds, companyId, movie, tv, minVote, minVotes, lang, listOf(1, 2, 3)).items
+
+    /**
+     * One browse window: [pages] TMDB discover pages per enabled endpoint,
+     * merged and deduped. Returns the items plus [BrowsePage.maybeMore],
+     * which is true when any endpoint filled a whole page (so a further page
+     * may still hold titles — the UI keeps offering "Load more" until a page
+     * comes back short). TMDB caps discover at page 500.
+     */
+    data class BrowsePage(val items: List<MediaItem>, val maybeMore: Boolean)
+
+    suspend fun browsePages(
+        genreIds: String,
+        companyId: Int,
+        movie: Boolean,
+        tv: Boolean,
+        minVote: Double,
+        minVotes: Int,
+        lang: String,
+        pages: List<Int>,
+    ): BrowsePage = runCatching {
         coroutineScope {
-            val jobs = ArrayList<kotlinx.coroutines.Deferred<List<MediaItem>>>(6)
+            val jobs = ArrayList<kotlinx.coroutines.Deferred<List<MediaItem>>>(pages.size * 2)
             if (movie) {
-                for (page in 1..3) {
+                for (page in pages) {
                     jobs += async { discoverRaw("movie", genreIds, companyId, minVote, minVotes, lang, page) }
                 }
             }
             if (tv) {
-                for (page in 1..3) {
+                for (page in pages) {
                     jobs += async { discoverRaw("tv", genreIds, companyId, minVote, minVotes, lang, page) }
                 }
             }
             val seen = HashSet<String>()
-            val out = ArrayList<MediaItem>(60)
+            val out = ArrayList<MediaItem>(20 * jobs.size)
+            var full = false
             for (job in jobs) {
-                for (m in job.await()) {
+                val list = job.await()
+                if (list.size >= 20) full = true
+                for (m in list) {
                     if (seen.add(m.type.name + "|" + m.id)) out += m
                 }
             }
-            out.sortedByDescending { it.rating ?: -1.0 }
+            BrowsePage(out.sortedByDescending { it.rating ?: -1.0 }, full)
         }
-    }.getOrDefault(emptyList())
+    }.getOrDefault(BrowsePage(emptyList(), false))
 
     private suspend fun discoverRaw(
         kind: String,
@@ -214,7 +238,7 @@ object SearchDiscovery {
         if (lang.isNotBlank()) q["with_original_language"] = lang
         q["sort_by"] = "popularity.desc"
         q["include_adult"] = "false"
-        q["page"] = page.coerceIn(1, 10).toString()
+        q["page"] = page.coerceIn(1, 500).toString()
         val d = TmdbResolver.apiGet("/discover/$kind", q) ?: return emptyList()
         val arr = d.optJSONArray("results") ?: return emptyList()
         val out = ArrayList<MediaItem>(arr.length())

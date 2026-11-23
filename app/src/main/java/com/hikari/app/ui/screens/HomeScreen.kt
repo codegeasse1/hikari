@@ -140,8 +140,6 @@ import com.hikari.app.data.Profiles
 import com.hikari.app.tv.TvCinematicHero
 import com.hikari.app.tv.TvHomeBackdrop
 import com.hikari.app.tv.TvHomeHeaderBar
-import com.hikari.app.tv.TvHomeTopNav
-import com.hikari.app.tv.TV_MUSIC_ROUTE
 import com.hikari.app.tv.TvManageFeedDialog
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvProfileMenuDialog
@@ -777,6 +775,24 @@ fun HomeScreen(nav: NavHostController) {
             )
         )
     }
+    // One company tap (Home's streaming row): the TMDB film+series grid for
+    // that studio/streamer, same discover path as a genre grid.
+    val openTmdbCompany: (String, Int) -> Unit = { name, companyId ->
+        Routes.safeNavigate(
+            nav,
+            Routes.tmdbGridSpec(
+                TmdbSpec(
+                    type = TmdbSourceType.DISCOVER,
+                    media = "all",
+                    companies = companyId.toString(),
+                    sort = "popularity.desc",
+                    title = name,
+                ).encode(),
+                name,
+                name,
+            )
+        )
+    }
     // One genre tap, wherever it comes from (the home strip, the Genres
     // screen): with extensions picked it asks WHERE (this extension or
     // everything), otherwise it opens the TMDB genre grid straight away.
@@ -838,10 +854,17 @@ fun HomeScreen(nav: NavHostController) {
     // Television: the genre strip moves to the END of the feed (the Nuvio-style
     // Home starts straight on the first shelf), so it is one more key here.
     val tvHome = TvMode.current()
-    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome) {
+    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome, selected, selection) {
         buildList {
             add("home-header")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
+            // Reference-style discovery rows (streaming services + explore
+            // genres): only in the pure "everything" state, right below
+            // Continue Watching.
+            if (!tvHome && selected == null && selection.isEmpty()) {
+                add("home-streaming")
+                add("home-explore")
+            }
             collectionFolderRows.forEach { c -> add("collection-folders|${c.id}") }
             if (loading && collectionFolderRows.isEmpty()) repeat(4) { i -> add("home-shimmer|$i") }
             uniqueRows.forEach { row -> add(row.key.ifBlank { "${row.providerName}|${row.title}" }) }
@@ -856,11 +879,8 @@ fun HomeScreen(nav: NavHostController) {
     // the shelf it sits in is snapped to the top of the rows area.
     val tvFocus = remember { com.hikari.app.tv.TvHomeFocus() }
     LaunchedEffect(selection) { tvFocus.item = null }
-    // The header's own carousel position (the dots + the round "next" button):
-    // it picks the featured title shown while the remote is NOT on a shelf card.
-    var tvHeroIndex by remember(selection) { mutableStateOf(0) }
     val tvShown = com.hikari.app.tv.rememberTvSettled(
-        item = tvFocus.item ?: featured.getOrNull(tvHeroIndex) ?: featured.firstOrNull(),
+        item = tvFocus.item ?: featured.firstOrNull(),
         resetKey = selection,
     )
     val tvOnFocus: (String, MediaItem) -> Unit = { rowKey, picked ->
@@ -937,6 +957,33 @@ fun HomeScreen(nav: NavHostController) {
                                         )
                                     )
                                 },
+                                // Immersive 2's Play pill: same autoplay route
+                                // the shelf hold-menu uses.
+                                onPlay = { item ->
+                                    Routes.safeNavigate(
+                                        nav,
+                                        if (item.rawType == "manga") {
+                                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+                                        } else {
+                                            Routes.detail(
+                                                item.providerId, item.type, item.id,
+                                                item.title, item.posterUrl, item.rawType, autoplay = true
+                                            )
+                                        }
+                                    )
+                                },
+                                isFavorite = { item -> item.uniqueId in favoriteIds },
+                                onToggleFavorite = { item ->
+                                    scope.launch {
+                                        runCatching {
+                                            if (item.uniqueId in favoriteIds) {
+                                                app.store.removeFavorite(item.uniqueId)
+                                            } else {
+                                                app.store.addFavorite(item)
+                                            }
+                                        }
+                                    }
+                                },
                                 config = heroConfig,
                             )
                         }
@@ -983,6 +1030,17 @@ fun HomeScreen(nav: NavHostController) {
                             }
                         } else null,
                     )
+                }
+            }
+            // Reference-style discovery rows: streaming logos + genre tiles.
+            // Only in the pure "everything" state (an extension pick shows
+            // that extension's own shelves instead).
+            if (!tvHome && selected == null && selection.isEmpty()) {
+                item(key = "home-streaming") {
+                    HomeStreamingRow(onOpenCompany = openTmdbCompany)
+                }
+                item(key = "home-explore") {
+                    HomeExploreGenresRow(onPick = onGenrePick)
                 }
             }
             collectionFolderRows.forEach { c ->
@@ -1176,31 +1234,16 @@ fun HomeScreen(nav: NavHostController) {
             }
         }
         if (TvMode.current()) {
-            // Reference-style Home: a top bar (brand + clock, the tab pill, the
-            // round buttons + avatar), the fixed hero block under it, and only
-            // the shelves scroll below that. The side rail is not drawn on Home
-            // any more (see AppNav) — its tabs live in the pill.
+            // Nuvio-style layout: header bar (provider pill) on top, the fixed
+            // info block under it, and only the shelves scroll below that.
             Column(
-                Modifier.fillMaxSize()
+                Modifier
+                    .fillMaxSize()
+                    .padding(start = com.hikari.app.tv.TvUi.railWidth())
             ) {
                 val pillProvider = providers.firstOrNull { it.config.id == selected }
                 val pillProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
-                TvHomeTopNav(
-                    onNavigate = { route ->
-                        when (route) {
-                            Routes.HOME -> Unit
-                            TV_MUSIC_ROUTE -> {
-                                // Music is a layer over Hikari, not a NavHost page.
-                                com.hikari.app.music.MusicMode.setActive(context, true)
-                            }
-                            else -> {
-                                if (com.hikari.app.music.MusicMode.active) {
-                                    com.hikari.app.music.MusicMode.setActive(context, false)
-                                }
-                                Routes.navigateTab(nav, route)
-                            }
-                        }
-                    },
+                TvHomeHeaderBar(
                     providerName = when {
                         selection.size > 1 -> selectedName
                         else -> pillProvider?.config?.name ?: selectedName
@@ -1215,64 +1258,17 @@ fun HomeScreen(nav: NavHostController) {
                     onVerify = openVerify,
                     onMouse = { com.hikari.app.tv.MouseMode.toggle() },
                     mouseOn = com.hikari.app.tv.MouseMode.enabled,
+                    onSettings = openSettings,
+                    compact = true,
                 )
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(com.hikari.app.tv.TvHomeMetrics.heroHeight())
+                        .height(com.hikari.app.tv.TvHomeMetrics.infoHeight())
                 ) {
-                    val shownId = tvShown?.uniqueId
-                    val dotTotal = featured.size.coerceAtMost(8)
                     com.hikari.app.tv.TvHomeHeroInfo(
                         item = tvShown,
                         modifier = Modifier.fillMaxSize(),
-                        bookmarked = shownId != null && shownId in favoriteIds,
-                        dotCount = dotTotal,
-                        dotActive = if (shownId == null) -1 else {
-                            featured.take(dotTotal).indexOfFirst { it.uniqueId == shownId }
-                        },
-                        onDiscover = if (tvShown != null) {
-                            {
-                                tvShown?.let { item ->
-                                    Routes.safeNavigate(
-                                        nav,
-                                        if (item.rawType == "manga") {
-                                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
-                                        } else {
-                                            Routes.detail(
-                                                item.providerId, item.type, item.id,
-                                                item.title, item.posterUrl, item.rawType
-                                            )
-                                        }
-                                    )
-                                }
-                                Unit
-                            }
-                        } else null,
-                        onToggleBookmark = if (tvShown != null) {
-                            {
-                                tvShown?.let { item ->
-                                    scope.launch {
-                                        runCatching {
-                                            if (item.uniqueId in favoriteIds) {
-                                                app.store.removeFavorite(item.uniqueId)
-                                            } else {
-                                                app.store.addFavorite(item)
-                                            }
-                                        }
-                                    }
-                                }
-                                Unit
-                            }
-                        } else null,
-                        onNext = if (featured.size > 1) {
-                            {
-                                tvHeroIndex = (tvHeroIndex + 1) % featured.size
-                            }
-                        } else null,
-                        // The remote moved up onto the buttons: the header goes
-                        // back to the featured carousel title.
-                        onActionsFocused = { tvFocus.item = null },
                     )
                 }
                 LazyColumn(
@@ -1369,7 +1365,10 @@ fun HomeScreen(nav: NavHostController) {
                 selection.isNotEmpty() -> selectedName
                 else -> tr("All providers")
             }
-            Box(Modifier) {
+            Box(
+                if (TvMode.current()) Modifier.padding(start = com.hikari.app.tv.TvUi.railWidth())
+                else Modifier
+            ) {
             HomeSearchOverlay(
                 providerIds = remember(overlayIds) { overlayIds.toSet() },
                 providerName = overlayName,
@@ -3685,6 +3684,235 @@ private fun HomeResultCard(
     }
 }
 
+
+/** Section title with the reference app's red accent bar. */
+@Composable
+private fun HomeSectionHeader(title: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            tr(title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Reference-style streaming row: studio/streamer logo tiles that open the
+ *  TMDB film+series grid for that company (same as the search tab's studio
+ *  grid, but inline on Home). */
+@Composable
+private fun HomeStreamingRow(onOpenCompany: (String, Int) -> Unit) {
+    val names = remember {
+        listOf("Netflix", "Disney+", "Apple TV+", "Prime Video", "HBO", "Hulu", "Paramount+", "Peacock")
+    }
+    var companies by remember { mutableStateOf<Map<String, SearchDiscovery.ResolvedCompany?>>(emptyMap()) }
+    LaunchedEffect(Unit) {
+        val m = LinkedHashMap<String, SearchDiscovery.ResolvedCompany?>()
+        for (n in names) m[n] = SearchDiscovery.resolveCompany(n)
+        companies = m
+    }
+    Column(Modifier.fillMaxWidth()) {
+        HomeSectionHeader("Streaming services")
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(names, key = { it }) { name ->
+                val hit = companies[name]
+                Column(
+                    Modifier.width(96.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Surface(
+                        onClick = {
+                            val id = hit?.id ?: return@Surface
+                            onOpenCompany(if (hit.name.isNotBlank()) hit.name else name, id)
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            val logo = hit?.logoUrl
+                            if (logo != null) {
+                                coil.compose.AsyncImage(
+                                    model = logo,
+                                    contentDescription = name,
+                                    modifier = Modifier
+                                        .size(width = 64.dp, height = 36.dp)
+                                        .clip(RoundedCornerShape(6.dp)),
+                                    contentScale = ContentScale.Fit,
+                                )
+                            } else {
+                                Text(
+                                    name.split(" ").mapNotNull { it.firstOrNull()?.uppercase() }.take(2).joinToString(""),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 18.sp,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Reference-style genre tiles: fanned posters over a tinted tile, tapping
+ *  opens the genre the same way the Genres browser does. */
+@Composable
+private fun HomeExploreGenresRow(onPick: (String, String, String) -> Unit) {
+    var art by remember { mutableStateOf<Map<String, List<MediaItem>>>(emptyMap()) }
+    LaunchedEffect(Unit) {
+        val m = LinkedHashMap<String, List<MediaItem>>()
+        for (g in SearchDiscovery.EXPLORE_GENRES) m[g] = SearchDiscovery.genreArt(g)
+        art = m
+    }
+    Column(Modifier.fillMaxWidth()) {
+        HomeSectionHeader("Explore genres")
+        Column(Modifier.padding(horizontal = 16.dp)) {
+        for (row in SearchDiscovery.EXPLORE_GENRES.chunked(2)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                for (g in row) {
+                    val ids = remember(g) { com.hikari.app.data.Genres.tmdbGenreFilter(g) }
+                    val kw = remember(g, ids) {
+                        if (ids.isNotEmpty()) ""
+                        else com.hikari.app.data.Genres.keywordCandidates(g).joinToString("|")
+                    }
+                    HomeExploreGenreTile(
+                        genre = g,
+                        art = art[g],
+                        onExplore = { onPick(g, ids, kw) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+        }
+    }
+}
+
+@Composable
+private fun HomeExploreGenreTile(
+    genre: String,
+    /** Null while loading (spinner); empty when loaded-but-bare (monogram). */
+    art: List<MediaItem>?,
+    onExplore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.clickable { onExplore() }) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 10f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        ) {
+            val posters = art.orEmpty().take(3)
+            if (art == null) {
+                CircularProgressIndicator(
+                    Modifier
+                        .align(Alignment.Center)
+                        .size(24.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else if (posters.isEmpty()) {
+                Text(
+                    genre.take(1).uppercase(),
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            } else {
+                Row(Modifier.fillMaxSize()) {
+                    for ((i, p) in posters.withIndex()) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxSize()
+                                .padding(
+                                    start = if (i == 0) 0.dp else 3.dp,
+                                    top = (i * 7).dp,
+                                    bottom = ((posters.size - 1 - i) * 7).dp,
+                                )
+                                .clip(RoundedCornerShape(8.dp)),
+                        ) {
+                            coil.compose.AsyncImage(
+                                model = p.backdropUrl ?: p.posterUrl,
+                                contentDescription = p.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
+                    }
+                    if (posters.size < 3) {
+                        repeat(3 - posters.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.45f to androidx.compose.ui.graphics.Color.Transparent,
+                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                        ),
+                    ),
+            )
+            Text(
+                genre,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = androidx.compose.ui.graphics.Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 10.dp, bottom = 8.dp, end = 10.dp),
+            )
+        }
+    }
+}
 
 internal data class HomeGenre(
     val name: String,

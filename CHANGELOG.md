@@ -1,4 +1,10 @@
 
+## 0.12.139
+
+- Search genre browsing now loads page after page with a Load more button and a live title count, so big studios and genres are never cut off after the first pages; the Sci-Fi explore card is fixed (it looked up the wrong name and spun forever) and dead cards now show a letter tile instead of spinning
+- Filter sheet genres sit outside like the reference app: the core genres are chips you tap directly, the full list stays behind More genres
+- Home catalogue restyled like the reference: red-bar section titles with red Show All, a Streaming services logo row and Explore genres tiles, plus a new Immersive 2 banner option with a Play button and add/info buttons (top bar, taskbar and Continue Watching untouched)
+
 ## 0.12.138
 
 - Search tab redesigned: suggestion chips, trending-today rail, and genre explore cards on the idle screen; all filters moved into a Discover-style sheet (sources, type, genres, release year with From/To, upcoming toggle, rating with slider, votes, language) opened from the new filter button beside translate; studio grid searches TMDB by production company
