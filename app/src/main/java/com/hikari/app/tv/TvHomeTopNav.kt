@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,7 +24,9 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +39,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -47,17 +52,83 @@ import com.hikari.app.R
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.navigation.Routes
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
- * The television Home's top bar, laid out like the reference: the brand mark
- * with the clock and date on the left, ONE pill of tab buttons in the middle
- * (the tabs that used to live on the side rail), and the round icon buttons
- * plus the profile avatar on the right.
+ * The television top bar, laid out like the reference: the brand mark with the
+ * clock and date on the left, ONE pill of tab buttons in the middle, and the
+ * round icon buttons plus the profile avatar on the right.
  *
- * Home is always the lit tab here: this bar is drawn only by the Home screen.
- * Its height is exactly the 60dp the Home layout already reserved for its
- * header, so nothing below it moves.
+ * TV FIX: this ONE bar now serves every main tab. The Home screen draws it with
+ * its own right-hand buttons ([TvHomeTopNav]); every other tab (Schedule, Music,
+ * My Stuff, Search, Settings...) gets it from AppRoot ([TvTabTopBar]) — so the
+ * old side rail never comes back after a tab is chosen from the bar.
+ *
+ * The whole bar is drawn through [TvUi.chromeScale], so it is the same share of
+ * the screen as the reference on any TV resolution (the old fixed 60dp bar looked
+ * tiny and cramped on 720p/4K panels).
  */
+@Composable
+private fun TvTopBarFrame(
+    activeRoute: String?,
+    onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    right: @Composable RowScope.() -> Unit,
+) {
+    val base = LocalDensity.current
+    val bs = TvUi.chromeScale()
+    // Scale dp AND sp together: every size below is written for a 540dp-tall screen.
+    CompositionLocalProvider(LocalDensity provides Density(base.density * bs, base.fontScale)) {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(TvUi.TOP_BAR_BASE_DP.dp)
+                .padding(horizontal = 32.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // ---- left: brand mark + clock ----
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.hikari_logo),
+                    contentDescription = "hikari",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                )
+                Spacer(Modifier.width(12.dp))
+                TvHomeClock(1f)
+            }
+
+            // ---- middle: the tab pill ----
+            TvHomeTabPill(activeRoute = tvTopBarHighlight(activeRoute), onNavigate = onNavigate, ts = 1f)
+
+            // ---- right: icon buttons + avatar ----
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+                content = right,
+            )
+        }
+    }
+}
+
+/** Pages that live inside Settings on a television keep Settings lit. */
+private fun tvTopBarHighlight(route: String?): String? = when (route) {
+    Routes.EXTENSIONS,
+    Routes.MANGA,
+    Routes.IPTV,
+    Routes.STATS,
+    Routes.TELEGRAM,
+    Routes.COLLECTIONS -> Routes.SETTINGS
+    else -> route
+}
+
+/** The Home screen's flavour of the bar (provider picker, translate, ...). */
 @Composable
 fun TvHomeTopNav(
     onNavigate: (String) -> Unit,
@@ -74,85 +145,121 @@ fun TvHomeTopNav(
     mouseOn: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val ts = TvUi.scale()
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(60.dp)
-            .padding(horizontal = 24.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // ---- left: brand mark + clock ----
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Image(
-                painter = painterResource(id = R.drawable.hikari_logo),
-                contentDescription = "hikari",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(26.dp)
-                    .clip(RoundedCornerShape(7.dp)),
+    TvTopBarFrame(activeRoute = Routes.HOME, onNavigate = onNavigate, modifier = modifier) {
+        TvNavCircle(onClick = onMouse, description = tr("Mouse cursor")) { tint ->
+            Icon(
+                Icons.Filled.Mouse,
+                contentDescription = null,
+                tint = if (mouseOn && tint == Color.White) Cs3.accent else tint,
+                modifier = Modifier.size(19.dp),
             )
-            Spacer(Modifier.width(12.dp))
-            TvHomeClock(ts)
         }
-
-        // ---- middle: the tab pill ----
-        TvHomeTabPill(onNavigate = onNavigate, ts = ts)
-
-        // ---- right: icon buttons + avatar ----
-        Row(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TvNavCircle(onClick = onMouse, description = tr("Mouse cursor")) { tint ->
+        if (selected != null) {
+            val translateOn = com.hikari.app.data.Translator.isOn(selected)
+            TvNavCircle(onClick = onTranslate, description = tr("Translate")) { tint ->
+                Text(
+                    tr("A\u3042"),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (translateOn && tint == Color.White) Cs3.accent else tint,
+                )
+            }
+            TvNavCircle(
+                onClick = onVerify,
+                description = tr("Open this extension's site in a web view"),
+            ) { tint ->
                 Icon(
-                    Icons.Filled.Mouse,
+                    Icons.Filled.Public,
                     contentDescription = null,
-                    tint = if (mouseOn && tint == Color.White) Cs3.accent else tint,
+                    tint = tint,
                     modifier = Modifier.size(19.dp),
                 )
             }
-            if (selected != null) {
-                val translateOn = com.hikari.app.data.Translator.isOn(selected)
-                TvNavCircle(onClick = onTranslate, description = tr("Translate")) { tint ->
-                    Text(
-                        tr("A\u3042"),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (translateOn && tint == Color.White) Cs3.accent else tint,
-                    )
-                }
-                TvNavCircle(
-                    onClick = onVerify,
-                    description = tr("Open this extension's site in a web view"),
-                ) { tint ->
-                    Icon(
-                        Icons.Filled.Public,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(19.dp),
-                    )
-                }
-            }
-            TvNavCircle(onClick = onSearch, description = tr("Search")) { tint ->
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = tint,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            // The provider / feed picker, as one round button.
-            TvNavCircle(onClick = onProviderClick, description = providerName ?: tr("All providers")) { _ ->
-                TvProviderIcon(iconUrl = providerIconUrl, name = providerName, size = 24.dp)
-            }
-            Spacer(Modifier.width(4.dp))
-            TvNavAvatar(name = profileName, onClick = onProfileClick)
         }
+        TvNavCircle(onClick = onSearch, description = tr("Search")) { tint ->
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        // The provider / feed picker, as one round button.
+        TvNavCircle(onClick = onProviderClick, description = providerName ?: tr("All providers")) { _ ->
+            TvProviderIcon(iconUrl = providerIconUrl, name = providerName, size = 24.dp)
+        }
+        Spacer(Modifier.width(4.dp))
+        TvNavAvatar(name = profileName, onClick = onProfileClick)
+    }
+}
+
+/**
+ * The same bar for every OTHER main tab (Schedule, Search, Music, My Stuff,
+ * Settings, ...). AppRoot draws it over the page instead of the old side rail.
+ * [activeRoute] is the lit tab (use [TV_MUSIC_ROUTE] while the music layer is up).
+ */
+@Composable
+fun TvTabTopBar(
+    activeRoute: String?,
+    onNavigate: (String) -> Unit,
+    onProfileSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val profiles by com.hikari.app.data.Profiles.all.collectAsState()
+    val activeProfileId by com.hikari.app.data.Profiles.activeId.collectAsState()
+    val profileName = profiles.firstOrNull { it.id == activeProfileId }?.name
+    var showProfileMenu by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = LocalContext.current
+
+    TvTopBarFrame(activeRoute = activeRoute, onNavigate = onNavigate, modifier = modifier) {
+        val mouseOn = com.hikari.app.tv.MouseMode.enabled
+        TvNavCircle(
+            onClick = { com.hikari.app.tv.MouseMode.toggle() },
+            description = tr("Mouse cursor"),
+        ) { tint ->
+            Icon(
+                Icons.Filled.Mouse,
+                contentDescription = null,
+                tint = if (mouseOn && tint == Color.White) Cs3.accent else tint,
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        TvNavAvatar(name = profileName, onClick = { showProfileMenu = true })
+    }
+
+    if (showProfileMenu) {
+        val app = com.hikari.app.HikariApp.instance
+        TvProfileMenuDialog(
+            profiles = profiles,
+            activeId = activeProfileId,
+            onSwitch = { id ->
+                showProfileMenu = false
+                scope.launch {
+                    val ok = runCatching { com.hikari.app.data.Profiles.switchTo(app, id) }
+                        .getOrDefault(false)
+                    if (!ok) {
+                        android.widget.Toast.makeText(
+                            context,
+                            com.hikari.app.i18n.I18n.t(
+                                "That profile is locked — unlock it in Settings, Profiles."
+                            ),
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            },
+            onAdd = { name ->
+                showProfileMenu = false
+                scope.launch { runCatching { com.hikari.app.data.Profiles.createEmpty(app, name) } }
+            },
+            onManage = {
+                showProfileMenu = false
+                onProfileSettings()
+            },
+            onDismiss = { showProfileMenu = false },
+        )
     }
 }
 
@@ -218,7 +325,7 @@ private val TvTopIconTabs = listOf(
 )
 
 @Composable
-private fun TvHomeTabPill(onNavigate: (String) -> Unit, ts: Float) {
+private fun TvHomeTabPill(activeRoute: String?, onNavigate: (String) -> Unit, ts: Float) {
     val shape = RoundedCornerShape(50)
     Row(
         modifier = Modifier
@@ -231,7 +338,7 @@ private fun TvHomeTabPill(onNavigate: (String) -> Unit, ts: Float) {
         for (tab in TvTopTextTabs) {
             TvTopTabItem(
                 tab = tab,
-                selected = tab.route == Routes.HOME,
+                selected = tab.route == activeRoute,
                 ts = ts,
                 onClick = { onNavigate(tab.route) },
             )
@@ -246,7 +353,7 @@ private fun TvHomeTabPill(onNavigate: (String) -> Unit, ts: Float) {
         for (tab in TvTopIconTabs) {
             TvTopTabItem(
                 tab = tab,
-                selected = false,
+                selected = tab.route == activeRoute,
                 ts = ts,
                 onClick = { onNavigate(tab.route) },
             )

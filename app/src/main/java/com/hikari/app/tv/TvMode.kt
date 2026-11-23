@@ -128,7 +128,10 @@ object TvUi {
      *  keeps clear of it (see [com.hikari.app.ui.navigation.AppRoot]). Slim
      *  like the reference client's icon rail — the focused tab still expands
      *  into its labelled pill over the content. */
-    val RAIL_WIDTH = 84.dp
+    // TV FIX: the side rail is gone from every page (all tabs now use the top bar,
+    // see TvHomeTopNav / TvTabTopBar), so pages keep NO left inset for it any more.
+    // The constant stays only because a few layouts still subtract it from their width.
+    val RAIL_WIDTH = 0.dp
 
     /** The rail's EXPANDED width: the full labelled panel the rail becomes
      *  while the D-pad sits on it (see TvNavRail). Content keeps the collapsed
@@ -154,6 +157,23 @@ object TvUi {
             ?: kotlinx.coroutines.flow.flowOf(100)).collectAsState(initial = 100)
         return (pct.coerceIn(50, 150)) / 100f
     }
+
+    /** Height the TV top bar is drawn at, in dp, on a 540dp-tall screen (1080p panel). */
+    const val TOP_BAR_BASE_DP = 60
+
+    /** Chrome scale of the TV top bar and the Home hero: follows the screen HEIGHT, so
+     *  the bar is always the same share of the screen as in the reference design
+     *  (1.0 on a 1080p panel, bigger on 720p-at-1x / 4K layouts). 1.0 on phones. */
+    @Composable
+    fun chromeScale(): Float {
+        if (!TvMode.current()) return 1f
+        val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+        return (h / 540f).coerceIn(0.9f, 2.2f)
+    }
+
+    /** The top bar's real height on this screen. Pages below the bar pad by this. */
+    @Composable
+    fun topBarHeight(): androidx.compose.ui.unit.Dp = (TOP_BAR_BASE_DP * chromeScale()).dp
 
     /** The left inset a page keeps clear of the rail: the collapsed width
      *  always (the expanded panel overlays the content, like the reference). */

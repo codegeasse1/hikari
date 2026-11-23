@@ -156,7 +156,7 @@ import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TV_MUSIC_ROUTE
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvMouseCursorOverlay
-import com.hikari.app.tv.TvNavRail
+import com.hikari.app.tv.TvTabTopBar
 import com.hikari.app.tv.TvUi
 import androidx.compose.runtime.collectAsState
 
@@ -1145,7 +1145,8 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                             }
                         )
                         .then(
-                            if (isTv && showBar && tabRoute != Routes.HOME) Modifier.padding(start = TvUi.railWidth()) else Modifier
+                            // TV FIX: pages sit BELOW the top bar now (no left side rail any more).
+                            if (isTv && showBar && tabRoute != Routes.HOME) Modifier.padding(top = TvUi.topBarHeight()) else Modifier
                         )
                 ) {
             composable(Routes.HOME) { HeroScope { HomeScreen(nav) } }
@@ -1380,7 +1381,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         }
         // HIKari music on a television. Drawn before the rail so the rail stays on top of it.
         if (tvMusicOn) {
-            com.hikari.app.music.TvMusicRoot(startPad = TvUi.railWidth() + 24.dp)
+            // TV FIX: the music layer starts under the top bar (it used to start right of
+            // the side rail). The bar itself is drawn after this, on top.
+            Box(Modifier.fillMaxSize().background(com.hikari.app.tv.TvDesktop.Background)) {
+                Box(Modifier.fillMaxSize().padding(top = TvUi.topBarHeight())) {
+                    com.hikari.app.music.TvMusicRoot(startPad = TvUi.railWidth() + 32.dp)
+                }
+            }
         }
         if (showBar && !isTv) {
             AppBottomBar(
@@ -1393,13 +1400,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
-        // The rail steps out of the way while the full-screen music player is open, and on
-        // Home, where the same tabs sit in the Home screen's own top bar (TvHomeTopNav).
+        // TV FIX: ONE top bar for every main tab (same look and size as on Home), instead of
+        // the old side rail that used to pop up on every page opened from the Home bar. It
+        // steps out of the way while the full-screen music player is open, and on Home,
+        // where the same bar is drawn by the Home screen itself (TvHomeTopNav).
         val tvHomeHasTopNav = tabRoute == Routes.HOME && !tvMusicOn
         if (isTv && (showBar || tvMusicOn) && !tvMusicPlayerOpen && !tvHomeHasTopNav) {
-            TvNavRail(
-                currentRoute = tabRoute,
-                hidden = visibleTabs,
+            TvTabTopBar(
+                activeRoute = if (tvMusicOn) TV_MUSIC_ROUTE else tabRoute,
                 onNavigate = { route ->
                     if (route == TV_MUSIC_ROUTE) {
                         // Music is a layer over Hikari, not a NavHost page.
@@ -1413,13 +1421,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                         Routes.navigateTab(nav, route)
                     }
                 },
-                modifier = Modifier.align(Alignment.CenterStart),
-                // TV FIX: the rail must never dim/shrink because the page scrolled. On a
-                // television `barExpanded` is driven by every list's scroll events (including
-                // the music layer, which does not reset it on tab change), so the rail used
-                // to stay faded/shrunk after scrolling down. Keep it constant on TV.
-                isScrolling = false,
-                musicActive = tvMusicOn,
+                onProfileSettings = {
+                    if (com.hikari.app.music.MusicMode.active) {
+                        com.hikari.app.music.MusicMode.setActive(context, false)
+                    }
+                    Routes.navigateTab(nav, Routes.SETTINGS)
+                },
+                modifier = Modifier.align(Alignment.TopCenter),
             )
         }
         // HIKari music provider: full-screen music UI laid over Hikari (whose screens stay alive

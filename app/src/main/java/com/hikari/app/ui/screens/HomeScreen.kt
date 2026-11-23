@@ -1219,7 +1219,7 @@ fun HomeScreen(nav: NavHostController) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(com.hikari.app.tv.TvHomeMetrics.infoHeight())
+                        .height(com.hikari.app.tv.TvHomeMetrics.heroHeight())
                 ) {
                     val shownId = tvShown?.uniqueId
                     val dotTotal = featured.size.coerceAtMost(8)

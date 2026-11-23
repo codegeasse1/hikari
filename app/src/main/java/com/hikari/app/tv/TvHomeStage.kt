@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
@@ -53,8 +54,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -121,6 +124,16 @@ object TvHomeMetrics {
     fun infoHeight(): Dp {
         val h = LocalConfiguration.current.screenHeightDp
         return (h * 0.35f).coerceIn(150f, 260f).dp
+    }
+
+    /** TV FIX: the Home hero block (title logo, ratings, plot, buttons) is now as tall
+     *  as in the reference design — a bit over half the screen — instead of the old small
+     *  35% strip. The shelves keep their own card size ([cardHeight]) and peek in
+     *  underneath, exactly like the reference's "Continue Watching" row. */
+    @Composable
+    fun heroHeight(): Dp {
+        val h = LocalConfiguration.current.screenHeightDp
+        return (h * 0.54f).coerceIn(200f, 800f).dp
     }
 
     /** True where the info block is short, so the header trims itself. */
@@ -333,8 +346,12 @@ fun TvHomeHeroInfo(
     onNext: (() -> Unit)? = null,
     onActionsFocused: (() -> Unit)? = null,
 ) {
-    val ts = TvUi.scale()
-    val compact = TvHomeMetrics.compactInfo()
+    // Every size below is written for a 540dp-tall screen and scaled to the real
+    // screen height through the density (dp AND sp), so the hero is the same share of
+    // the screen as the reference on any TV. (ts stays 1f: no double scaling.)
+    val ts = 1f
+    val baseDensity = LocalDensity.current
+    val heroScale = TvUi.chromeScale()
     var logo by remember(item?.uniqueId) { mutableStateOf<String?>(null) }
     LaunchedEffect(item?.uniqueId) {
         val current = item ?: return@LaunchedEffect
@@ -378,12 +395,15 @@ fun TvHomeHeroInfo(
     }
     val showRatings by ratingsFlow.collectAsState(initial = true)
 
+    CompositionLocalProvider(
+        LocalDensity provides Density(baseDensity.density * heroScale, baseDensity.fontScale)
+    ) {
     Box(modifier = modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .fillMaxWidth(0.56f)
-                .padding(start = 24.dp, end = 12.dp, bottom = 8.dp),
+                .fillMaxWidth(0.52f)
+                .padding(start = 32.dp, end = 12.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             if (item != null) {
@@ -398,15 +418,15 @@ fun TvHomeHeroInfo(
                         contentScale = ContentScale.Fit,
                         alignment = Alignment.BottomStart,
                         modifier = Modifier
-                            .fillMaxWidth(0.66f)
-                            .heightIn(max = if (compact) 38.dp else 52.dp),
+                            .fillMaxWidth(0.72f)
+                            .heightIn(max = 76.dp),
                     )
                 } else {
                     Text(
                         text = item.title.uppercase(),
                         color = Color.White,
-                        fontSize = (if (compact) 22.sp else 26.sp) * ts,
-                        lineHeight = (if (compact) 26.sp else 31.sp) * ts,
+                        fontSize = 36.sp,
+                        lineHeight = 42.sp,
                         letterSpacing = 1.5.sp,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -414,7 +434,7 @@ fun TvHomeHeroInfo(
                     )
                 }
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(8.dp))
 
                 // 2. "Movie · Thriller" + the age-rating chip.
                 val typeLabel = when (item.type) {
@@ -438,7 +458,7 @@ fun TvHomeHeroInfo(
                             Text(
                                 text = typeLine,
                                 color = Color.White.copy(alpha = 0.92f),
-                                fontSize = 12.sp * ts,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -470,7 +490,7 @@ fun TvHomeHeroInfo(
                         }
                         .take(4)
                     if (badges.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(7.dp))
                         TvHeroRatingBadges(badges, ts)
                     }
                 }
@@ -480,13 +500,13 @@ fun TvHomeHeroInfo(
                 val overview = meta?.extras?.overview?.trim().orEmpty()
                     .ifEmpty { item.overview?.trim().orEmpty() }
                 if (overview.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(7.dp))
                     Text(
                         text = overview,
                         color = Color.White.copy(alpha = 0.82f),
-                        fontSize = 12.sp * ts,
-                        lineHeight = 16.sp * ts,
-                        maxLines = if (compact) 2 else 3,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -498,11 +518,11 @@ fun TvHomeHeroInfo(
                     details?.country?.trim()?.takeIf { it.isNotEmpty() },
                 ).joinToString("  ·  ")
                 if (infoLine.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(7.dp))
                     Text(
                         text = infoLine,
                         color = Color.White.copy(alpha = 0.78f),
-                        fontSize = 12.sp * ts,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -511,9 +531,9 @@ fun TvHomeHeroInfo(
 
                 // 6. Discover / bookmark / next.
                 if (onDiscover != null) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(12.dp))
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         TvHeroPillButton(
@@ -555,14 +575,14 @@ fun TvHomeHeroInfo(
             Text(
                 text = tr("Starring") + " " + starring,
                 color = Color.White.copy(alpha = 0.70f),
-                fontSize = 11.sp * ts,
-                lineHeight = 14.sp * ts,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 28.dp, bottom = 12.dp)
-                    .widthIn(max = 240.dp),
+                    .padding(end = 32.dp, bottom = 16.dp)
+                    .widthIn(max = 280.dp),
             )
         }
 
@@ -576,6 +596,7 @@ fun TvHomeHeroInfo(
                     .padding(bottom = 3.dp),
             )
         }
+    }
     }
 }
 
@@ -651,7 +672,7 @@ private fun TvHeroPillButton(
     val shape = RoundedCornerShape(50)
     Box(
         modifier = Modifier
-            .height(32.dp)
+            .height(36.dp)
             .onFocusChanged { st ->
                 val now = st.hasFocus
                 if (focused != now) {
@@ -664,13 +685,13 @@ private fun TvHeroPillButton(
             .border(1.dp, Color.White.copy(alpha = if (focused) 0f else 0.20f), shape)
             .tvPress(onClick = onClick)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 20.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
             color = if (focused) Color(0xFF0A0B10) else Color.White,
-            fontSize = 12.5.sp * ts,
+            fontSize = 13.5.sp * ts,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
@@ -688,7 +709,7 @@ private fun TvHeroCircleButton(
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(36.dp)
             .onFocusChanged { st ->
                 val now = st.hasFocus
                 if (focused != now) {
@@ -707,7 +728,7 @@ private fun TvHeroCircleButton(
             imageVector = icon,
             contentDescription = description,
             tint = if (focused) Color(0xFF0A0B10) else Color.White,
-            modifier = Modifier.size(17.dp),
+            modifier = Modifier.size(19.dp),
         )
     }
 }
