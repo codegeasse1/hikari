@@ -11,6 +11,7 @@ import com.hikari.app.ui.components.GlassSearchField
 import androidx.activity.compose.BackHandler
 import android.app.Application
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -27,7 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -36,6 +40,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -57,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -363,12 +369,41 @@ fun SearchScreen(
         if (key.isEmpty()) return
         setGenres(if (key in genreFilter) genreFilter - key else genreFilter + key)
     }
+    // ---- Discover-style filter state (lives in the filter sheet now) ----
+    var showFilterSheet by remember { mutableStateOf(false) }
+    var showGenreDialog by remember { mutableStateOf(false) }
+    var upcomingKey by rememberSaveable { mutableStateOf(true) }
+    var minVoteKey by rememberSaveable { mutableFloatStateOf(0f) }
+    var minVotesKey by rememberSaveable { mutableStateOf(0) }
+    var langKey by rememberSaveable { mutableStateOf("") }
+    // Production-company browse (TMDB with_companies) + genre explore browse.
+    // Either one switches the results area to TMDB-backed browsing.
+    var companyKey by rememberSaveable { mutableStateOf("") }
+    var exploreGenreKey by rememberSaveable { mutableStateOf("") }
+    val tmdbMode = companyKey.isNotBlank() || exploreGenreKey.isNotBlank()
+    var companyResolved by remember { mutableStateOf<Pair<String, SearchDiscovery.ResolvedCompany?>?>(null) }
+    LaunchedEffect(companyKey) {
+        companyResolved = if (companyKey.isBlank()) null
+        else companyKey to SearchDiscovery.resolveCompany(companyKey)
+    }
+    // Typing a query leaves TMDB browsing and returns to provider search.
+    LaunchedEffect(query) {
+        if (query.isNotBlank() && (companyKey.isNotBlank() || exploreGenreKey.isNotBlank())) {
+            companyKey = ""
+            exploreGenreKey = ""
+        }
+    }
     // A filter is only "on" when it can actually hide something.
     val filterOn = kindFilter != SearchKindFilter.ALL ||
-        yearsFilter.isNotEmpty() || genreFilter.isNotEmpty()
-    val filtered = remember(results, kindFilter, yearsKey, genreKey) {
+        yearsFilter.isNotEmpty() || genreFilter.isNotEmpty() ||
+        !upcomingKey || minVoteKey > 0f || minVotesKey > 0 || langKey.isNotBlank() ||
+        companyKey.isNotBlank() || exploreGenreKey.isNotBlank()
+    val filtered = remember(results, kindFilter, yearsKey, genreKey, upcomingKey, minVoteKey) {
         if (!filterOn) results
-        else results.filter { it.passesSearchFilter(kindFilter, yearsFilter, genreFilter) }
+        else results.filter {
+            it.passesSearchFilter(kindFilter, yearsFilter, genreFilter, upcomingKey) &&
+                (minVoteKey <= 0f || (it.rating ?: Double.MAX_VALUE) >= minVoteKey.toDouble())
+        }
     }
     val keptUnknownKind = remember(results, kindFilter, yearsKey, genreKey) {
         if (!filterOn) 0
@@ -433,6 +468,79 @@ fun SearchScreen(
         if (initialProvider.isNotBlank()) vm.selectProvider(initialProvider)
     }
 
+    // ---- TMDB-backed browsing (production grid + genre explore cards) ----
+    var tmdbItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var tmdbLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(companyResolved, exploreGenreKey, kindFilter, minVoteKey, minVotesKey, langKey) {
+        if (companyKey.isBlank() && exploreGenreKey.isBlank()) {
+            tmdbItems = emptyList()
+            tmdbLoading = false
+            return@LaunchedEffect
+        }
+        if (companyKey.isNotBlank() && companyResolved?.first != companyKey) {
+            // Company id still resolving; keep the old list up meanwhile.
+            tmdbLoading = true
+            return@LaunchedEffect
+        }
+        tmdbLoading = true
+        val genreIds = when {
+            kindFilter == SearchKindFilter.ANIME -> "16"
+            exploreGenreKey.isNotBlank() ->
+                com.hikari.app.data.Genres.tmdbGenreFilter(exploreGenreKey)
+            else -> ""
+        }
+        val movie = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.MOVIES
+        val tv = kindFilter == SearchKindFilter.ALL || kindFilter == SearchKindFilter.SERIES ||
+            kindFilter == SearchKindFilter.ANIME
+        val cid = if (companyKey.isNotBlank()) (companyResolved?.second?.id ?: -1) else 0
+        tmdbItems = if (companyKey.isNotBlank() && cid <= 0) emptyList()
+        else SearchDiscovery.browse(
+            genreIds, cid, movie, tv,
+            minVoteKey.toDouble(), minVotesKey, langKey,
+        )
+        tmdbLoading = false
+    }
+    val tmdbVisible = remember(tmdbItems, kindFilter, yearsKey, genreKey, upcomingKey, minVoteKey) {
+        tmdbItems.filter {
+            it.passesSearchFilter(kindFilter, yearsFilter, genreFilter, upcomingKey) &&
+                (minVoteKey <= 0f || (it.rating ?: Double.MAX_VALUE) >= minVoteKey.toDouble())
+        }
+    }
+
+    // ---- Idle landing rails (trending + genre art, session-cached) ----
+    var trending by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    val genreArt = remember { mutableStateMapOf<String, List<MediaItem>>() }
+    LaunchedEffect(Unit) {
+        trending = SearchDiscovery.trending()
+        for (g in SearchDiscovery.EXPLORE_GENRES) {
+            genreArt[g] = SearchDiscovery.genreArt(g)
+        }
+    }
+
+    // Labels the filter sheet shows (were pills on the slim row before).
+    val scopeSheetLabel = when {
+        selected.isEmpty() -> tr("All providers")
+        soleName != null -> soleName
+        else -> I18n.t("%s sources").replace("%s", selected.size.toString())
+    }
+    val genreSheetLabel = tr("Genre") + ": " + when {
+        genreFilter.isEmpty() -> tr("Any")
+        genreFilter.size == 1 -> trTag(genreFilter.first())
+        else -> I18n.t("%s picked").replace("%s", genreFilter.size.toString())
+    }
+
+    // Opens a result the same way everywhere (provider rows, TMDB rails).
+    val openSearchItem: (MediaItem) -> Unit = { item ->
+        Routes.safeNavigate(
+            nav,
+            if (item.rawType == "manga") {
+                Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+            } else {
+                Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+            },
+        )
+    }
+
     // One tap EN -> target language (Chinese by default), tap again to restore
     // the original English the user typed. The source language is whatever the
     // user wrote, auto-detected by the translator, so the same button also
@@ -493,7 +601,7 @@ fun SearchScreen(
                     vertical = if (com.hikari.app.tv.TvMode.current()) 10.dp else 8.dp
                 ),
             trailing = {
-                Box {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(50))
@@ -517,6 +625,37 @@ fun SearchScreen(
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                    }
+                    // Discover-style filters, one tap from the search bar.
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(50))
+                            .tvPress { showFilterSheet = true }
+                            .pointerInput(Unit) {
+                                detectTapGestures(onTap = { showFilterSheet = true })
+                            }
+                            .padding(10.dp)
+                    ) {
+                        Box {
+                            Icon(
+                                Icons.Filled.Tune,
+                                contentDescription = tr("Filters"),
+                                tint = if (filterOn) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            if (filterOn) {
+                                Box(
+                                    Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(8.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.primary,
+                                            CircleShape,
+                                        )
+                                )
+                            }
                         }
                     }
                     DropdownMenu(
@@ -616,174 +755,68 @@ fun SearchScreen(
                 }
             }
         }
-        run {
-            // ---- Every filter in ONE slim row ----
-            // Type/year/genre are compact selector pills — NOT one pill per
-            // option. Each opens its own box (like the provider pill opens
-            // the provider box); the endless horizontal option strip is gone.
-            var showTypeFilter by remember { mutableStateOf(false) }
-            var showYearFilter by remember { mutableStateOf(false) }
-            var showGenreFilter by remember { mutableStateOf(false) }
-            val typeLabel = tr("Type") + ": " + when (kindFilter) {
-                SearchKindFilter.MOVIES -> tr("Movies")
-                SearchKindFilter.SERIES -> tr("Series")
-                SearchKindFilter.ANIME -> tr("Anime")
-                else -> tr("Both")
-            }
-            val yearLabel = tr("Year") + ": " + when {
-                yearsFilter.isEmpty() -> tr("Any")
-                yearsFilter.size <= 2 -> yearsFilter.sortedDescending().joinToString(", ")
-                else -> tr("%s years").replace("%s", yearsFilter.size.toString())
-            }
-            val genreLabel = tr("Genre") + ": " + when {
-                genreFilter.isEmpty() -> tr("Any")
-                genreFilter.size == 1 -> trTag(genreFilter.first())
-                else -> I18n.t("%s picked").replace("%s", genreFilter.size.toString())
-            }
-            if (!searchIsTv) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(top = 4.dp),
-            ) {
-                item {
-                    // The provider scope as one pill: a tap opens the same
-                    // picker the old button opened.
-                    val scopeLabel = when {
-                        selected.isEmpty() -> tr("All providers")
-                        soleName != null -> soleName
-                        else -> I18n.t("%s sources").replace("%s", selected.size.toString())
+        // ---- Discover-style filters: everything lives in the sheet now ----
+        if (showFilterSheet) {
+            SearchFilterSheet(
+                scopeLabel = scopeSheetLabel,
+                onOpenProviders = { showProviders = true },
+                kindKey = kindFilterKey,
+                onKindChange = { kindFilterKey = it },
+                genreLabel = genreSheetLabel,
+                genreActive = genreFilter.isNotEmpty(),
+                onOpenGenres = { showFilterSheet = false; showGenreDialog = true },
+                years = yearsFilter,
+                currentYear = CURRENT_YEAR,
+                onSetYears = { setYears(it) },
+                upcoming = upcomingKey,
+                onUpcomingChange = { upcomingKey = it },
+                minVote = minVoteKey,
+                onMinVoteChange = { minVoteKey = it },
+                minVotes = minVotesKey,
+                onMinVotesChange = { minVotesKey = it },
+                lang = langKey,
+                onLangChange = { langKey = it },
+                companyName = companyKey.ifBlank { null },
+                onSelectCompany = { name ->
+                    companyKey = name.orEmpty()
+                    if (!name.isNullOrBlank()) {
+                        exploreGenreKey = ""
+                        vm.setQuery("")
+                        vm.submit("")
                     }
-                    Surface(
-                        onClick = { showProviders = true },
-                        shape = RoundedCornerShape(50),
-                        color = if (selected.isNotEmpty()) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Filled.Tune,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                scopeLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                            )
-                            Icon(
-                                Icons.Filled.KeyboardArrowDown,
-                                contentDescription = tr("Choose providers"),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
-                    }
-                }
-                item {
-                    FilterSelectPill(
-                        label = typeLabel,
-                        active = kindFilter != SearchKindFilter.ALL,
-                        contentDescription = tr("Choose type"),
-                        onClick = { showTypeFilter = true },
-                    )
-                }
-                item {
-                    FilterSelectPill(
-                        label = yearLabel,
-                        active = yearsFilter.isNotEmpty(),
-                        contentDescription = tr("Choose years"),
-                        onClick = { showYearFilter = true },
-                    )
-                }
-                item {
-                    FilterSelectPill(
-                        label = genreLabel,
-                        active = genreFilter.isNotEmpty(),
-                        contentDescription = tr("Choose genres"),
-                        onClick = { showGenreFilter = true },
-                    )
-                }
-            }
-            } else {
-                // Television: the same four pills in one line, so the poster
-                // grid below gets the room. Each opens the same picker box.
-                val tvScopeLabel = when {
-                    selected.isEmpty() -> tr("All providers")
-                    soleName != null -> soleName
-                    else -> I18n.t("%s sources").replace("%s", selected.size.toString())
-                }
-                TvSearchFilterRow(
-                    showScope = providers.isNotEmpty() || collections.isNotEmpty(),
-                    scopeLabel = tvScopeLabel,
-                    scopeActive = selected.isNotEmpty(),
-                    onScope = { showProviders = true },
-                    typeLabel = typeLabel,
-                    typeActive = kindFilter != SearchKindFilter.ALL,
-                    onType = { showTypeFilter = true },
-                    yearLabel = yearLabel,
-                    yearActive = yearsFilter.isNotEmpty(),
-                    onYear = { showYearFilter = true },
-                    genreLabel = genreLabel,
-                    genreActive = genreFilter.isNotEmpty(),
-                    onGenre = { showGenreFilter = true },
-                )
-            }
-            if (showTypeFilter) {
-                ChoiceDialog(
-                    title = tr("Type"),
-                    items = listOf(
-                        ChoiceItem(key = SearchKindFilter.ALL.key, label = tr("Both")),
-                        ChoiceItem(key = SearchKindFilter.MOVIES.key, label = tr("Movies")),
-                        ChoiceItem(key = SearchKindFilter.SERIES.key, label = tr("Series")),
-                        ChoiceItem(key = SearchKindFilter.ANIME.key, label = tr("Anime")),
-                    ),
-                    selectedKey = kindFilterKey,
-                    onPick = { key ->
-                        kindFilterKey = key
-                        showTypeFilter = false
-                    },
-                    onDismiss = { showTypeFilter = false },
-                )
-            }
-            if (showYearFilter) {
-                MultiChoiceDialog(
-                    title = tr("Year"),
-                    items = SEARCH_YEARS.map { ChoiceItem(key = it.toString(), label = it.toString()) },
-                    selectedKeys = yearsFilter.map { it.toString() }.toSet(),
-                    onToggle = { key -> key.toIntOrNull()?.let { toggleYear(it) } },
-                    onDismiss = { showYearFilter = false },
-                    searchable = true,
-                    searchPlaceholder = tr("Search years"),
-                    headerContent = {
-                        TextButton(onClick = { setYears(emptySet()) }) { Text(tr("Clear")) }
-                    },
-                )
-            }
-            if (showGenreFilter) {
-                MultiChoiceDialog(
-                    title = tr("Genre"),
-                    items = SEARCH_GENRES.map { ChoiceItem(key = it.trim().lowercase(), label = trTag(it)) },
-                    selectedKeys = genreFilter,
-                    onToggle = { key -> toggleGenre(key) },
-                    onDismiss = { showGenreFilter = false },
-                    searchable = true,
-                    searchPlaceholder = tr("Search genres"),
-                    headerContent = {
-                        TextButton(onClick = { setGenres(emptySet()) }) { Text(tr("Clear")) }
-                    },
-                )
-            }
-            if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty() && resultsMode) {
+                },
+                resultCount = if (tmdbMode) {
+                    if (tmdbLoading && tmdbItems.isEmpty()) null else tmdbVisible.size
+                } else if (resultsMode) visible.size else null,
+                onClearAll = {
+                    kindFilterKey = "all"
+                    setYears(emptySet())
+                    setGenres(emptySet())
+                    upcomingKey = true
+                    minVoteKey = 0f
+                    minVotesKey = 0
+                    langKey = ""
+                    companyKey = ""
+                    exploreGenreKey = ""
+                },
+                onDismiss = { showFilterSheet = false },
+            )
+        }
+        if (showGenreDialog) {
+            MultiChoiceDialog(
+                title = tr("Genre"),
+                items = SEARCH_GENRES.map { ChoiceItem(key = it.trim().lowercase(), label = trTag(it)) },
+                selectedKeys = genreFilter,
+                onToggle = { key -> toggleGenre(key) },
+                onDismiss = { showGenreDialog = false },
+                searchable = true,
+                searchPlaceholder = tr("Search genres"),
+                headerContent = {
+                    TextButton(onClick = { setGenres(emptySet()) }) { Text(tr("Clear")) }
+                },
+            )
+        }
+        if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty() && resultsMode) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
                         if (visible.isEmpty()) {
@@ -822,7 +855,6 @@ fun SearchScreen(
                     }
                 }
             }
-        }
         if (searching) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
@@ -865,12 +897,88 @@ fun SearchScreen(
                     modifier = Modifier.weight(1f),
                 )
             }
+        } else if (tmdbMode) {
+            // TMDB-backed browsing: production grid picks and genre explore
+            // cards land here, filtered by the sheet.
+            val browseTitle = if (companyKey.isNotBlank()) companyKey
+            else exploreGenreKey + " " + tr("movies & shows")
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        browseTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (tmdbLoading) {
+                        CircularProgressIndicator(
+                            Modifier
+                                .padding(end = 8.dp)
+                                .size(20.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                    TextButton(onClick = { companyKey = ""; exploreGenreKey = "" }) {
+                        Text(tr("Clear"))
+                    }
+                }
+                if (!tmdbLoading && tmdbVisible.isEmpty()) {
+                    EmptyState(
+                        title = tr("No results"),
+                        subtitle = tr("Nothing matched these filters. Loosen the rating, year or language filter."),
+                        actionLabel = null,
+                        action = null,
+                    )
+                } else {
+                    val browseCols = if (TvMode.current()) TvUi.resultsColumns() else 3
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(browseCols),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(
+                            start = 10.dp + tvEdge,
+                            end = 10.dp + tvEdge,
+                            top = 8.dp + tvEdge,
+                            bottom = LocalTaskbarInset.current + 12.dp + tvEdge,
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(tmdbVisible, key = { it.uniqueId }) { item ->
+                            PhoneSearchCell(
+                                item = item,
+                                onOpen = { openSearchItem(item) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            }
         } else if (!resultsMode || (query.isBlank() && results.isEmpty() && collectionHits.isEmpty())) {
-            EmptyState(
-                title = tr("Search"),
-                subtitle = tr("Type something to search across every provider."),
-                actionLabel = null,
-                action = null
+            IdleSearchLanding(
+                trending = trending,
+                genreArt = genreArt,
+                onTrySearch = { title ->
+                    translatedFrom = null
+                    suggestOpen = false
+                    vm.setQuery(title)
+                    vm.submit(title)
+                    keyboard?.hide()
+                },
+                onOpenItem = openSearchItem,
+                onExploreGenre = { genre ->
+                    exploreGenreKey = genre
+                    vm.setQuery("")
+                    vm.submit("")
+                },
             )
         } else if (!searching && results.isEmpty() && collectionHits.isEmpty()) {
             EmptyState(
@@ -944,16 +1052,6 @@ fun SearchScreen(
                     val avail = sw - com.hikari.app.tv.TvUi.RAIL_WIDTH - 20.dp - tvEdge * 2
                     ((avail - 12.dp * (searchCols - 1)) / searchCols).coerceAtLeast(96.dp)
                 } else 0.dp
-                val openSearchItem: (MediaItem) -> Unit = { item ->
-                    Routes.safeNavigate(
-                        nav,
-                        if (item.rawType == "manga") {
-                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
-                        } else {
-                            Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
-                        },
-                    )
-                }
                 val typesById = remember(providers) {
                     providers.associateBy({ it.config.id }, { it.config.type.groupLabel })
                 }
@@ -1503,12 +1601,18 @@ private fun PhoneSearchCell(
     }
 }
 
+private val CURRENT_YEAR: Int = runCatching {
+    java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+}.getOrDefault(2025)
+
 private fun MediaItem.passesSearchFilter(
     kind: SearchKindFilter,
     years: Set<Int>,
     genres: Set<String>,
+    upcoming: Boolean = true,
 ): Boolean {
     if (years.isNotEmpty() && (year == null || year !in years)) return false
+    if (!upcoming && year != null && year > CURRENT_YEAR) return false
     if (genres.isNotEmpty() && genres.none { q -> this.genres.any { g -> com.hikari.app.data.Genres.matches(g, q) } }) return false
     return when (kind) {
         SearchKindFilter.ALL -> true
@@ -1525,7 +1629,201 @@ private fun MediaItem.unknownKindKept(
     kind: SearchKindFilter,
     years: Set<Int>,
     genres: Set<String>,
+    upcoming: Boolean = true,
 ): Boolean {
     if (kind == SearchKindFilter.ALL) return false
-    return type == MediaType.UNKNOWN && passesSearchFilter(kind, years, genres)
+    return type == MediaType.UNKNOWN && passesSearchFilter(kind, years, genres, upcoming)
+}
+
+/** Landing content on an empty search box: "Try searching" chips, the
+ *  trending-today rail and genre explore cards (all TMDB-backed). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun IdleSearchLanding(
+    trending: List<MediaItem>,
+    genreArt: Map<String, List<MediaItem>>,
+    onTrySearch: (String) -> Unit,
+    onOpenItem: (MediaItem) -> Unit,
+    onExploreGenre: (String) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            bottom = LocalTaskbarInset.current + 12.dp,
+        ),
+    ) {
+        item {
+            LandingSectionTitle(tr("Try searching"))
+            FlowRow(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                for (s in SearchDiscovery.TRY_SEARCHING) {
+                    Surface(
+                        onClick = { onTrySearch(s) },
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                    ) {
+                        Text(
+                            s,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+        if (trending.isNotEmpty()) {
+            item {
+                LandingSectionTitle(tr("Trending today"))
+                val cellWidth = (112f * com.hikari.app.ui.PosterSizing.factor()).dp
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(trending, key = { it.uniqueId }) { item ->
+                        PhoneSearchCell(
+                            item = item,
+                            onOpen = { onOpenItem(item) },
+                            modifier = Modifier.width(cellWidth),
+                            heroNamespace = "trending",
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            LandingSectionTitle(tr("Explore genres"))
+            Column(
+                Modifier.padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                for (row in SearchDiscovery.EXPLORE_GENRES.chunked(2)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        for (g in row) {
+                            GenreExploreCard(
+                                genre = g,
+                                art = genreArt[g].orEmpty(),
+                                onOpenItem = onOpenItem,
+                                onExplore = { onExploreGenre(g) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LandingSectionTitle(text: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/** One genre card: fanned posters over a tinted tile, name below the art. */
+@Composable
+private fun GenreExploreCard(
+    genre: String,
+    art: List<MediaItem>,
+    onOpenItem: (MediaItem) -> Unit,
+    onExplore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.clickable { onExplore() }) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 10f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        ) {
+            val posters = art.take(3)
+            if (posters.isNotEmpty()) {
+                Row(Modifier.fillMaxSize()) {
+                    for ((i, p) in posters.withIndex()) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxSize()
+                                .padding(
+                                    start = if (i == 0) 0.dp else 3.dp,
+                                    top = (i * 7).dp,
+                                    bottom = ((posters.size - 1 - i) * 7).dp,
+                                )
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onOpenItem(p) },
+                        ) {
+                            AsyncImage(
+                                model = p.backdropUrl ?: p.posterUrl,
+                                contentDescription = p.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
+                    }
+                    if (posters.size < 3) {
+                        repeat(3 - posters.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+            } else {
+                CircularProgressIndicator(
+                    Modifier
+                        .align(Alignment.Center)
+                        .size(24.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.45f to androidx.compose.ui.graphics.Color.Transparent,
+                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                        ),
+                    ),
+            )
+            Text(
+                genre,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = androidx.compose.ui.graphics.Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 10.dp, bottom = 8.dp, end = 10.dp),
+            )
+        }
+    }
 }

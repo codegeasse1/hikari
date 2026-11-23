@@ -1,4 +1,8 @@
 
+## 0.12.138
+
+- Search tab redesigned: suggestion chips, trending-today rail, and genre explore cards on the idle screen; all filters moved into a Discover-style sheet (sources, type, genres, release year with From/To, upcoming toggle, rating with slider, votes, language) opened from the new filter button beside translate; studio grid searches TMDB by production company
+
 ## 0.12.137
 
 - Detail pages now load in a blink: cast, trailers, production, and recommendation rows fetch at the same time instead of one after another, the full pass starts immediately instead of waiting on slow sources, and last visit's sections survive app restarts
