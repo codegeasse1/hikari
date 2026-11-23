@@ -1,4 +1,10 @@
 
+## 0.12.142
+
+- Streaming tiles are instant real brand wordmarks (local, first frame, readable on brand colours) with taps arming in parallel in the background
+- Immersive 2 is full-bleed again like the reference (tall frame, crop to fill) with same-URL poster/backdrop guard plus backdrop retry so portrait-only items heal
+- New Testing Player UI entry in Settings Player UI: reference-style dark skin with white rounded play button, same settings and sheets, other skins untouched
+
 ## 0.12.141
 
 - Immersive 2 banner is taller like the reference (about seven tenths of the screen), with tighter bottom spacing

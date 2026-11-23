@@ -11,8 +11,10 @@ object PlayerSkins {
     const val CINEMA = "cinema"
     const val NEON = "neon"
     const val TV = "tv"
+    /** Temporary reference-style test skin (same settings, new look). */
+    const val TESTING = "testing"
 
-    val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON, TV)
+    val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON, TV, TESTING)
 
     const val FALLBACK = MINIMAL
 
@@ -29,6 +31,7 @@ object PlayerSkins {
         CINEMA -> "Cinema"
         NEON -> "Neon"
         TV -> "TV Player"
+        TESTING -> "Testing Player UI"
         else -> "Default"
     }
 
@@ -37,6 +40,7 @@ object PlayerSkins {
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
         TV -> "Netflix-style dark controls made for TV remotes and D-pad navigation"
+        TESTING -> "Reference-style dark player test — same settings, new look"
         else -> "Hikari's curved glass — frosted bars, neon-edged panels"
     }
 
@@ -79,7 +83,7 @@ object PlayerSkins {
         val topBarPadBottom: Int,
     )
 
-    enum class PlayTreatment { RING, PLAIN, SOLID, GLOW }
+    enum class PlayTreatment { RING, PLAIN, SOLID, GLOW, WHITE }
 
     fun spec(key: String?): SkinSpec = when (normalize(key)) {
         MINIMAL -> SkinSpec(
@@ -124,6 +128,23 @@ object PlayerSkins {
             pillMargin = 5,
             accentPillRadius = 12f,
             playTreatment = PlayTreatment.SOLID,
+            playSizeDp = 64,
+            deckMarginDp = 0,
+            topBarPadBottom = 12,
+        )
+
+        TESTING -> SkinSpec(
+            // Reference-style test deck: calm dark scrims like TV, but the
+            // centre button is a solid white rounded square (no accent).
+            topBarBackground = 0,
+            bottomBarBackground = 0,
+            pillBackground = com.hikari.app.R.drawable.pill_flat_ripple,
+            pillTextDp = 13f,
+            pillPadH = 10,
+            pillPadV = 6,
+            pillMargin = 5,
+            accentPillRadius = 12f,
+            playTreatment = PlayTreatment.WHITE,
             playSizeDp = 64,
             deckMarginDp = 0,
             topBarPadBottom = 12,

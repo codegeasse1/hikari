@@ -569,26 +569,16 @@ private fun CompanyGrid(
                                     .padding(6.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                val logo = hit?.logoUrl
-                                if (logo != null) {
-                                    AsyncImage(
-                                        model = logo,
-                                        contentDescription = name,
-                                        modifier = Modifier
-                                            .size(width = 64.dp, height = 36.dp)
-                                            .clip(RoundedCornerShape(6.dp)),
-                                        contentScale = ContentScale.Fit,
-                                    )
-                                } else {
-                                    val brand = StreamingBrands.of(name)
-                                    Text(
-                                        brand.short,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = brand.fg,
-                                        fontSize = 18.sp,
-                                    )
-                                }
+                                val brand = StreamingBrands.of(name)
+                                Text(
+                                    brand.label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = brand.fg,
+                                    fontSize = 15.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
                         Text(

@@ -4007,8 +4007,13 @@ private fun HomeStreamingRow(onPickCompany: (String, Int) -> Unit) {
     }
     var companies by remember { mutableStateOf<Map<String, SearchDiscovery.ResolvedCompany?>>(emptyMap()) }
     LaunchedEffect(Unit) {
+        // Ids only (for the tap action) — paint never waits for these.
+        // Parallel, not sequential, so taps arm in ~1s not ~4s.
+        val pairs = coroutineScope {
+            names.map { n -> async(Dispatchers.IO) { n to SearchDiscovery.resolveCompany(n) } }.awaitAll()
+        }
         val m = LinkedHashMap<String, SearchDiscovery.ResolvedCompany?>()
-        for (n in names) m[n] = SearchDiscovery.resolveCompany(n)
+        for ((n, hit) in pairs) m[n] = hit
         companies = m
     }
     Column(Modifier.fillMaxWidth()) {
@@ -4040,28 +4045,18 @@ private fun HomeStreamingRow(onPickCompany: (String, Int) -> Unit) {
                                 .padding(6.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            val logo = hit?.logoUrl
-                            if (logo != null) {
-                                coil.compose.AsyncImage(
-                                    model = logo,
-                                    contentDescription = name,
-                                    modifier = Modifier
-                                        .size(width = 64.dp, height = 36.dp)
-                                        .clip(RoundedCornerShape(6.dp)),
-                                    contentScale = ContentScale.Fit,
-                                )
-                            } else {
-                                // Instant local badge: paints on the first frame,
-                                // no network wait. Network logo replaces it when it lands.
-                                val brand = StreamingBrands.of(name)
-                                Text(
-                                    brand.short,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = brand.fg,
-                                    fontSize = 18.sp,
-                                )
-                            }
+                            // Real brand wordmark, local, first frame — no network,
+                            // no red-on-red: the tile IS the logo.
+                            val brand = StreamingBrands.of(name)
+                            Text(
+                                brand.label,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = brand.fg,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
                     Text(

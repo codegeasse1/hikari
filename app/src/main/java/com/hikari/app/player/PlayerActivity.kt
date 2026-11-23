@@ -5299,12 +5299,26 @@ class PlayerActivity : ComponentActivity() {
      *  - PLAIN (Minimal)— just a dark disc; no ring, no decoration.
      *  - SOLID (Cinema) — the whole button is the accent gradient.
      *  - GLOW  (Neon)   — a thicker ring inside a soft accent halo.
+     *  - WHITE (Testing)— a solid white rounded square; the icon goes black.
      */
     private fun playRingDrawable(): Drawable {
         val d = resources.displayMetrics.density
         val treatment = PlayerSkins.spec(skin).playTreatment
         val discColor = 0x66060A14.toInt()
         val ripple = ColorStateList.valueOf(0x4DFFFFFF.toInt())
+
+        if (treatment == PlayerSkins.PlayTreatment.WHITE) {
+            val white = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(0xFFFFFFFF.toInt())
+                cornerRadius = 18f * d
+            }
+            return RippleDrawable(
+                ColorStateList.valueOf(0x33000000),
+                white,
+                null,
+            )
+        }
 
         if (treatment == PlayerSkins.PlayTreatment.SOLID) {
             val solid = GradientDrawable(
@@ -5430,9 +5444,16 @@ class PlayerActivity : ComponentActivity() {
                     PlayerSkins.PlayTreatment.SOLID -> dp((spec.playSizeDp * 0.26f).roundToInt())
                     PlayerSkins.PlayTreatment.GLOW -> dp((spec.playSizeDp * 0.21f).roundToInt())
                     PlayerSkins.PlayTreatment.PLAIN -> dp((spec.playSizeDp * 0.19f).roundToInt())
+                    PlayerSkins.PlayTreatment.WHITE -> dp((spec.playSizeDp * 0.22f).roundToInt())
                     PlayerSkins.PlayTreatment.RING -> dp((spec.playSizeDp * 0.17f).roundToInt())
                 }
                 v.setPadding(pad, pad, pad, pad)
+                // White deck needs a dark icon; every other treatment keeps
+                // media3's own (light) play/pause glyphs.
+                v.imageTintList =
+                    if (spec.playTreatment == PlayerSkins.PlayTreatment.WHITE)
+                        ColorStateList.valueOf(0xFF000000.toInt())
+                    else null
             }
         }
 

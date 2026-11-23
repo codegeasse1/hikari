@@ -1412,6 +1412,11 @@ private fun HeroImmersive(
             val item = items[page]
             val heroScore = if (config.showRating) rememberHeroScore(item) else null
             val heroEn = rememberHeroEnriched(item)
+            // Re-ask for a real backdrop while the hero shows poster-only art,
+            // so portrait-only items heal to wide backdrops when TMDB has them.
+            androidx.compose.runtime.LaunchedEffect(item.uniqueId) {
+                com.hikari.app.ui.Artwork.retryMiss(item)
+            }
             // 0 while this page is centred, +1 / -1 one page to the right / left.
             val offsetOf = { (page - pagerState.currentPage) - pagerState.currentPageOffsetFraction }
             Box(
@@ -1606,6 +1611,11 @@ private fun HeroImmersive2(
             val item = items[page]
             val heroScore = if (config.showRating) rememberHeroScore(item) else null
             val heroEn = rememberHeroEnriched(item)
+            // Re-ask for a real backdrop while the hero shows poster-only art,
+            // so portrait-only items heal to wide backdrops when TMDB has them.
+            androidx.compose.runtime.LaunchedEffect(item.uniqueId) {
+                com.hikari.app.ui.Artwork.retryMiss(item)
+            }
             // 0 while this page is centred, +1 / -1 one page to the right / left.
             val offsetOf = { (page - pagerState.currentPage) - pagerState.currentPageOffsetFraction }
             Box(
@@ -1625,31 +1635,17 @@ private fun HeroImmersive2(
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                     )
                 } else {
-                    // Never hard-crop in Immersive 2: a blurred full-bleed fill
-                    // behind the whole poster/art, never a beheading crop (the
-                    // zoomed "DYSSEY" band came from a portrait flagged wide).
-                    // True backdrops still fill the frame via the blurred fill.
-                    Box(Modifier.fillMaxSize()) {
-                        PosterImage(
-                            model = hero.first,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .blur(28.dp),
-                            contentScale = ContentScale.Crop,
-                        )
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.45f))
-                        )
-                        PosterImage(
-                            model = hero.first,
-                            contentDescription = item.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit,
-                        )
-                    }
+                    // Full-bleed like the reference: crop to fill, top-biased.
+                    // Never letterbox (the Steps blur-bars). The same-URL
+                    // poster/backdrop guard in heroModel stops portrait text
+                    // flagging as wide; Artwork.retryMiss below re-asks for a
+                    // real backdrop so portrait-only items heal to wide art.
+                    HeroArtwork(
+                        model = hero.first,
+                        wide = true,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
                 // Soft top (so the art grows out of the app bar) and a long
                 // bottom fade into the page colour (so it melts into the feed).
@@ -1893,6 +1889,11 @@ private fun HeroCarousel(
                         overflow = TextOverflow.Ellipsis,
                     )
                     val heroEn = rememberHeroEnriched(item)
+            // Re-ask for a real backdrop while the hero shows poster-only art,
+            // so portrait-only items heal to wide backdrops when TMDB has them.
+            androidx.compose.runtime.LaunchedEffect(item.uniqueId) {
+                com.hikari.app.ui.Artwork.retryMiss(item)
+            }
                     val metaLine = buildList {
                         when (item.type) {
                             MediaType.MOVIE -> add("Movie")
@@ -2032,6 +2033,11 @@ private fun HeroStaticCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 val heroEn = rememberHeroEnriched(item)
+            // Re-ask for a real backdrop while the hero shows poster-only art,
+            // so portrait-only items heal to wide backdrops when TMDB has them.
+            androidx.compose.runtime.LaunchedEffect(item.uniqueId) {
+                com.hikari.app.ui.Artwork.retryMiss(item)
+            }
                 val metaLine = buildList {
                     when (item.type) {
                         MediaType.MOVIE -> add("Movie")
