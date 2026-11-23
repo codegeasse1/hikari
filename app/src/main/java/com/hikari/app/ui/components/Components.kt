@@ -91,6 +91,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.geometry.Rect
@@ -1593,7 +1594,9 @@ private fun HeroImmersive2(
     val screenH = configuration.screenHeightDp.toFloat()
     val s = config.scale.coerceIn(0.5f, 1.5f)
     val verticalFactor = s * com.hikari.app.ui.HeaderPrefs.heightFactorFor(s)
-    val heroHeight = (screenW * 1.1f * verticalFactor).coerceIn(180f, screenH * 0.75f).dp
+    // Reference proportion: the hero owns the top of the screen (about three
+    // fifths of it), so the art reads full-bleed like the reference app.
+    val heroHeight = (screenH * 0.58f * verticalFactor).coerceIn(180f, screenH * 0.85f).dp
     val bg = MaterialTheme.colorScheme.background
     Box(modifier.fillMaxWidth().height(heroHeight)) {
         HorizontalPager(
@@ -1615,12 +1618,39 @@ private fun HeroImmersive2(
                     .clickable { onClick(item) }
             ) {
                 val hero = Artwork.heroModel(item)
-                HeroArtwork(
-                    model = hero.first,
-                    wide = hero.second,
-                    contentDescription = item.title,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                if (hero.second || hero.first == null) {
+                    HeroArtwork(
+                        model = hero.first,
+                        wide = hero.second,
+                        contentDescription = item.title,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    // Portrait art in a wide frame: a blurred full-bleed fill
+                    // behind the whole poster, never a hard crop that beheads
+                    // the artwork (the zoomed "DYSSEY" band).
+                    Box(Modifier.fillMaxSize()) {
+                        PosterImage(
+                            model = hero.first,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .blur(28.dp),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.45f))
+                        )
+                        PosterImage(
+                            model = hero.first,
+                            contentDescription = item.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
                 // Soft top (so the art grows out of the app bar) and a long
                 // bottom fade into the page colour (so it melts into the feed).
                 Box(

@@ -2416,6 +2416,10 @@ class PlayerActivity : ComponentActivity() {
         frame.pivotY = frame.height / 2f
         frame.scaleX = videoZoom
         frame.scaleY = videoZoom
+        // Captions are screen-anchored (see anchorSubtitlesToScreen), so the
+        // zoomed frame no longer carries them along; re-assert after every
+        // change in case the view hierarchy was rebuilt.
+        anchorSubtitlesToScreen()
     }
 
     private fun resetVideoZoom() {
@@ -4793,6 +4797,7 @@ class PlayerActivity : ComponentActivity() {
             else -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT
         }
         updateResizeButton()
+        anchorSubtitlesToScreen()
     }
 
     /** The fit/crop/stretch button has no label any more, so the state is shown
@@ -13600,6 +13605,31 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
+     * Screen-anchors the captions: the SubtitleView is lifted out of the
+     * zoomable content frame into the PlayerView root, full-size. Fit/crop/
+     * stretch and pinch zoom then only ever scale the picture — captions keep
+     * their size and position (the giant clipped line in crop/zoom came from
+     * the captions living INSIDE the scaled frame). Idempotent: a no-op once
+     * anchored, and PlayerView keeps finding the view by id after the move.
+     */
+    private fun anchorSubtitlesToScreen() {
+        runCatching {
+            val pv = playerView ?: return
+            val sub = pv.getSubtitleView() ?: return
+            if (sub.parent === pv) return
+            (sub.parent as? android.view.ViewGroup)?.removeView(sub)
+            pv.addView(
+                sub,
+                1,
+                android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+    }
+
+    /**
      * Pushes [subtitleStyle] onto the player's SubtitleView.
      *
      * With custom styling off the style handed to media3 is its own default AND
@@ -13620,6 +13650,7 @@ class PlayerActivity : ComponentActivity() {
             view.setApplyEmbeddedFontSizes(!subtitleStyle.enabled)
             applySubtitleSize(subtitleScale)
             applySubtitlePosition(subtitlePosition)
+            anchorSubtitlesToScreen()
         }
     }
 

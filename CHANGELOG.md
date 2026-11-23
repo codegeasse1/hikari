@@ -1,4 +1,11 @@
 
+## 0.12.140
+
+- Immersive 2 banner is now big like the reference: taller frame owning the top of the screen with the header floating over the art, and portrait art shows as a full poster on a blurred fill instead of a beheading crop
+- Streaming services row now shows on Home in every state: tapping a studio with an extension picked asks Only this extension (progressively matches the extension's shelves against the studio) — unlimited Everything grid stays one tap away
+- Taskbar Anime tab renamed to Upcoming
+- Player zoom no longer moves subtitles: fit/crop/stretch and pinch zoom scale only the picture, captions stay screen-fixed in size and position
+
 ## 0.12.139
 
 - Search genre browsing now loads page after page with a Load more button and a live title count, so big studios and genres are never cut off after the first pages; the Sci-Fi explore card is fixed (it looked up the wrong name and spun forever) and dead cards now show a letter tile instead of spinning

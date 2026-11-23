@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -612,6 +613,11 @@ fun HomeScreen(nav: NavHostController) {
     // A genre tap made while extensions are picked: WHERE should it look —
     // those extensions alone, or everything (see the genre strip call site).
     var genreScope by remember { mutableStateOf<GenreScopePick?>(null) }
+    // A streaming-service tap made while extensions are picked: the same
+    // scope question as a genre tap (this extension's Netflix titles, or
+    // everything Netflix has).
+    var companyScope by remember { mutableStateOf<CompanyScopePick?>(null) }
+    var companyOverlay by remember { mutableStateOf<CompanyScopePick?>(null) }
     // The genre an in-place overlay is narrowed to ("" = no narrowing).
     var overlayGenre by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -804,6 +810,17 @@ fun HomeScreen(nav: NavHostController) {
             genreScope = GenreScopePick(name, genresText, keywordsText, ext)
         }
     }
+    // One streaming-service tap, from the Home row: with extensions picked
+    // it asks WHERE (this extension's titles or everything), otherwise it
+    // opens the TMDB company grid straight away.
+    val onPickCompany: (String, Int) -> Unit = { name, id ->
+        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+        if (ext.isEmpty()) {
+            openTmdbCompany(name, id)
+        } else {
+            companyScope = CompanyScopePick(name, id, ext)
+        }
+    }
     var showGenres by rememberSaveable { mutableStateOf(false) }
     val openVerify: () -> Unit = {        scope.launch {
             val own = withContext(Dispatchers.IO) {
@@ -859,9 +876,9 @@ fun HomeScreen(nav: NavHostController) {
             add("home-header")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
             // Reference-style discovery rows (streaming services + explore
-            // genres): only in the pure "everything" state, right below
-            // Continue Watching.
-            if (!tvHome && selected == null && selection.isEmpty()) {
+            // genres): right below Continue Watching, in every phone state —
+            // picks narrow through the same scope question genres use.
+            if (!tvHome) {
                 add("home-streaming")
                 add("home-explore")
             }
@@ -901,6 +918,69 @@ fun HomeScreen(nav: NavHostController) {
             // (see the GlassDialog after the Box) says what happened and points
             // at Settings → Logs, then stays out of the way.
             item {
+                // Immersive 2 owns the top of the screen: the art bleeds to
+                // the top edge with the header floating over it (reference
+                // style). Every other banner keeps the header above the art.
+                val immersive2Full = !tvHome &&
+                    heroConfig.style == com.hikari.app.ui.components.HeroStyles.IMMERSIVE2 &&
+                    featured.isNotEmpty()
+                if (immersive2Full) {
+                    Box(Modifier.fillMaxWidth()) {
+                        HeroBanner(
+                            items = featured,
+                            onClick = { item ->
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.detail(
+                                        item.providerId, item.type, item.id,
+                                        item.title, item.posterUrl, item.rawType
+                                    )
+                                )
+                            },
+                            // Immersive 2's Play pill: same autoplay route
+                            // the shelf hold-menu uses.
+                            onPlay = { item ->
+                                Routes.safeNavigate(
+                                    nav,
+                                    if (item.rawType == "manga") {
+                                        Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+                                    } else {
+                                        Routes.detail(
+                                            item.providerId, item.type, item.id,
+                                            item.title, item.posterUrl, item.rawType, autoplay = true
+                                        )
+                                    }
+                                )
+                            },
+                            isFavorite = { item -> item.uniqueId in favoriteIds },
+                            onToggleFavorite = { item ->
+                                scope.launch {
+                                    runCatching {
+                                        if (item.uniqueId in favoriteIds) {
+                                            app.store.removeFavorite(item.uniqueId)
+                                        } else {
+                                            app.store.addFavorite(item)
+                                        }
+                                    }
+                                }
+                            },
+                            config = heroConfig,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        HomeHeader(
+                            selected = headerSelection,
+                            onSearch = openSearch,
+                            onTranslate = { showTranslate = true },
+                            onVerify = openVerify,
+                            overlay = true,
+                            onSettings = openSettings,
+                            onMouse = { com.hikari.app.tv.MouseMode.toggle() },
+                            mouseOn = com.hikari.app.tv.MouseMode.enabled,
+                            modifier = Modifier.statusBarsPadding(),
+                        )
+                    }
+                    HomeGenresButton(onClick = { showGenres = true })
+                } else {
                 Column(Modifier.fillMaxWidth()) {
                     if (!tvHome) {
                         HomeHeader(
@@ -992,6 +1072,7 @@ fun HomeScreen(nav: NavHostController) {
                         HomeGenresButton(onClick = { showGenres = true })
                     }
                 }
+                }
             }
             if (!hideContinue && continueEntries.isNotEmpty()) {
                 item(key = "continue-watching") {
@@ -1033,11 +1114,10 @@ fun HomeScreen(nav: NavHostController) {
                 }
             }
             // Reference-style discovery rows: streaming logos + genre tiles.
-            // Only in the pure "everything" state (an extension pick shows
-            // that extension's own shelves instead).
-            if (!tvHome && selected == null && selection.isEmpty()) {
+            // A pick narrows through the same scope question genres use.
+            if (!tvHome) {
                 item(key = "home-streaming") {
-                    HomeStreamingRow(onOpenCompany = openTmdbCompany)
+                    HomeStreamingRow(onPickCompany = onPickCompany)
                 }
                 item(key = "home-explore") {
                     HomeExploreGenresRow(onPick = onGenrePick)
@@ -1495,6 +1575,70 @@ fun HomeScreen(nav: NavHostController) {
                     openTmdbGenre(pick.name, pick.genresText, pick.keywordsText)
                 }) { Text(tr("Everything")) }
             },
+        )
+    }
+
+    // A streaming-service tap made while extensions are picked: this
+    // extension's titles from that studio, or everything the studio has.
+    // "Only here" matches the picked extensions' loaded shelves against the
+    // studio's TMDB catalogue progressively (extension items carry no studio
+    // data, so this is a match, not a full studio list); "Everything" is the
+    // TMDB company grid, which pages without end.
+    companyScope?.let { pick ->
+        val scopeName = if (pick.extensionIds.size == 1) {
+            providers.firstOrNull { it.config.id == pick.extensionIds.first() }
+                ?.config?.name ?: selectedName ?: tr("this extension")
+        } else {
+            selectedName ?: I18n.t("%s sources").replace("%s", pick.extensionIds.size.toString())
+        }
+        AlertDialog(
+            onDismissRequest = { companyScope = null },
+            title = { Text(pick.name) },
+            text = {
+                Text(
+                    tr("Only this extension's titles, or everything out there?") + " " +
+                        I18n.t("Studio: %s.").replace("%s", pick.name)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    companyOverlay = pick
+                    companyScope = null
+                }) { Text(I18n.t("Only %s").replace("%s", scopeName)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    companyScope = null
+                    openTmdbCompany(pick.name, pick.companyId)
+                }) { Text(tr("Everything")) }
+            },
+        )
+    }
+
+    // Extension-scoped studio view (see CompanyExtensionOverlay).
+    companyOverlay?.let { pick ->
+        val scopeName = if (pick.extensionIds.size == 1) {
+            providers.firstOrNull { it.config.id == pick.extensionIds.first() }
+                ?.config?.name ?: selectedName ?: tr("this extension")
+        } else {
+            selectedName ?: I18n.t("%s sources").replace("%s", pick.extensionIds.size.toString())
+        }
+        CompanyExtensionOverlay(
+            companyName = pick.name,
+            companyId = pick.companyId,
+            extName = scopeName,
+            rows = uniqueRows.filter { it.providerId in pick.extensionIds },
+            onOpenItem = { item ->
+                Routes.safeNavigate(
+                    nav,
+                    if (item.rawType == "manga") {
+                        Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+                    } else {
+                        Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                    }
+                )
+            },
+            onClose = { companyOverlay = null },
         )
     }
 
@@ -2990,6 +3134,148 @@ private data class GenreScopePick(
     val extensionIds: Set<String>,
 )
 
+/** A streaming-service tap held for the same scope question: which company
+ *  was tapped, and which extensions Home had picked. */
+private data class CompanyScopePick(
+    val name: String,
+    val companyId: Int,
+    val extensionIds: Set<String>,
+)
+
+/** How a title is keyed when matching an extension's shelves against a
+ *  studio catalogue: letters and digits only, so punctuation and case
+ *  differences don't hide a match. */
+private fun companyMatchKey(title: String, year: Int?): String {
+    val t = title.trim().lowercase().replace(Regex("[^a-z0-9 ]+"), " ").replace(Regex("\\s+"), " ").trim()
+    return t + "|" + (year?.toString() ?: "")
+}
+
+/** "Only this extension" studio view: the picked extensions' loaded shelves
+ *  matched against the studio's TMDB catalogue, streaming in as company
+ *  pages land. Extension items carry no studio data, so this matches titles
+ *  (exact first, then title-only when a side has no year) — a fast,
+ *  progressive answer, not a full studio list (that is "Everything"). */
+@Composable
+private fun CompanyExtensionOverlay(
+    companyName: String,
+    companyId: Int,
+    extName: String,
+    rows: List<CatalogRow>,
+    onOpenItem: (MediaItem) -> Unit,
+    onClose: () -> Unit,
+) {
+    BackHandler(onBack = onClose)
+    var matched by remember(companyId, rows) { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var pagesDone by remember(companyId, rows) { mutableStateOf(0) }
+    var stillMatching by remember(companyId, rows) { mutableStateOf(true) }
+    LaunchedEffect(companyId, rows) {
+        val pool = rows.flatMap { it.items }.distinctBy { it.uniqueId }
+        val byKey = HashMap<String, MediaItem>()
+        val byTitle = HashMap<String, MediaItem>()
+        for (item in pool) {
+            byKey.putIfAbsent(companyMatchKey(item.searchTitle, item.year), item)
+            byTitle.putIfAbsent(companyMatchKey(item.searchTitle, null), item)
+            if (item.originalTitle.isNotBlank()) {
+                byKey.putIfAbsent(companyMatchKey(item.originalTitle, item.year), item)
+                byTitle.putIfAbsent(companyMatchKey(item.originalTitle, null), item)
+            }
+        }
+        val found = LinkedHashMap<String, MediaItem>()
+        var page = 1
+        var more = true
+        // Bounded: a giant studio would page for minutes; 60 pages (≈2400
+        // titles) match everything an extension's shelves can hold.
+        while (more && page <= 60) {
+            val res = SearchDiscovery.browsePages(
+                "", companyId, movie = true, tv = true, 0.0, 0, "", listOf(page),
+            )
+            more = res.maybeMore
+            for (m in res.items) {
+                val hit = byKey[companyMatchKey(m.searchTitle, m.year)]
+                    ?: byTitle[companyMatchKey(m.searchTitle, null)]
+                    ?: (if (m.originalTitle.isNotBlank()) {
+                        byKey[companyMatchKey(m.originalTitle, m.year)]
+                            ?: byTitle[companyMatchKey(m.originalTitle, null)]
+                    } else null)
+                if (hit != null) found.putIfAbsent(hit.uniqueId, hit)
+            }
+            matched = found.values.sortedByDescending { it.rating ?: -1.0 }
+            pagesDone = page
+            page++
+        }
+        stillMatching = false
+    }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 1f)),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 8.dp, top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    companyName + " · " + extName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (stillMatching) {
+                        I18n.t("Matching… %s on %s").replaceFirst("%s", matched.size.toString()).replaceFirst("%s", extName)
+                    } else {
+                        I18n.t("%s titles on %s").replaceFirst("%s", matched.size.toString()).replaceFirst("%s", extName)
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (stillMatching) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
+        }
+        if (!stillMatching && matched.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    tr("No %s titles on %s's loaded shelves").replaceFirst("%s", companyName).replaceFirst("%s", extName),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                state = rememberLazyGridState(),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 10.dp, end = 10.dp, top = 8.dp,
+                    bottom = LocalTaskbarInset.current + 12.dp,
+                ),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(matched, key = { it.uniqueId }) { item ->
+                    HomeResultCard(item = item, onClick = { onOpenItem(item) })
+                }
+            }
+        }
+    }
+}
+
 private class BrowseCursor(
     val providerId: String,
     val ref: CatalogRef,
@@ -3712,11 +3998,10 @@ private fun HomeSectionHeader(title: String) {
     }
 }
 
-/** Reference-style streaming row: studio/streamer logo tiles that open the
- *  TMDB film+series grid for that company (same as the search tab's studio
- *  grid, but inline on Home). */
+/** Reference-style streaming row: studio/streamer logo tiles. A tap picks the
+ *  company grid, asking scope first when Home has extensions picked. */
 @Composable
-private fun HomeStreamingRow(onOpenCompany: (String, Int) -> Unit) {
+private fun HomeStreamingRow(onPickCompany: (String, Int) -> Unit) {
     val names = remember {
         listOf("Netflix", "Disney+", "Apple TV+", "Prime Video", "HBO", "Hulu", "Paramount+", "Peacock")
     }
@@ -3741,7 +4026,7 @@ private fun HomeStreamingRow(onOpenCompany: (String, Int) -> Unit) {
                     Surface(
                         onClick = {
                             val id = hit?.id ?: return@Surface
-                            onOpenCompany(if (hit.name.isNotBlank()) hit.name else name, id)
+                            onPickCompany(if (hit.name.isNotBlank()) hit.name else name, id)
                         },
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
