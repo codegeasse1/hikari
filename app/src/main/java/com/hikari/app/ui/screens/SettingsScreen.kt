@@ -1387,13 +1387,26 @@ fun SettingsScreen(nav: NavHostController) {
     // Television draws the categories and the folder side by side; the phone
     // keeps its single column. Both read the same body above.
     if (isTv) {
+        // TV FIX: the whole Settings page is drawn a little smaller on a television, so a
+        // folder's title and several rows fit on screen instead of the page being cut off
+        // at the bottom (see TvUi.settingsScale).
+        val tvBaseDensity = androidx.compose.ui.platform.LocalDensity.current
+        val tvSettingsScale = com.hikari.app.tv.TvUi.settingsScale()
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(
+                tvBaseDensity.density * tvSettingsScale,
+                tvBaseDensity.fontScale,
+            )
+        ) {
         Row(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = tvLeftState,
                 modifier = Modifier
                     .weight(0.36f)
                     .fillMaxHeight(),
-                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 16.dp),
+                // Generous bottom padding: the last row can always be scrolled fully
+                // into view instead of sitting half under the screen edge.
+                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 72.dp),
             ) {
                 item(key = "tv-left-title") {
                     Text(
@@ -1464,10 +1477,11 @@ fun SettingsScreen(nav: NavHostController) {
                 modifier = Modifier
                     .weight(0.64f)
                     .fillMaxHeight(),
-                contentPadding = PaddingValues(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
+                contentPadding = PaddingValues(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 72.dp),
             ) {
                 settingsListBody()
             }
+        }
         }
     } else {
         LazyColumn(

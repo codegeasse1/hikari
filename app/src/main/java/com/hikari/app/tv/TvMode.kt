@@ -138,6 +138,39 @@ object TvUi {
      *  inset (see [railWidth]) — the panel overlays it, like the reference. */
     val RAIL_EXPANDED_WIDTH = 232.dp
 
+    /** The REAL height of the window in dp. The configuration's screenHeightDp can be
+     *  stale when the app's own UI scale re-sizes the density (the layout then thinks
+     *  the screen is taller than it is, and the bottom of Home / Settings is pushed
+     *  off the TV). The smaller of the two numbers is always the safe one. */
+    @Composable
+    fun screenHeightDp(): Int {
+        val cfg = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+        val d = androidx.compose.ui.platform.LocalDensity.current.density
+        val px = androidx.compose.ui.platform.LocalContext.current.resources.displayMetrics.heightPixels
+        if (d <= 0f || px <= 0) return cfg
+        val real = (px / d).toInt()
+        if (real < 200) return cfg
+        return if (cfg > 0) minOf(real, cfg) else real
+    }
+
+    /** Same as [screenHeightDp], for the width. */
+    @Composable
+    fun screenWidthDp(): Int {
+        val cfg = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+        val d = androidx.compose.ui.platform.LocalDensity.current.density
+        val px = androidx.compose.ui.platform.LocalContext.current.resources.displayMetrics.widthPixels
+        if (d <= 0f || px <= 0) return cfg
+        val real = (px / d).toInt()
+        if (real < 300) return cfg
+        return if (cfg > 0) minOf(real, cfg) else real
+    }
+
+    /** TV Settings page: drawn a little smaller than the rest of the TV UI so a whole
+     *  folder (title + several rows) fits on screen instead of being cut off at the
+     *  bottom. 1f on phones. */
+    @Composable
+    fun settingsScale(): Float = if (TvMode.current()) 0.84f else 1f
+
     /** Adaptive TV type scale, from the viewport width: 1.0 on a 1080p panel
      *  (960dp wide), smaller on short/dense screens, larger on 4K — clamped to
      *  a range that still reads from a sofa without blowing the layout apart.
@@ -145,7 +178,7 @@ object TvUi {
     @Composable
     fun scale(): Float {
         if (!TvMode.current()) return 1f
-        val w = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+        val w = screenWidthDp()
         return (w / 960f).coerceIn(0.8f, 1.3f)
     }
 
@@ -167,7 +200,7 @@ object TvUi {
     @Composable
     fun chromeScale(): Float {
         if (!TvMode.current()) return 1f
-        val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+        val h = screenHeightDp()
         return (h / 540f).coerceIn(0.9f, 2.2f)
     }
 
@@ -197,7 +230,7 @@ object TvUi {
     @Composable
     fun posterWidthBase(): androidx.compose.ui.unit.Dp {
         if (!TvMode.current()) return 120.dp
-        val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+        val h = screenHeightDp()
         val app = remember { runCatching { com.hikari.app.HikariApp.instance }.getOrNull() }
         val scalePct by (app?.store?.tvPosterScaleFlow()
             ?: kotlinx.coroutines.flow.flowOf(100)).collectAsState(initial = 100)
@@ -231,7 +264,7 @@ object TvUi {
         if (!TvMode.current()) {
             return PosterSizing.scaledColumns(phoneColumns, PosterSizing.factor())
         }
-        val w = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+        val w = screenWidthDp()
         val avail = (w - RAIL_WIDTH.value).coerceAtLeast(200f)
         return (avail / posterWidth().value).toInt().coerceIn(4, 8)
     }

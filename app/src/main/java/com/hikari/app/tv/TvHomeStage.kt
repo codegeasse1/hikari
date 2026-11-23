@@ -1,7 +1,9 @@
 package com.hikari.app.tv
 
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -9,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -41,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,8 +56,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +66,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.HikariApp
@@ -122,7 +128,7 @@ object TvHomeMetrics {
 
     @Composable
     fun infoHeight(): Dp {
-        val h = LocalConfiguration.current.screenHeightDp
+        val h = TvUi.screenHeightDp()
         return (h * 0.35f).coerceIn(150f, 260f).dp
     }
 
@@ -132,7 +138,7 @@ object TvHomeMetrics {
      *  underneath, exactly like the reference's "Continue Watching" row. */
     @Composable
     fun heroHeight(): Dp {
-        val h = LocalConfiguration.current.screenHeightDp
+        val h = TvUi.screenHeightDp()
         return (h * 0.54f).coerceIn(200f, 800f).dp
     }
 
@@ -144,7 +150,7 @@ object TvHomeMetrics {
      *  the next one fit in the space under the header and the info block. */
     @Composable
     fun cardHeight(): Dp {
-        val h = LocalConfiguration.current.screenHeightDp
+        val h = TvUi.screenHeightDp()
         val rowsArea = h - HEADER_BAR_DP - infoHeight().value
         val solved = (rowsArea - SHELF_CHROME_DP) / (1f + PEEK_FRACTION)
         // Settings -> Customize -> Poster cards: the size chosen for the shape
@@ -155,9 +161,149 @@ object TvHomeMetrics {
 
 private class TvStageArt(val model: Any?, val wide: Boolean)
 
+/**
+ * An image that fades in once it has really loaded (a card or a backdrop never
+ * "pops" in, and nothing is drawn while the picture is still on its way). [onLoaded]
+ * / [onFailed] tell the caller, so it can keep the previous picture underneath
+ * until the new one is ready.
+ */
+@Composable
+private fun TvFadeImage(
+    model: Any?,
+    description: String?,
+    modifier: Modifier,
+    contentScale: ContentScale,
+    alignment: Alignment = Alignment.Center,
+    fadeMs: Int = 300,
+    onLoaded: (() -> Unit)? = null,
+    onFailed: (() -> Unit)? = null,
+) {
+    var loaded by remember(model) { mutableStateOf(false) }
+    val spec: AnimationSpec<Float> = if (fadeMs <= 0) snap() else tween(fadeMs)
+    val fade = animateFloatAsState(
+        targetValue = if (loaded) 1f else 0f,
+        animationSpec = spec,
+        label = "tvFadeImage",
+    )
+    AsyncImage(
+        model = model,
+        contentDescription = description,
+        contentScale = contentScale,
+        alignment = alignment,
+        modifier = modifier.graphicsLayer { this.alpha = fade.value },
+        onSuccess = {
+            loaded = true
+            onLoaded?.invoke()
+        },
+        onError = { onFailed?.invoke() },
+    )
+}
+
+/** One backdrop picture for the Home stage. Wide art is cropped to the top-right
+ *  block; a title that only has a portrait poster gets the poster drawn WHOLE beside
+ *  a blurred copy of itself (never a giant beheaded crop). */
+@Composable
+private fun TvStageArtImage(
+    art: TvStageArt,
+    title: String?,
+    fadeMs: Int,
+    onLoaded: (() -> Unit)? = null,
+    onFailed: (() -> Unit)? = null,
+) {
+    Box(Modifier.fillMaxSize()) {
+        if (art.wide) {
+            TvFadeImage(
+                model = art.model,
+                description = title,
+                contentScale = ContentScale.Crop,
+                alignment = Artwork.CINEMA_ALIGNMENT,
+                fadeMs = fadeMs,
+                onLoaded = onLoaded,
+                onFailed = onFailed,
+                modifier = Modifier
+                    .fillMaxWidth(0.80f)
+                    .fillMaxHeight(0.80f)
+                    .align(Alignment.TopEnd),
+            )
+        } else {
+            TvFadeImage(
+                model = art.model,
+                description = null,
+                contentScale = ContentScale.Crop,
+                fadeMs = fadeMs,
+                modifier = Modifier
+                    .fillMaxWidth(0.80f)
+                    .fillMaxHeight(0.80f)
+                    .align(Alignment.TopEnd)
+                    .blur(24.dp, BlurredEdgeTreatment.Unbounded),
+            )
+            TvFadeImage(
+                model = art.model,
+                description = title,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterEnd,
+                fadeMs = fadeMs,
+                onLoaded = onLoaded,
+                onFailed = onFailed,
+                modifier = Modifier
+                    .fillMaxWidth(0.80f)
+                    .fillMaxHeight(0.62f)
+                    .align(Alignment.TopEnd)
+                    .padding(top = 64.dp, end = 56.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The picture behind the Home header. The PREVIOUS title's picture stays on screen
+ * until the new one has finished loading and then the new one fades in over it, so
+ * the stage never goes black while the remote moves from card to card (it used to:
+ * the old picture faded out at once and the new one was still downloading).
+ */
+@Composable
+private fun TvStageArtLayer(art: TvStageArt?, title: String?) {
+    var base by remember { mutableStateOf<TvStageArt?>(null) }
+    var ready by remember { mutableStateOf<TvStageArt?>(null) }
+    val target = art?.takeIf { it.model != null }
+
+    // This title has no picture at all: do not leave the previous title's one up.
+    LaunchedEffect(target) {
+        if (target == null) {
+            base = null
+            ready = null
+        }
+    }
+    // The new picture finished fading in: it is the base from now on.
+    LaunchedEffect(ready) {
+        val r = ready ?: return@LaunchedEffect
+        delay(360)
+        base = r
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        val b = base
+        if (b != null) {
+            TvStageArtImage(b, title, fadeMs = 0)
+        }
+        if (target != null && target !== b) {
+            key(target) {
+                TvStageArtImage(
+                    art = target,
+                    title = title,
+                    fadeMs = 320,
+                    onLoaded = { ready = target },
+                    onFailed = { base = null },
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
     val bg = Color(0xFF090A0F)
+    val context = LocalContext.current
     Box(modifier = modifier.fillMaxSize().background(bg)) {
         if (item != null) {
             var tmdbArt by remember(item.uniqueId) { mutableStateOf<String?>(null) }
@@ -167,10 +313,22 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
                 }.getOrNull()?.takeIf { it.isNotBlank() }
             }
             val tmdb = tmdbArt
-            val art = remember(item.uniqueId, tmdb) {
+            // Read OUTSIDE remember on purpose: these re-run when the art lookup lands,
+            // so a title whose poster / backdrop was still being looked up when the card
+            // appeared no longer stays on an empty stage for good.
+            val libBackdrop = Artwork.backdrop(item)
+            val libPoster = Artwork.poster(item)
+            // TMDB "original" is a 4K-class file: on a 1080p box it only makes the stage
+            // slow (or fail) to appear. Take it only on a real 4K panel.
+            val bigPanel = remember(context) {
+                context.resources.displayMetrics.widthPixels >= 2400
+            }
+            val art = remember(item.uniqueId, tmdb, libBackdrop, libPoster, bigPanel) {
                 if (tmdb != null) {
                     TvStageArt(
-                        PosterLoader.model(tmdb.replace("/w1280/", "/original/")),
+                        PosterLoader.model(
+                            if (bigPanel) tmdb.replace("/w1280/", "/original/") else tmdb
+                        ),
                         true,
                     )
                 } else {
@@ -178,26 +336,7 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
                     TvStageArt(hero.first, hero.second)
                 }
             }
-            Crossfade(
-                targetState = art,
-                animationSpec = tween(380),
-                label = "tvHomeArt",
-            ) { a ->
-                if (a.model != null) {
-                    Box(Modifier.fillMaxSize()) {
-                        PosterImage(
-                            model = a.model,
-                            contentDescription = item.title,
-                            contentScale = ContentScale.Crop,
-                            alignment = Artwork.CINEMA_ALIGNMENT,
-                            modifier = Modifier
-                                .fillMaxWidth(0.80f)
-                                .fillMaxHeight(0.80f)
-                                .align(Alignment.TopEnd),
-                        )
-                    }
-                }
-            }
+            TvStageArtLayer(art = art, title = item.title)
         }
         Box(
             Modifier
@@ -853,6 +992,33 @@ fun TvExpandingMediaRow(
     }
 }
 
+/** The poster drawn whole on a blurred, darkened copy of itself. */
+@Composable
+private fun BoxScope.TvPosterOnBlur(model: Any?, title: String?) {
+    PosterImage(
+        model = model,
+        contentDescription = title,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .fillMaxSize()
+            .blur(16.dp, BlurredEdgeTreatment.Unbounded),
+    )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.32f))
+    )
+    PosterImage(
+        model = model,
+        contentDescription = title,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .align(Alignment.Center)
+            .fillMaxHeight()
+            .aspectRatio(2f / 3f),
+    )
+}
+
 @Composable
 private fun TvExpandingPosterCard(
     item: MediaItem,
@@ -899,12 +1065,21 @@ private fun TvExpandingPosterCard(
         }
     }
 
-    val portraitModel = remember(item) { Artwork.model(item) }
-    val expandedModel = remember(item, tmdbBackdrop) {
+    // Read OUTSIDE remember: these re-run when the art lookup lands, so a card whose
+    // provider gave no poster (or no wide art) is repainted once the lookup finds one
+    // instead of staying an empty square for good. Only the cards that need them read
+    // the lookup, so shelves do not all repaint on every lookup that finishes.
+    val libPoster = if (item.posterUrl.isNullOrBlank()) Artwork.poster(item) else null
+    val libBackdrop = if (wide) Artwork.backdrop(item) else null
+    val portraitModel = remember(item, libPoster) { Artwork.model(item) }
+    // null = this title has NO wide art (yet): the card then shows the whole poster on
+    // a blurred copy of itself, never a beheaded crop and never an empty box.
+    val wideModel = remember(item, tmdbBackdrop, libBackdrop) {
         when {
             !tmdbBackdrop.isNullOrBlank() -> PosterLoader.model(tmdbBackdrop!!)
             !item.backdropUrl.isNullOrBlank() -> PosterLoader.model(item.backdropUrl)
-            else -> Artwork.tvHeroModel(item).first ?: portraitModel
+            !libBackdrop.isNullOrBlank() -> PosterLoader.model(libBackdrop)
+            else -> null
         }
     }
 
@@ -929,42 +1104,27 @@ private fun TvExpandingPosterCard(
             .tvPress(onClick = onClick, onHold = onQuickPlay)
             .clickable(onClick = onClick),
     ) {
-        // Landscape at rest, title with no wide art at all: the poster is drawn
-        // whole on a blurred copy of itself (never a beheaded crop).
-        val restHero = if (landscape && !focused) Artwork.tvHeroModel(item) else null
-        val posterOnlyLandscape = restHero != null && !restHero.second &&
-            tmdbBackdrop.isNullOrBlank() && item.backdropUrl.isNullOrBlank()
-        if (posterOnlyLandscape) {
-            PosterImage(
-                model = restHero?.first ?: portraitModel,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(16.dp, BlurredEdgeTreatment.Unbounded),
-            )
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
-            )
+        if (!wide) {
             PosterImage(
                 model = portraitModel,
                 contentDescription = item.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxHeight()
-                    .aspectRatio(2f / 3f),
-            )
-        } else {
-            PosterImage(
-                model = if (wide && expandedModel != null) expandedModel else portraitModel,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                alignment = if (wide) Artwork.CINEMA_ALIGNMENT else Alignment.Center,
+                alignment = Alignment.Center,
                 modifier = Modifier.fillMaxSize(),
             )
+        } else {
+            // Bottom layer: the poster, never blank while the wide art is on its way.
+            TvPosterOnBlur(model = portraitModel, title = item.title)
+            // Top layer: the wide art, fading in once it has really loaded.
+            if (wideModel != null) {
+                TvFadeImage(
+                    model = wideModel,
+                    description = item.title,
+                    contentScale = ContentScale.Crop,
+                    alignment = Artwork.CINEMA_ALIGNMENT,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
 
         if (wide) {
