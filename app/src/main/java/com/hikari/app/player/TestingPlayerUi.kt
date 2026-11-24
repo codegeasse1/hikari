@@ -100,12 +100,16 @@ data class TState(
     val servers: List<TServer>,
     val qualities: List<TOption>,
     val audioCurrent: TOption?,
+    val audioTracks: List<TOption>,
     val audioOthers: List<TOption>,
     val soundRows: List<TOption>,
     val subOff: TOption,
     val subAuto: TOption,
     val subTracks: List<TOption>,
     val subStyle: TSubStyle,
+    val subBgArgb: Int,
+    val subEdge: Int,
+    val subItalic: Boolean,
     val subGenActive: Boolean,
     val hasUserSubs: Boolean,
     val autoSitesOn: Boolean,
@@ -115,6 +119,7 @@ data class TState(
     val aspects: List<TOption>,
     val zoomPct: Int,
     val enhance: List<TOption>,
+    val statsOn: Boolean,
 )
 
 /** Every action the Testing overlay can take, wired by the activity to the
@@ -150,6 +155,9 @@ class TActions(
     val subPosPlus: () -> Unit,
     val subColor: (Int) -> Unit,
     val subBold: () -> Unit,
+    val subItalicToggle: () -> Unit,
+    val subBgCycle: () -> Unit,
+    val subEdgeCycle: () -> Unit,
     val selectSpeed: (Int) -> Unit,
     val selectAspect: (Int) -> Unit,
     val zoomMinus: () -> Unit,
@@ -158,6 +166,8 @@ class TActions(
     val pip: () -> Unit,
     val rotate: () -> Unit,
     val toggleCaptions: () -> Unit,
+    val toggleStats: () -> Unit,
+    val openDecoder: () -> Unit,
 )
 
 private val TSheetBg = Color(0xF2141418)
@@ -514,7 +524,12 @@ private fun TQualityList(s: TState, act: TActions) {
 @Composable
 private fun TAudioList(s: TState, act: TActions) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-        if (s.audioCurrent != null) {
+        if (s.audioTracks.isNotEmpty()) {
+            item { TSection("THIS STREAM") }
+            items(s.audioTracks.size, key = { "t${s.audioTracks[it].key}" }) { i ->
+                TRow(s.audioTracks[i], onClick = act.selectAudio)
+            }
+        } else if (s.audioCurrent != null) {
             item { TRow(s.audioCurrent, onClick = act.selectAudio) }
         }
         if (s.audioOthers.isNotEmpty()) {
@@ -594,7 +609,7 @@ private fun TSubList(s: TState, act: TActions, appearance: Boolean, onAppearance
                             .padding(horizontal = 14.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Sync subtitles", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        Text("Subtitle sync & position", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = TAccent)
                     }
                 }
@@ -711,6 +726,51 @@ private fun TSubList(s: TState, act: TActions, appearance: Boolean, onAppearance
                         Text("Bold", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
                         if (s.subStyle.bold) Icon(Icons.Filled.Check, contentDescription = null, tint = TAccent, modifier = Modifier.size(18.dp))
                     }
+                }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (s.subItalic) TSelBg else TRowBg)
+                            .clickable(onClick = act.subItalicToggle)
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Italic", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        if (s.subItalic) Icon(Icons.Filled.Check, contentDescription = null, tint = TAccent, modifier = Modifier.size(18.dp))
+                    }
+                }
+                item {
+                    TRow(
+                        TOption(
+                            label = "Background",
+                            sub = if (s.subBgArgb == 0) "Transparent" else "Dark",
+                            badge = null,
+                            selected = false,
+                            key = -23,
+                        ),
+                        onClick = { act.subBgCycle() },
+                        chevron = true,
+                    )
+                }
+                item {
+                    TRow(
+                        TOption(
+                            label = "Edge",
+                            sub = when (s.subEdge) {
+                                2 -> "Shadow"
+                                1 -> "Outline"
+                                else -> "Plain"
+                            },
+                            badge = null,
+                            selected = false,
+                            key = -24,
+                        ),
+                        onClick = { act.subEdgeCycle() },
+                        chevron = true,
+                    )
                 }
                 item {
                     Row(
@@ -895,6 +955,31 @@ private fun TMoreList(s: TState, act: TActions) {
                     key = -32,
                 ),
                 onClick = { act.rotate() },
+                chevron = true,
+            )
+        }
+        item {
+            TRow(
+                TOption(
+                    label = "Stats",
+                    sub = if (s.statsOn) "On — codec readout on the picture" else "Codec and buffer readout",
+                    badge = if (s.statsOn) "On" else "Off",
+                    selected = s.statsOn,
+                    key = -33,
+                ),
+                onClick = { act.toggleStats() },
+            )
+        }
+        item {
+            TRow(
+                TOption(
+                    label = "Decoder",
+                    sub = "Software / hardware decoder options",
+                    badge = null,
+                    selected = false,
+                    key = -34,
+                ),
+                onClick = { act.openDecoder() },
                 chevron = true,
             )
         }

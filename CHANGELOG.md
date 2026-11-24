@@ -1,4 +1,13 @@
 
+## 0.12.145
+
+- Testing player tap fixed: first tap shows and stays 5s, second tap hides — no more show-and-blink (600ms show guard, re-arm only while visible)
+- Streaming tiles now use light plates with TMDB wordmarks preferred (full-fit like the detail screen), so HBO and all logos read instead of dark-on-dark squares
+- More genres tile is half height (small rectangle)
+- Testing Audio now lists every in-stream track under THIS STREAM (English/Hindi/etc. with codec detail + loading row), not just Default
+- Testing Subtitles gains Italic, Background and Edge rows plus clearer sync row; More gains Stats and Decoder
+- All player dialogs (Resume/Start over, Load from internet, decoder) use the Testing dark sheet under the Testing skin, never TV glass
+
 ## 0.12.144
 
 - Explore genres: every tile now carries a real thumbnail (anime tags fall back to title search, then trending, so no bare letter tiles), and the big More genres card shows a collage too

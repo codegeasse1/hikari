@@ -137,6 +137,18 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 flatSideGapPx = 18f * density
                 flatTopGapPx = 14f * density
             }
+            PlayerSkins.TESTING -> {
+                // Testing Player UI sheet: same calm dark as its right-side
+                // panel, so Resume / Load-from-internet / decoder dialogs
+                // match the Testing look instead of glass or TV.
+                flat = true
+                flatCornerPx = 18f * density
+                flatFill = 0xF2141418.toInt()
+                flatBorder = 0x18FFFFFF
+                flatBorderPx = 0.8f * density
+                flatSideGapPx = 18f * density
+                flatTopGapPx = 14f * density
+            }
             else -> {
                 flat = false
             }

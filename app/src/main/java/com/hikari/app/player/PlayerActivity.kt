@@ -2339,6 +2339,13 @@ class PlayerActivity : ComponentActivity() {
      *  listener, which also fires on the automatic 3s auto-hide). */
     private var controllerVisible = false
 
+    /** When the Testing overlay last became visible (uptime ms). A tap that
+     *  SHOWS the controls must not have its own tail (the gesture's
+     *  single-tap confirmation ~300ms later, or the fresh overlay eating the
+     *  same gesture's UP) immediately hide them again — that is the reported
+     *  show-then-blink. Hides within 600ms of a show are ignored. */
+    private var testingLastShownMs = 0L
+
     /** YouTube/mpv-style gestures: single tap toggles the controls, double tap
      *  on the left/right half seeks −/+10s (with a visual feedback flash), and
      *  press-and-hold ≥2s plays at 2× until the finger lifts. */
@@ -2590,6 +2597,9 @@ class PlayerActivity : ComponentActivity() {
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
             override fun onVisibilityChanged(visibility: Int) {
                 controllerVisible = visibility == View.VISIBLE
+                if (controllerVisible && isTestingSkin()) {
+                    testingLastShownMs = android.os.SystemClock.uptimeMillis()
+                }
                 syncTestingOverlay()
                 // The pill row is a HorizontalScrollView. A focused pill (the
                 // media3 control view asks for focus, and a scroll view reveals
@@ -4868,6 +4878,13 @@ class PlayerActivity : ComponentActivity() {
     private fun toggleController() {
         if (holdingFast || controlsLocked) return
         val pv = playerView ?: return
+        // Testing blink guard: a show's own gesture tail must not hide it.
+        if (isTestingSkin() && !inPip && controllerVisible &&
+            android.os.SystemClock.uptimeMillis() - testingLastShownMs < 600
+        ) {
+            pokeTesting()
+            return
+        }
         if (controllerVisible) pv.hideController() else pv.showController()
     }
 
@@ -8121,9 +8138,16 @@ class PlayerActivity : ComponentActivity() {
         // "TV player panels" is an explicit UI preference. It must work on
         // phones too; the phone gets the same TV-style panel, but its width is
         // calculated from the current window below so it never overflows.
-        val sideTvPanel = tvPanelsEnabled
+        // Testing skin always uses its own dark sheet, never the TV one, so
+        // Resume / Load-from-internet / decoder dialogs match the Testing UI.
+        val testingPanels = PlayerSkins.normalize(skin) == PlayerSkins.TESTING
+        val sideTvPanel = tvPanelsEnabled && !testingPanels
         val tvSheet = (PlayerSkins.normalize(skin) == PlayerSkins.TV || sideTvPanel)
-        val panelSkin = if (sideTvPanel) PlayerSkins.TV else skin
+        val panelSkin = when {
+            testingPanels -> PlayerSkins.TESTING
+            sideTvPanel -> PlayerSkins.TV
+            else -> skin
+        }
         val flatPanel = PlayerSkins.isFlat(panelSkin)
         val halo = if (tightHalo) (6 * density).toInt()
         else if (flatPanel) (10 * density).toInt() else glassHaloPx
@@ -16759,6 +16783,7 @@ class PlayerActivity : ComponentActivity() {
                 servers = emptyList(),
                 qualities = emptyList(),
                 audioCurrent = null,
+                audioTracks = emptyList(),
                 audioOthers = emptyList(),
                 soundRows = emptyList(),
                 subOff = TOption(label = "Off", sub = null, badge = null, selected = true, key = 0),
@@ -16770,10 +16795,14 @@ class PlayerActivity : ComponentActivity() {
                 autoSitesOn = false,
                 subPosPct = 14,
                 captionSummary = "",
+                subBgArgb = 0,
+                subEdge = 1,
+                subItalic = false,
                 speeds = emptyList(),
                 aspects = emptyList(),
                 zoomPct = 100,
                 enhance = emptyList(),
+                statsOn = false,
             )
         }
     }
@@ -17150,6 +17179,7 @@ class PlayerActivity : ComponentActivity() {
             servers = servers,
             qualities = qualities,
             audioCurrent = audioCurrent,
+            audioTracks = atrack.entries.sortedBy { it.key }.map { it.value },
             audioOthers = audioOthers,
             soundRows = soundRows,
             subOff = subOff,
@@ -17165,10 +17195,14 @@ class PlayerActivity : ComponentActivity() {
             autoSitesOn = autoSubtitleSites,
             subPosPct = (subtitlePosition * 100).roundToInt(),
             captionSummary = subtitleStyle.summary(),
+            subBgArgb = subtitleStyle.background,
+            subEdge = subtitleStyle.edge,
+            subItalic = subtitleStyle.italic,
             speeds = speeds,
             aspects = aspects,
             zoomPct = (videoZoom * 100).roundToInt(),
             enhance = enhance,
+            statsOn = codecOverlay != null,
         )
     }
 
@@ -17434,6 +17468,27 @@ class PlayerActivity : ComponentActivity() {
             applySubtitleStyle()
             pokeTesting()
         },
+        subItalicToggle = {
+            subtitleStyle = subtitleStyle.copy(italic = !subtitleStyle.italic, enabled = true).copySaved(subsPrefs)
+            applySubtitleStyle()
+            pokeTesting()
+        },
+        subBgCycle = {
+            val next = if (subtitleStyle.background == 0) 0xCC000000.toInt() else 0
+            subtitleStyle = subtitleStyle.copy(background = next, enabled = true).copySaved(subsPrefs)
+            applySubtitleStyle()
+            pokeTesting()
+        },
+        subEdgeCycle = {
+            val next = when (subtitleStyle.edge) {
+                1 -> 2
+                2 -> 0
+                else -> 1
+            }
+            subtitleStyle = subtitleStyle.copy(edge = next, enabled = true).copySaved(subsPrefs)
+            applySubtitleStyle()
+            pokeTesting()
+        },
         subPosMinus = {
             subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f)
             subsPrefs.edit().putFloat("sub_pos", subtitlePosition).apply()
@@ -17502,6 +17557,14 @@ class PlayerActivity : ComponentActivity() {
         },
         toggleCaptions = {
             testingCaptions(textOff)
+            pokeTesting()
+        },
+        toggleStats = {
+            if (codecOverlay != null) hideCodecOverlay() else showCodecOverlay()
+            pokeTesting()
+        },
+        openDecoder = {
+            showDecoderDialog()
             pokeTesting()
         },
     ).also { testingActionsCached = it }
@@ -21127,9 +21190,12 @@ class PlayerActivity : ComponentActivity() {
         // A finger means the platform ripple again — on a device that is not a
         // television (see [TvInput.noteTouch]). Mirrors MainActivity's feed.
         if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) TvInput.noteTouch()
-        // Testing overlay: ANY touch/scroll re-arms the 5s hide countdown, so
-        // scrolling the right-side panel never hides it mid-gesture.
-        if (isTestingSkin() && !inPip && !controlsLocked &&
+        // Testing overlay: touches/scrolls while VISIBLE re-arm the 5s hide
+        // countdown, so scrolling the panel never hides it mid-gesture.
+        // While HIDDEN nothing is re-armed here: the tap-to-show gesture owns
+        // the show (pre-showing on DOWN turns its own single-tap tail into an
+        // instant hide — the reported blink).
+        if (isTestingSkin() && !inPip && !controlsLocked && controllerVisible &&
             (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
                 ev.actionMasked == android.view.MotionEvent.ACTION_MOVE)
         ) {

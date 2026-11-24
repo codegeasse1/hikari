@@ -4148,8 +4148,11 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                             )
                         },
                         shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        // Light plate like the detail screen's company tiles:
+                        // TMDB/bundled wordmarks are drawn for light plates
+                        // (HBO's black logo is invisible on the old dark tile).
+                        color = androidx.compose.ui.graphics.Color(0xFFF2F3F7),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Box(
@@ -4158,15 +4161,23 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                                 .height(84.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            if (brand.resId != 0) {
+                            val tmdbLogo = hit?.logoUrl
+                            if (tmdbLogo != null) {
+                                coil.compose.AsyncImage(
+                                    model = tmdbLogo,
+                                    contentDescription = name,
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.88f)
+                                        .height(56.dp),
+                                    contentScale = ContentScale.Fit,
+                                )
+                            } else if (brand.resId != 0) {
                                 androidx.compose.foundation.Image(
                                     painter = androidx.compose.ui.res.painterResource(brand.resId),
                                     contentDescription = name,
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(62.dp)
-                                        .padding(horizontal = 10.dp)
-                                        .clip(RoundedCornerShape(8.dp)),
+                                        .fillMaxWidth(0.88f)
+                                        .height(56.dp),
                                     contentScale = ContentScale.Fit,
                                 )
                             } else {
@@ -4253,7 +4264,7 @@ private fun HomeExploreMoreTile(art: List<MediaItem>?, onMore: () -> Unit) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 10f)
+                .aspectRatio(16f / 5f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
         ) {
