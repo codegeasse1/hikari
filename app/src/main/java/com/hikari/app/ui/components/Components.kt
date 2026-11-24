@@ -1627,22 +1627,20 @@ private fun HeroImmersive2(
                     }
                     .clickable { onClick(item) }
             ) {
-                val hero = Artwork.heroModel(item)
-                if (hero.first == null) {
+                val hero = Artwork.model(item)
+                if (hero == null) {
                     Box(
                         Modifier
                             .fillMaxSize()
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                     )
                 } else {
-                    // Full-bleed like the reference: crop to fill, top-biased.
-                    // Never letterbox (the Steps blur-bars). The same-URL
-                    // poster/backdrop guard in heroModel stops portrait text
-                    // flagging as wide; Artwork.retryMiss below re-asks for a
-                    // real backdrop so portrait-only items heal to wide art.
+                    // Immersive 2 is a tall VERTICAL frame: use vertical
+                    // poster art so Dune / Blue Road type items fit
+                    // perfectly instead of a cropped landscape backdrop.
                     HeroArtwork(
-                        model = hero.first,
-                        wide = true,
+                        model = hero,
+                        wide = false,
                         contentDescription = item.title,
                         modifier = Modifier.fillMaxSize(),
                     )

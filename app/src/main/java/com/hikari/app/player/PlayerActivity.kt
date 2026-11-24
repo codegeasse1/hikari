@@ -7752,7 +7752,19 @@ class PlayerActivity : ComponentActivity() {
         // as a pill — the "curved" look the whole player menu set uses.
         val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
         val tvServerCard = tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3
-        val rowShape = if (tvServerCard) {
+        val testingRow = PlayerSkins.normalize(skin) == PlayerSkins.TESTING
+        val rowShape = if (testingRow) {
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                if (option.selected) {
+                    setColor(0xFF5A3D1E.toInt())
+                    setStroke((1.2f * density).roundToInt().coerceAtLeast(1), 0xFFE8A33D.toInt())
+                } else {
+                    setColor(0xFF232328.toInt())
+                }
+            }
+        } else if (tvServerCard) {
             // TV server rows are deliberately cards rather than empty outlined
             // capsules: the remote user needs a clear, high-contrast target from
             // the sofa, and the server name/subtitle should read as one result.
@@ -7842,7 +7854,7 @@ class PlayerActivity : ComponentActivity() {
                 ellipsize = if (option.labelMaxLines >= 3) null else TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFDCE3EE.toInt())
+                setTextColor(if (option.selected || testingRow) 0xFFFFFFFF.toInt() else 0xFFDCE3EE.toInt())
             })
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
@@ -12458,8 +12470,8 @@ class PlayerActivity : ComponentActivity() {
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 999f
-                    setColor(0x14FFFFFF.toInt())
+                    cornerRadius = if (isTestingSkin()) 12f * density else 999f
+                    setColor(if (isTestingSkin()) 0xFF232328.toInt() else 0x14FFFFFF.toInt())
                 }
                 addView(rowLabel(label), LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -13283,7 +13295,14 @@ class PlayerActivity : ComponentActivity() {
             v.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 999f
-                if (active) {
+                val testing = isTestingSkin()
+                if (testing && active) {
+                    setColor(0xFF5A3D1E.toInt())
+                    setStroke((1 * density).toInt().coerceAtLeast(1), 0xFFE8A33D.toInt())
+                } else if (testing) {
+                    setColor(0xFF232328.toInt())
+                    setStroke((1 * density).toInt().coerceAtLeast(1), 0x22FFFFFF)
+                } else if (active) {
                     setColor(withAlpha(accentMidColor, 0.22f))
                     setStroke((1 * density).toInt().coerceAtLeast(1), withAlpha(accentMidColor, 0.85f))
                 } else {
@@ -13291,7 +13310,7 @@ class PlayerActivity : ComponentActivity() {
                     setStroke((1 * density).toInt().coerceAtLeast(1), 0x22FFFFFF)
                 }
             }
-            v.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
+            v.setTextColor(0xFFFFFFFF.toInt())
         }
 
         // Pills stay narrow on purpose: the panel's content area is only a few

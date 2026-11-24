@@ -1162,6 +1162,7 @@ fun HomeScreen(nav: NavHostController) {
                             flavour = flavour,
                             featured = featured,
                             continueEntries = continueEntries,
+                            extItems = uniqueRows.flatMap { it.items },
                             onOpen = { item ->
                                 Routes.safeNavigate(
                                     nav,
@@ -4135,7 +4136,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                 val brand = StreamingBrands.of(name)
                 val hit = companies[name]
                 Column(
-                    Modifier.width(150.dp),
+                    Modifier.width(110.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Surface(
@@ -4158,7 +4159,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .height(84.dp),
+                                .height(54.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             val tmdbLogo = hit?.logoUrl
@@ -4168,7 +4169,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                                     contentDescription = name,
                                     modifier = Modifier
                                         .fillMaxWidth(0.88f)
-                                        .height(56.dp),
+                                        .height(34.dp),
                                     contentScale = ContentScale.Fit,
                                 )
                             } else if (brand.resId != 0) {
@@ -4177,7 +4178,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                                     contentDescription = name,
                                     modifier = Modifier
                                         .fillMaxWidth(0.88f)
-                                        .height(56.dp),
+                                        .height(34.dp),
                                     contentScale = ContentScale.Fit,
                                 )
                             } else {
@@ -4498,6 +4499,7 @@ private fun HomeDiscoveryBlock(
     flavour: HomeFlavour,
     featured: List<MediaItem>,
     continueEntries: List<com.hikari.app.data.HistoryEntry>,
+    extItems: List<MediaItem> = emptyList(),
     onOpen: (MediaItem) -> Unit,
     onGrid: (name: String, media: String, genresText: String, lang: String, sort: String, votesMin: String, dateFrom: String) -> Unit,
 ) {
@@ -4519,8 +4521,9 @@ private fun HomeDiscoveryBlock(
     }
 
     var hot by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
         hot = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.trending()
+        else if (extItems.isNotEmpty()) extItems.take(12)
         else SearchDiscovery.discover(listOf("movie", "tv"), "16", animLang, "popularity.desc")
     }
 
@@ -4530,42 +4533,53 @@ private fun HomeDiscoveryBlock(
         } ?: featured.firstOrNull()
     }
     var like by remember(basis) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(basis) {
-        like = if (basis == null) emptyList() else SearchDiscovery.similarFor(basis)
+    LaunchedEffect(basis, flavour, extItems) {
+        like = if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) extItems.take(12)
+        else if (basis == null) emptyList() else SearchDiscovery.similarFor(basis)
     }
 
     var top10 by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { top10 = extItems.take(10); return@LaunchedEffect }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
         top10 = SearchDiscovery.discover(listOf("movie", "tv"), g, animLang, "vote_average.desc", 500).take(10)
     }
 
     var series by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) {
+            val s = extItems.filter { it.type == MediaType.SERIES }.take(12)
+            series = if (s.isNotEmpty()) s else extItems.take(12)
+            return@LaunchedEffect
+        }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
         series = SearchDiscovery.discover(listOf("tv"), g, animLang, "popularity.desc")
     }
 
     var cinemas by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { cinemas = extItems.take(12); return@LaunchedEffect }
         cinemas = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.nowPlaying()
         else SearchDiscovery.airingNow("16", animLang)
     }
 
     var picks by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { picks = extItems.drop(6).take(12).ifEmpty { extItems.take(12) }; return@LaunchedEffect }
         val lang = if (flavour == HomeFlavour.DEFAULT) "ja" else animLang
         picks = SearchDiscovery.discover(listOf("movie", "tv"), "16", lang, "popularity.desc")
     }
 
     var greats by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { greats = extItems.takeLast(12).take(12).ifEmpty { extItems.take(12) }; return@LaunchedEffect }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
         greats = SearchDiscovery.discover(listOf("movie", "tv"), g, animLang, "vote_average.desc", 2000)
     }
 
     var soon by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour) {
+    LaunchedEffect(flavour, extItems) {
+        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { soon = extItems.take(12); return@LaunchedEffect }
         soon = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.comingSoon()
         else SearchDiscovery.discover(listOf("movie", "tv"), "16", animLang, "popularity.desc")
     }

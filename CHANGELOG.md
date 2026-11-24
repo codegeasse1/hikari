@@ -1,4 +1,11 @@
 
+## 0.12.146
+
+- Testing dialogs match Testing UI: caption-style editor, Audio-only vs Audio+video choice and Hindi/Tamil/Telugu/English track picker now use the dark Testing rows/text instead of TV glass; portrait Testing tabs scroll instead of clipping
+- Streaming tiles are thinner small rectangles like marked (110dp wide, 54dp tall)
+- Immersive 2 shows vertical poster art so Dune/Blue Road fit perfectly in the tall frame
+- Discovery rows build from the selected extension: Anime4i open shows donghua across Hot/Top 10/Series/Picks instead of TMDB movies/anime
+- Search keyboard white bar fixed: Search screen resizes with the keyboard (imePadding) on app background so no white strip shows
 ## 0.12.145
 
 - Testing player tap fixed: first tap shows and stays 5s, second tap hides — no more show-and-blink (600ms show guard, re-arm only while visible)

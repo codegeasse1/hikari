@@ -2,6 +2,8 @@ package com.hikari.app.player
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -333,9 +336,11 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                             indication = null,
                         ) { tab = null; subAppearance = false },
                 )
+                val cfg = LocalConfiguration.current
+                val isPortrait = cfg.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
                 Column(
                     Modifier
-                        .fillMaxWidth(0.62f)
+                        .fillMaxWidth(if (isPortrait) 0.85f else 0.62f)
                         .fillMaxSize()
                         .background(TSheetBg)
                         .clickable(
@@ -350,8 +355,9 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                             .padding(horizontal = 10.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(TRowBg)
+                            .horizontalScroll(rememberScrollState())
                             .padding(3.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         for (tt in TTab.entries) {
                             val sel = tt == t
