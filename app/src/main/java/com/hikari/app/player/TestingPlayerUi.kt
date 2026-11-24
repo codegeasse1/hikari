@@ -1,9 +1,13 @@
 package com.hikari.app.player
 
 import androidx.activity.compose.BackHandler
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,16 +62,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.hapticfeedback.LocalHapticFeedback
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.theme.inkOn
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /** One selectable row in the Testing panel. [key] goes back to the
  *  activity, which knows what every key means. */
@@ -184,6 +199,25 @@ private val TSheetBg = Color(0xF2141418)
 private val TRowBg = Color(0xFF232328)
 private val TMuted = Color(0xFFA7A7B0)
 private val TPillBg = Color(0xCC1E1E24)
+/** Soft drop shadow so free-floating header/seek text reads on bright video. */
+private val TShadow = Shadow(color = Color(0xCC000000), offset = Offset(0f, 2f), blurRadius = 6f)
+
+/** Where the tool rail lives: edge side + vertical fraction, remembered. */
+private const val RAIL_PREFS = "hikari_rail"
+private fun loadRailRight(ctx: Context): Boolean =
+    runCatching {
+        ctx.getSharedPreferences(RAIL_PREFS, Context.MODE_PRIVATE).getBoolean("right", true)
+    }.getOrDefault(true)
+private fun loadRailFrac(ctx: Context): Float =
+    runCatching {
+        ctx.getSharedPreferences(RAIL_PREFS, Context.MODE_PRIVATE).getFloat("y", 0.5f)
+    }.getOrDefault(0.5f).coerceIn(0f, 1f)
+private fun saveRail(ctx: Context, right: Boolean, frac: Float) {
+    runCatching {
+        ctx.getSharedPreferences(RAIL_PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("right", right).putFloat("y", frac.coerceIn(0f, 1f)).apply()
+    }
+}
 
 /** The player's live accent: the app accent while "Match app & player theme"
  *  is on, otherwise the player's own accent (Settings → Appearance & Theme).
@@ -216,6 +250,16 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
     val s = remember(tick) { get() }
     var tab by remember { mutableStateOf<TTab?>(null) }
     var subAppearance by remember { mutableStateOf(false) }
+    // Tool-rail dock: edge side + vertical fraction, remembered across plays.
+    val railCtx = LocalContext.current
+    var railRight by remember { mutableStateOf(loadRailRight(railCtx)) }
+    var railFrac by remember { mutableFloatStateOf(loadRailFrac(railCtx)) }
+    var railWpx by remember { mutableIntStateOf(0) }
+    var railHpx by remember { mutableIntStateOf(0) }
+    var railDragging by remember { mutableStateOf(false) }
+    var railDx by remember { mutableFloatStateOf(0f) }
+    var railDy by remember { mutableFloatStateOf(0f) }
+    val railHaptic = LocalHapticFeedback.current
     BackHandler(enabled = tab != null) {
         if (subAppearance) subAppearance = false else tab = null
     }
@@ -226,13 +270,12 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
     Box(Modifier.fillMaxSize()) {
         // Invisible tap catcher: tapping the picture hides the controls.
         Box(Modifier.fillMaxSize().then(tap))
-        // Header card: back · title + server · quality badge · lock.
+        // Header: title + server · quality badge · lock, floating free on
+        // the video (no bar box) with drop shadows for bright scenes.
         Row(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 8.dp, end = 8.dp, top = 10.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.Black.copy(alpha = 0.55f))
                 .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -257,6 +300,7 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                     fontSize = 17.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(shadow = TShadow),
                 )
                 Text(
                     s.serverLine,
@@ -264,6 +308,7 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                     fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(shadow = TShadow),
                 )
             }
             if (s.badge != null) {
@@ -328,11 +373,16 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
             }
         }
         // Seek row: position · ends-at · duration, then the accent bar.
+        // The side the rail is docked on stays clear of the bar.
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(start = 18.dp, end = 86.dp, bottom = 14.dp),
+                .padding(
+                    start = if (railRight) 18.dp else 86.dp,
+                    end = if (railRight) 86.dp else 18.dp,
+                    bottom = 14.dp,
+                ),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -341,6 +391,7 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 13.sp,
                     maxLines = 1,
+                    style = TextStyle(shadow = TShadow),
                 )
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     Text(
@@ -348,6 +399,7 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                         color = Color.White.copy(alpha = 0.75f),
                         fontSize = 12.sp,
                         maxLines = 1,
+                        style = TextStyle(shadow = TShadow),
                     )
                 }
                 Text(
@@ -355,6 +407,7 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                     color = Color.White.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                     maxLines = 1,
+                    style = TextStyle(shadow = TShadow),
                 )
             }
             val frac = if (s.durMs > 0) (s.posMs.toFloat() / s.durMs.toFloat()).coerceIn(0f, 1f) else 0f
@@ -369,22 +422,69 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                 ),
             )
         }
-        // Right-side tool rail (replaces the old bottom pill).
-        Column(
-            Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 10.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(TPillBg)
-                .padding(horizontal = 5.dp, vertical = 9.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            TPillCc(on = s.captionsOn, onClick = act.toggleCaptions)
-            TPillIcon(Icons.Filled.GraphicEq, "Audio", s.audioOthers.isNotEmpty(), onClick = { tab = TTab.AUDIO })
-            TPillIcon(Icons.Filled.Tune, "More", false, onClick = { tab = TTab.MORE })
-            TPillIcon(Icons.Filled.Smartphone, "Rotate", false, onClick = act.rotate)
-            TPillCc(on = false, text = "PiP", onClick = act.pip)
+        // Right-side tool rail (replaces the old bottom pill). Hold it for
+        // half a second and it lifts: drag it anywhere, and on release it
+        // docks to whichever edge it leans past and stays at that height.
+        // The dock (side + height) is remembered across plays.
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            val maxWpx = with(density) { maxWidth.toPx() }
+            val maxHpx = with(density) { maxHeight.toPx() }
+            val marginPx = with(density) { 10.dp.toPx() }
+            val clearTopPx = with(density) { 120.dp.toPx() }
+            val clearBotPx = with(density) { 120.dp.toPx() }
+            val travelPx = (maxHpx - clearTopPx - clearBotPx - railHpx).coerceAtLeast(0f)
+            val dockedTopPx = clearTopPx + railFrac * travelPx
+            val dockedLeftPx = if (railRight) maxWpx - railWpx - marginPx else marginPx
+            Column(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset {
+                        IntOffset(
+                            (dockedLeftPx + railDx).roundToInt(),
+                            (dockedTopPx + railDy).roundToInt(),
+                        )
+                    }
+                    .onGloballyPositioned { railWpx = it.size.width; railHpx = it.size.height }
+                    .graphicsLayer {
+                        val z = if (railDragging) 1.08f else 1f
+                        scaleX = z; scaleY = z
+                    }
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (railDragging) Color(0xE61E1E24) else TPillBg)
+                    .pointerInput(Unit) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                railHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                railDragging = true; railDx = 0f; railDy = 0f
+                            },
+                            onDrag = { change, amount ->
+                                change.consume(); railDx += amount.x; railDy += amount.y
+                            },
+                            onDragEnd = {
+                                railDragging = false
+                                val dropCx = dockedLeftPx + railDx + railWpx / 2f
+                                val dropTop = dockedTopPx + railDy
+                                railRight = dropCx >= maxWpx / 2f
+                                railFrac = if (travelPx > 0f) {
+                                    ((dropTop - clearTopPx) / travelPx).coerceIn(0f, 1f)
+                                } else 0.5f
+                                railDx = 0f; railDy = 0f
+                                saveRail(railCtx, railRight, railFrac)
+                            },
+                            onDragCancel = { railDragging = false; railDx = 0f; railDy = 0f },
+                        )
+                    }
+                    .padding(horizontal = 5.dp, vertical = 9.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                TPillCc(on = s.captionsOn, onClick = act.toggleCaptions)
+                TPillIcon(Icons.Filled.GraphicEq, "Audio", s.audioOthers.isNotEmpty(), onClick = { tab = TTab.AUDIO })
+                TPillIcon(Icons.Filled.Tune, "More", false, onClick = { tab = TTab.MORE })
+                TPillIcon(Icons.Filled.Smartphone, "Rotate", false, onClick = act.rotate)
+                TPillCc(on = false, text = "PiP", onClick = act.pip)
+            }
         }
         // Option panel: a card holding a vertical icon rail plus the tab's
         // content. Landscape keeps it on the right; portrait pins it to the

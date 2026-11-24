@@ -1,4 +1,9 @@
 
+## 0.12.153
+
+- Player tool rail: hold it half a second to lift it, drop it anywhere, it docks to the nearest edge and remembers the spot
+- Player header floats on the video without the dark bar
+
 ## 0.12.152
 
 - Hikari Player fresh look: header card, accent play disc, ends-at seek row, side tool rail and icon-rail option panel with radio rows — all in your accent colour
