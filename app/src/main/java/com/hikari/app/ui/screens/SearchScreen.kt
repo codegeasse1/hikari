@@ -554,9 +554,11 @@ fun SearchScreen(
 
     // ---- Idle landing rails (trending + genre art, session-cached) ----
     var trending by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var trySearchingChips by remember { mutableStateOf(SearchDiscovery.TRY_SEARCHING) }
     val genreArt = remember { mutableStateMapOf<String, List<MediaItem>>() }
     LaunchedEffect(Unit) {
         trending = SearchDiscovery.trending()
+        trySearchingChips = SearchDiscovery.trySearching()
         for (g in SearchDiscovery.EXPLORE_GENRES) {
             genreArt[g] = SearchDiscovery.genreArt(g)
         }
@@ -1038,6 +1040,7 @@ fun SearchScreen(
         } else if (!resultsMode || (query.isBlank() && results.isEmpty() && collectionHits.isEmpty())) {
             IdleSearchLanding(
                 trending = trending,
+                trySearching = trySearchingChips,
                 genreArt = genreArt,
                 onTrySearch = { title ->
                     translatedFrom = null
@@ -1723,6 +1726,7 @@ private fun MediaItem.unknownKindKept(
 @Composable
 private fun IdleSearchLanding(
     trending: List<MediaItem>,
+    trySearching: List<String>,
     genreArt: Map<String, List<MediaItem>>,
     onTrySearch: (String) -> Unit,
     onOpenItem: (MediaItem) -> Unit,
@@ -1741,7 +1745,7 @@ private fun IdleSearchLanding(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                for (s in SearchDiscovery.TRY_SEARCHING) {
+                for (s in trySearching) {
                     Surface(
                         onClick = { onTrySearch(s) },
                         shape = RoundedCornerShape(50),

@@ -64,12 +64,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -80,6 +82,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.theme.inkOn
 import kotlinx.coroutines.delay
@@ -260,6 +263,11 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
     var railDragging by remember { mutableStateOf(false) }
     var railDx by remember { mutableFloatStateOf(0f) }
     var railDy by remember { mutableFloatStateOf(0f) }
+    // Player-UI rects (root coordinates) the dropped rail must not cover:
+    // overlapping any of them pushes the rail just below it.
+    var headerRect by remember { mutableStateOf(Rect.Zero) }
+    var centerRect by remember { mutableStateOf(Rect.Zero) }
+    var seekRect by remember { mutableStateOf(Rect.Zero) }
     val railHaptic = LocalHapticFeedback.current
     BackHandler(enabled = tab != null) {
         if (subAppearance) subAppearance = false else tab = null
@@ -277,7 +285,8 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
             Modifier
                 .fillMaxWidth()
                 .padding(start = 8.dp, end = 8.dp, top = 10.dp)
-                .padding(horizontal = 6.dp, vertical = 6.dp),
+                .padding(horizontal = 6.dp, vertical = 6.dp)
+                .onGloballyPositioned { headerRect = Rect(it.positionInRoot(), it.size.toSize()) },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -333,7 +342,9 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
         }
         // Centre play cluster: dark side chips around a solid accent disc.
         Row(
-            Modifier.align(Alignment.Center),
+            Modifier
+                .align(Alignment.Center)
+                .onGloballyPositioned { centerRect = Rect(it.positionInRoot(), it.size.toSize()) },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(30.dp),
         ) {
@@ -383,7 +394,8 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                     start = if (railRight) 18.dp else 86.dp,
                     end = if (railRight) 86.dp else 18.dp,
                     bottom = 14.dp,
-                ),
+                )
+                .onGloballyPositioned { seekRect = Rect(it.positionInRoot(), it.size.toSize()) },
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -423,19 +435,21 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                 ),
             )
         }
-        // Right-side tool rail (replaces the old bottom pill). Hold it for
-        // half a second and it lifts: drag it anywhere, and on release it
-        // docks to whichever edge it leans past and stays at that height.
+        // Tool rail: hold it for half a second and it lifts — drag it
+        // anywhere, and on release it stays exactly where it lands
+        // (left/right edge follows whichever side the drop leans past).
+        // If the drop overlaps any player UI (header/lock, play cluster,
+        // seek row), the rail sits just below that item instead of over it.
         // The dock (side + height) is remembered across plays.
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val density = LocalDensity.current
             val maxWpx = with(density) { maxWidth.toPx() }
             val maxHpx = with(density) { maxHeight.toPx() }
             val marginPx = with(density) { 10.dp.toPx() }
-            val clearTopPx = with(density) { 120.dp.toPx() }
-            val clearBotPx = with(density) { 120.dp.toPx() }
-            val travelPx = (maxHpx - clearTopPx - clearBotPx - railHpx).coerceAtLeast(0f)
-            val dockedTopPx = clearTopPx + railFrac * travelPx
+            // Free vertical dock: the rail stays exactly where it is
+            // dropped (fraction of the full height, only kept on screen).
+            val freeHpx = (maxHpx - railHpx).coerceAtLeast(0f)
+            val dockedTopPx = railFrac * freeHpx
             val dockedLeftPx = if (railRight) maxWpx - railWpx - marginPx else marginPx
             Column(
                 Modifier
@@ -465,10 +479,25 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                             onDragEnd = {
                                 railDragging = false
                                 val dropCx = dockedLeftPx + railDx + railWpx / 2f
-                                val dropTop = dockedTopPx + railDy
                                 railRight = dropCx >= maxWpx / 2f
-                                railFrac = if (travelPx > 0f) {
-                                    ((dropTop - clearTopPx) / travelPx).coerceIn(0f, 1f)
+                                val dropLeft = if (railRight) maxWpx - railWpx - marginPx else marginPx
+                                var top = (dockedTopPx + railDy).coerceIn(0f, freeHpx)
+                                // Never cover player UI: if the dropped rail
+                                // overlaps anything (header/lock, play
+                                // cluster, seek row), sit just below it.
+                                var guard = 0
+                                while (guard++ < 6) {
+                                    val hit = listOf(headerRect, centerRect, seekRect)
+                                        .filter { r ->
+                                            r.width > 0f && r.height > 0f &&
+                                                dropLeft < r.right && dropLeft + railWpx > r.left &&
+                                                top < r.bottom && top + railHpx > r.top
+                                        }
+                                        .minByOrNull { it.top } ?: break
+                                    top = hit.bottom + marginPx
+                                }
+                                railFrac = if (freeHpx > 0f) {
+                                    top.coerceIn(0f, freeHpx) / freeHpx
                                 } else 0.5f
                                 railDx = 0f; railDy = 0f
                                 saveRail(railCtx, railRight, railFrac)

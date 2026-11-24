@@ -1,4 +1,9 @@
 
+## 0.12.154
+
+- Player tool rail: stays exactly where you drop it up/down (no more sliding down); if it lands on any player item it sits just below that item instead of covering it
+- Search tab: "Try searching" chips and "Trending today" refresh from TMDB every day with a daily rotation, instead of the same fixed list
+
 ## 0.12.153
 
 - Player tool rail: hold it half a second to lift it, drop it anywhere, it docks to the nearest edge and remembers the spot

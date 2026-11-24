@@ -18,7 +18,8 @@ private const val DISCOVER_IMG_WIDE = "https://image.tmdb.org/t/p/w1280"
  *  provider search offline. */
 object SearchDiscovery {
 
-    /** Static "Try searching" chips on the idle search tab. */
+    /** Static "Try searching" chips on the idle search tab: offline fallback
+     *  for [trySearching], which serves the same chips fresh from TMDB. */
     val TRY_SEARCHING: List<String> = listOf(
         "The Odyssey",
         "Avengers: Doomsday",
@@ -82,8 +83,13 @@ object SearchDiscovery {
     data class ResolvedCompany(val id: Int, val name: String, val logoUrl: String?)
 
     private val companyCache = ConcurrentHashMap<String, ResolvedCompany?>()
-    private var trendingCache: Pair<Long, List<MediaItem>>? = null
+    private var trendingCache: Triple<String, Long, List<MediaItem>>? = null
     private const val TRENDING_TTL_MS = 30 * 60 * 1000L
+
+    /** Calendar day (yyyy-MM-dd): the trending rail and try-searching chips
+     *  refresh from TMDB whenever the day rolls over. */
+    private fun dayKey(): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
     private val genreArtCache = ConcurrentHashMap<String, Pair<Long, List<MediaItem>>>()
     private const val GENRE_ART_TTL_MS = 60 * 60 * 1000L
 
@@ -118,10 +124,13 @@ object SearchDiscovery {
         return hit
     }
 
-    /** Trending movies + shows today, for the idle tab rail. */
+    /** Trending movies + shows today, for the idle tab rail. Served from
+     *  TMDB's daily trending feed and re-fetched whenever the day changes,
+     *  so the rail is different every day (30-min memory cache within a day). */
     suspend fun trending(): List<MediaItem> {
-        trendingCache?.let { (at, list) ->
-            if (System.currentTimeMillis() - at < TRENDING_TTL_MS) return list
+        val day = dayKey()
+        trendingCache?.let { (d, at, list) ->
+            if (d == day && System.currentTimeMillis() - at < TRENDING_TTL_MS) return list
         }
         val list = runCatching {
             val d = TmdbResolver.apiGet("/trending/all/day", emptyMap()) ?: return@runCatching emptyList()
@@ -135,8 +144,24 @@ object SearchDiscovery {
             }
             out
         }.getOrDefault(emptyList())
-        if (list.isNotEmpty()) trendingCache = System.currentTimeMillis() to list
+        if (list.isNotEmpty()) trendingCache = Triple(day, System.currentTimeMillis(), list)
         return list
+    }
+
+    /** "Try searching" chips, fresh every day: today's TMDB trending titles,
+     *  rotated by day-of-year so the picked set changes daily. Falls back to
+     *  the static list when the network is down or trending is bare. */
+    suspend fun trySearching(): List<String> {
+        val names = runCatching {
+            trending().map { it.searchTitle.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }.getOrDefault(emptyList())
+        if (names.size < 3) return TRY_SEARCHING
+        val day = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)
+        val n = minOf(7, names.size)
+        val start = day % names.size
+        return (0 until n).map { names[(start + it) % names.size] }
     }
 
     /** Popular posters for a genre card (movie + tv discover, top 3).
