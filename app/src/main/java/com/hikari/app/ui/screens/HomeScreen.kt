@@ -4163,22 +4163,26 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                             contentAlignment = Alignment.Center,
                         ) {
                             val tmdbLogo = hit?.logoUrl
-                            if (tmdbLogo != null) {
-                                coil.compose.AsyncImage(
-                                    model = tmdbLogo,
-                                    contentDescription = name,
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.88f)
-                                        .height(34.dp),
-                                    contentScale = ContentScale.Fit,
-                                )
-                            } else if (brand.resId != 0) {
+                            // Bundled wide wordmarks first: they are cropped to
+                            // fill the landscape tile (Disney/Apple/Prime/
+                            // Peacock). The live TMDB company logo is square
+                            // and would shrink back to a centered stamp.
+                            if (brand.resId != 0) {
                                 androidx.compose.foundation.Image(
                                     painter = androidx.compose.ui.res.painterResource(brand.resId),
                                     contentDescription = name,
                                     modifier = Modifier
-                                        .fillMaxWidth(0.88f)
-                                        .height(34.dp),
+                                        .fillMaxWidth(0.92f)
+                                        .height(36.dp),
+                                    contentScale = ContentScale.Fit,
+                                )
+                            } else if (tmdbLogo != null) {
+                                coil.compose.AsyncImage(
+                                    model = tmdbLogo,
+                                    contentDescription = name,
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.92f)
+                                        .height(36.dp),
                                     contentScale = ContentScale.Fit,
                                 )
                             } else {

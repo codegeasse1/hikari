@@ -1,4 +1,8 @@
 
+## 0.12.149
+
+- Streaming tiles use your wide Disney+ / Apple TV+ / Prime Video / Peacock logos, cropped to fill the landscape box; Home row prefers bundled art over the square TMDB stamp so all 9 tiles fill evenly
+
 ## 0.12.148
 
 - Coming soon shows only truly unreleased movies (release_date after today); already-released titles like Spider-Man / Hail Mary never leak in again
