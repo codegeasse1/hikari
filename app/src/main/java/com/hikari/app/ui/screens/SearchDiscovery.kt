@@ -316,13 +316,22 @@ object SearchDiscovery {
         out
     }.getOrDefault(emptyList())
 
-    /** Movies arriving soon. */
+    /** Movies arriving soon — only truly unreleased (release_date > today).
+     *  TMDB /movie/upcoming can still list titles whose date already passed,
+     *  which is why released movies leaked into the Coming soon row. */
     suspend fun comingSoon(): List<MediaItem> = runCatching {
         val d = TmdbResolver.apiGet("/movie/upcoming", mapOf("region" to "US")) ?: return@runCatching emptyList()
         val arr = d.optJSONArray("results") ?: return@runCatching emptyList()
+        val today = try {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        } catch (_: Exception) { "" }
         val out = ArrayList<MediaItem>(arr.length())
         for (i in 0 until arr.length()) {
-            arr.optJSONObject(i)?.let { tmdbItem(it, "movie") }?.let { out += it }
+            val o = arr.optJSONObject(i) ?: continue
+            val rel = o.optString("release_date").trim()
+            if (rel.isBlank() || rel == "null") continue
+            if (today.isNotBlank() && rel <= today) continue
+            o.let { tmdbItem(it, "movie") }?.let { out += it }
         }
         out
     }.getOrDefault(emptyList())

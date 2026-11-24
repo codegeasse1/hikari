@@ -575,11 +575,15 @@ object TmdbSources {
         }
         if (spec.providers.isNotBlank()) {
             query["with_watch_providers"] = spec.providers.trim()
-            if (spec.region.isNotBlank()) query["watch_region"] = spec.region.trim().uppercase()
+            // TMDB ignores with_watch_providers when watch_region is absent,
+            // returning unfiltered populars (Iron Man / Black Mirror inside a
+            // Crunchyroll grid). Default to US so a provider tap only ever
+            // returns titles actually streaming on that service.
+            query["watch_region"] = spec.region.trim().uppercase().ifBlank { "US" }
         }
         if (spec.providersExclude.isNotBlank()) {
             query["without_watch_providers"] = spec.providersExclude.trim()
-            if (spec.region.isNotBlank()) query["watch_region"] = spec.region.trim().uppercase()
+            query["watch_region"] = spec.region.trim().uppercase().ifBlank { "US" }
         }
         if (spec.year > 0) {
             if (seg == "tv") query["first_air_date_year"] = spec.year.toString()

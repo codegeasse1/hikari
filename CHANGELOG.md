@@ -1,4 +1,9 @@
 
+## 0.12.148
+
+- Coming soon shows only truly unreleased movies (release_date after today); already-released titles like Spider-Man / Hail Mary never leak in again
+- Streaming service grids fixed: provider filter now always sends a watch region (US default) so Crunchyroll/Netflix/etc. only return titles actually streaming there — no more Iron Man / Black Mirror randoms
+
 ## 0.12.147
 
 - Discovery rows now follow your watching per extension: most-recent watch in the opened extension sets the basis (Spiderman -> Spiderman recs, Death Note -> Death Note recs), rows genre/type-matched to it
