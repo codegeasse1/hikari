@@ -4135,7 +4135,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                 val brand = StreamingBrands.of(name)
                 val hit = companies[name]
                 Column(
-                    Modifier.width(96.dp),
+                    Modifier.width(150.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Surface(
@@ -4155,7 +4155,7 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .height(56.dp),
+                                .height(84.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             if (brand.resId != 0) {
@@ -4164,7 +4164,8 @@ private fun HomeStreamingRow(onPickCompany: (String, Int, Int) -> Unit) {
                                     contentDescription = name,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(44.dp)
+                                        .height(62.dp)
+                                        .padding(horizontal = 10.dp)
                                         .clip(RoundedCornerShape(8.dp)),
                                     contentScale = ContentScale.Fit,
                                 )
@@ -4235,30 +4236,68 @@ private fun HomeExploreGenresRow(
             }
             Spacer(Modifier.height(10.dp))
         }
-        // More tile: same card shape, opens every genre in this same UI.
-        HomeExploreMoreTile(onMore = onMore)
+        // More tile: same card shape with a real thumbnail collage, opens
+        // every genre in this same UI.
+        val moreArt = remember(art) { art.values.firstOrNull { it.isNotEmpty() } }
+        HomeExploreMoreTile(art = moreArt, onMore = onMore)
         }
     }
 }
 
-/** The More cell closing the Explore section: same 16:10 card shape, opening
- *  the full genre list rendered with the same collage tiles. */
+/** The More cell closing the Explore section: same 16:10 collage card as the
+ *  genre tiles (never a plain box), opening the full genre list rendered
+ *  with the same tiles. */
 @Composable
-private fun HomeExploreMoreTile(onMore: () -> Unit) {
+private fun HomeExploreMoreTile(art: List<MediaItem>?, onMore: () -> Unit) {
     Column(Modifier.fillMaxWidth().clickable { onMore() }) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 10f)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-            contentAlignment = Alignment.Center,
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
         ) {
+            val posters = art.orEmpty().take(3)
+            if (posters.isNotEmpty()) {
+                Row(Modifier.fillMaxSize()) {
+                    for ((i, p) in posters.withIndex()) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxSize()
+                                .padding(
+                                    start = if (i == 0) 0.dp else 3.dp,
+                                    top = (i * 7).dp,
+                                    bottom = ((posters.size - 1 - i) * 7).dp,
+                                )
+                                .clip(RoundedCornerShape(8.dp)),
+                        ) {
+                            coil.compose.AsyncImage(
+                                model = p.backdropUrl ?: p.posterUrl,
+                                contentDescription = p.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        }
+                    }
+                }
+            }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.25f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.45f),
+                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.65f),
+                        ),
+                    ),
+            )
             Text(
                 tr("More genres"),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = androidx.compose.ui.graphics.Color.White,
+                modifier = Modifier.align(Alignment.Center),
             )
         }
     }

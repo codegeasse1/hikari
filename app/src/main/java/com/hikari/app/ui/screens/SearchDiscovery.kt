@@ -139,23 +139,53 @@ object SearchDiscovery {
         return list
     }
 
-    /** Popular posters for a genre card (movie + tv discover, top 3). */
+    /** Popular posters for a genre card (movie + tv discover, top 3).
+     *  Anime-tag genres have no TMDB genre id, so they fall back to a
+     *  title search for the tag name (which always returns posters), and
+     *  finally to trending — a genre tile must never sit as a bare
+     *  monogram when the network is up. */
     suspend fun genreArt(genreName: String): List<MediaItem> {
         val key = genreName.trim().lowercase()
         genreArtCache[key]?.let { (at, list) ->
             if (System.currentTimeMillis() - at < GENRE_ART_TTL_MS) return list
         }
         val ids = com.hikari.app.data.Genres.tmdbGenreFilter(genreName)
-        if (ids.isEmpty()) return emptyList()
-        val list = runCatching {
+        var list: List<MediaItem> = if (ids.isNotEmpty()) runCatching {
             coroutineScope {
                 val m = async { discoverRaw("movie", ids, 0, 0.0, 0, "", 1) }
                 val t = async { discoverRaw("tv", ids, 0, 0.0, 0, "", 1) }
                 (m.await() + t.await()).take(3)
             }
-        }.getOrDefault(emptyList())
+        }.getOrDefault(emptyList()) else emptyList()
+        if (list.isEmpty()) {
+            list = runCatching {
+                coroutineScope {
+                    val m = async { searchRaw(genreName, "movie") }
+                    val t = async { searchRaw(genreName, "tv") }
+                    (m.await() + t.await()).take(3)
+                }
+            }.getOrDefault(emptyList())
+        }
+        if (list.isEmpty()) {
+            list = runCatching { trending().take(3) }.getOrDefault(emptyList())
+        }
         if (list.isNotEmpty()) genreArtCache[key] = System.currentTimeMillis() to list
         return list
+    }
+
+    private suspend fun searchRaw(query: String, kind: String): List<MediaItem> {
+        val d = TmdbResolver.apiGet(
+            "/search/$kind",
+            mapOf("query" to query.trim(), "include_adult" to "false", "page" to "1"),
+        ) ?: return emptyList()
+        val arr = d.optJSONArray("results") ?: return emptyList()
+        val out = ArrayList<MediaItem>(arr.length())
+        for (i in 0 until arr.length()) {
+            if (out.size >= 3) break
+            val o = arr.optJSONObject(i) ?: continue
+            tmdbItem(o, kind)?.let { out += it }
+        }
+        return out
     }
 
     /**

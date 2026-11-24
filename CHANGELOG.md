@@ -1,4 +1,12 @@
 
+## 0.12.144
+
+- Explore genres: every tile now carries a real thumbnail (anime tags fall back to title search, then trending, so no bare letter tiles), and the big More genres card shows a collage too
+- Streaming services row is now wide landscape cinema tiles instead of square logos in a box
+- Testing Player UI Audio tab shows the playing stream's real audio languages (English/Hindi/etc., codec/channel detail, loading state) with switching, not just Default
+- Testing panel hides after 5s of no touch only — any touch/scroll re-arms it — and tapping outside the right-side box closes it
+- Testing Subtitles/More reach full parity: Load from internet, Sync, Off/Auto, all tracks, Add external, Make from voice, Remove added, Caption style, Position, Find automatically, plus Captions/PiP/Rotate in More
+
 ## 0.12.143
 
 - Home Discovery rows are back as a catalogue: Hot right now, If you like, Top 10, Series watching, In cinemas (Airing now for animation), Anime/Donghua picks, All-time greats and Coming soon, with badges, ratings and Show All everywhere — shifting with the picked extension, hideable from Settings → Customize → Discovery rows

@@ -6994,10 +6994,16 @@ class PlayerActivity : ComponentActivity() {
     /** The language of a track as the user would name it ("English"), or null. */
     private fun languageOf(language: String?): String? {
         if (language.isNullOrBlank()) return null
+        val lc = language.trim().lowercase()
+        // Undetermined / multiple / placeholder codes carry no language info —
+        // showing "Undetermined" as a row label is worse than no label.
+        if (lc in setOf("und", "qaa", "qad", "mis", "mul", "zxx", "unk", "unknown")) return null
         val pretty = runCatching {
             java.util.Locale(language).getDisplayLanguage(java.util.Locale.ENGLISH)
         }.getOrNull()
-        return pretty?.takeIf { it.isNotBlank() && !it.equals(language, true) } ?: language
+        if (pretty.isNullOrBlank() || pretty.equals(language, true)) return language
+        if (pretty.lowercase() in setOf("undetermined", "unknown")) return null
+        return pretty.replaceFirstChar { it.uppercase() }
     }
 
     /** A track's secondary line, or null when it would just be noise — a bare
@@ -16690,6 +16696,9 @@ class PlayerActivity : ComponentActivity() {
     private fun syncTestingOverlay() {
         val testing = isTestingSkin() && !inPip
         setClassicChromeVisible(!testing)
+        // Testing panel hides after 5s of no touch (classic stays 3s);
+        // every touch re-arms it via dispatchTouchEvent + pokeTesting.
+        playerView?.controllerShowTimeoutMs = if (testing) 5000 else 3000
         testingOverlay?.visibility =
             if (testing && controllerVisible && !controlsLocked) View.VISIBLE else View.GONE
     }
@@ -16720,9 +16729,12 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Keeps the Testing overlay up while it is being used: showing the
-     *  controller restarts media3's own 3s hide countdown. */
+     *  controller restarts its hide countdown (5s on Testing, 3s classic). */
     private fun pokeTesting() {
-        if (isTestingSkin() && !inPip) playerView?.showController()
+        if (isTestingSkin() && !inPip) {
+            playerView?.controllerShowTimeoutMs = 5000
+            playerView?.showController()
+        }
     }
 
     private fun testingState(): TState {
@@ -16753,6 +16765,11 @@ class PlayerActivity : ComponentActivity() {
                 subAuto = TOption(label = "Auto", sub = null, badge = null, selected = false, key = 1),
                 subTracks = emptyList(),
                 subStyle = TSubStyle(sizePct = 100, colorArgb = 0xFFFFFFFF.toInt(), bold = false),
+                subGenActive = false,
+                hasUserSubs = false,
+                autoSitesOn = false,
+                subPosPct = 14,
+                captionSummary = "",
                 speeds = emptyList(),
                 aspects = emptyList(),
                 zoomPct = 100,
@@ -16852,38 +16869,97 @@ class PlayerActivity : ComponentActivity() {
             val mediaGroup = group.mediaTrackGroup
             for (i in 0 until mediaGroup.length) {
                 val f = mediaGroup.getFormat(i)
-                val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                val lang = languageOf(f.language)
+                val name = lang ?: trackLabel(f.label ?: f.id, i)
+                val extra = listOfNotNull(
+                    channelsBadge(f.channelCount),
+                    codecBadge(f.sampleMimeType),
+                ).joinToString(" · ").takeIf { it.isNotBlank() }
+                val sub = trackSub(name, f.label, f.id) ?: extra
+                val badge = if (trackSub(name, f.label, f.id) != null) {
+                    channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType)
+                } else null
                 if (p != null && overrideSelects(p, group, i)) aOverride = true
                 arows.add(
                     TrackRow(
-                        label = label,
-                        sub = trackSub(label, f.label, f.id),
-                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        label = name,
+                        sub = if (sub == name) extra else (sub ?: extra),
+                        badge = badge ?: extra?.let { null },
                         group = group,
                         index = i,
                     )
                 )
             }
         }
-        val aPickRow = pickedRow(arows, pickAudio)
+        // Single-mux fallback: some servers expose no audio group yet the
+        // player is clearly playing sound (ExoPlayer audioFormat). Show that
+        // language instead of an empty list.
+        if (arows.isEmpty()) {
+            runCatching {
+                val af = p?.audioFormat
+                if (af != null) {
+                    val lang = languageOf(af.language)
+                    if (lang != null || !af.sampleMimeType.isNullOrBlank() || af.channelCount > 0) {
+                        val name = lang ?: trackLabel(af.label ?: af.id, 0)
+                        val extra = listOfNotNull(
+                            channelsBadge(af.channelCount),
+                            codecBadge(af.sampleMimeType),
+                        ).joinToString(" · ").takeIf { it.isNotBlank() }
+                        // Synthetic row: no group to override, key -99 is ignored on tap.
+                        arows.add(
+                            TrackRow(
+                                label = name,
+                                sub = extra ?: I18n.t("Playing now"),
+                                badge = null,
+                                group = p!!.currentTracks.groups.firstOrNull()
+                                    ?: throw IllegalStateException("no group"),
+                                index = -99,
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        val aPickRow = pickedRow(arows.filter { it.index >= 0 }, pickAudio)
         if (aPickRow != null) aOverride = true
         val atrack = HashMap<Int, TOption>()
         atrack[0] = TOption(
             label = I18n.t("Default (adaptive)"),
             sub = I18n.t("Use the track this stream marks as default"),
             badge = null,
-            selected = !aOverride,
+            selected = !aOverride && arows.none { it.index == -99 },
             key = 0,
         )
         arows.forEachIndexed { i, row ->
-            val key = i + 1
-            testingAudioTargets[key] = row.group to row.index
-            atrack[key] = TOption(
-                label = row.label,
-                sub = row.sub,
-                badge = row.badge,
-                selected = (p != null && overrideSelects(p, row.group, row.index)) || row === aPickRow,
-                key = key,
+            if (row.index == -99) {
+                atrack[-99] = TOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = true,
+                    key = -99,
+                )
+            } else {
+                val key = i + 1
+                testingAudioTargets[key] = row.group to row.index
+                atrack[key] = TOption(
+                    label = row.label,
+                    sub = row.sub,
+                    badge = row.badge,
+                    selected = (p != null && overrideSelects(p, row.group, row.index)) || row === aPickRow,
+                    key = key,
+                )
+            }
+        }
+        // Still nothing and the manifest is parsing: say so instead of an
+        // empty panel (the poll rebuilds every 500ms, so it heals on READY).
+        if (arows.isEmpty() && p != null && p.playbackState != Player.STATE_READY) {
+            atrack[-98] = TOption(
+                label = I18n.t("Loading audio tracks…"),
+                sub = I18n.t("Reading the stream's languages"),
+                badge = null,
+                selected = false,
+                key = -98,
             )
         }
         val audioCurrent = atrack.entries.sortedBy { it.key }.firstOrNull { it.value.selected }?.value
@@ -17084,6 +17160,11 @@ class PlayerActivity : ComponentActivity() {
                 colorArgb = subtitleStyle.textColor,
                 bold = subtitleStyle.bold,
             ),
+            subGenActive = subtitleGenJob?.isActive == true,
+            hasUserSubs = userSubs.isNotEmpty(),
+            autoSitesOn = autoSubtitleSites,
+            subPosPct = (subtitlePosition * 100).roundToInt(),
+            captionSummary = subtitleStyle.summary(),
             speeds = speeds,
             aspects = aspects,
             zoomPct = (videoZoom * 100).roundToInt(),
@@ -17156,6 +17237,9 @@ class PlayerActivity : ComponentActivity() {
             pokeTesting()
         },
         selectAudio = { key ->
+            if (key == -99 || key == -98) {
+                pokeTesting()
+            } else {
             val pl = player
             if (pl != null) {
                 val variant = testingAudioVariantTargets[key]
@@ -17201,6 +17285,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
             pokeTesting()
+            }
         },
         toggleSound = { key ->
             when (key) {
@@ -17296,6 +17381,24 @@ class PlayerActivity : ComponentActivity() {
             externalSubLauncher?.launch(arrayOf("*/*"))
             pokeTesting()
         },
+        openSubStyle = {
+            showSubtitleStyleDialog()
+            pokeTesting()
+        },
+        genSub = {
+            if (subtitleGenJob?.isActive == true) stopSubtitleGen() else generateSubtitleFromVoice()
+            pokeTesting()
+        },
+        removeSubs = {
+            removeUserSubs()
+            pokeTesting()
+        },
+        toggleAutoSites = {
+            autoSubtitleSites = !autoSubtitleSites
+            subsPrefs.edit().putBoolean("sub_auto_sites", autoSubtitleSites).apply()
+            if (autoSubtitleSites && addonSubs.isEmpty()) startAddonSubtitleFetch(force = true)
+            pokeTesting()
+        },
         subSyncMinus = {
             subtitleOffsetMs = (subtitleOffsetMs - 500L).coerceIn(-30_000L, 30_000L)
             applyTestingSubSync()
@@ -17329,6 +17432,18 @@ class PlayerActivity : ComponentActivity() {
         subBold = {
             subtitleStyle = subtitleStyle.copy(bold = !subtitleStyle.bold, enabled = true).copySaved(subsPrefs)
             applySubtitleStyle()
+            pokeTesting()
+        },
+        subPosMinus = {
+            subtitlePosition = (subtitlePosition - 0.02f).coerceIn(0.02f, 0.60f)
+            subsPrefs.edit().putFloat("sub_pos", subtitlePosition).apply()
+            applySubtitlePosition(subtitlePosition)
+            pokeTesting()
+        },
+        subPosPlus = {
+            subtitlePosition = (subtitlePosition + 0.02f).coerceIn(0.02f, 0.60f)
+            subsPrefs.edit().putFloat("sub_pos", subtitlePosition).apply()
+            applySubtitlePosition(subtitlePosition)
             pokeTesting()
         },
         selectSpeed = { key ->
@@ -21012,6 +21127,17 @@ class PlayerActivity : ComponentActivity() {
         // A finger means the platform ripple again — on a device that is not a
         // television (see [TvInput.noteTouch]). Mirrors MainActivity's feed.
         if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) TvInput.noteTouch()
+        // Testing overlay: ANY touch/scroll re-arms the 5s hide countdown, so
+        // scrolling the right-side panel never hides it mid-gesture.
+        if (isTestingSkin() && !inPip && !controlsLocked &&
+            (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN ||
+                ev.actionMasked == android.view.MotionEvent.ACTION_MOVE)
+        ) {
+            runCatching {
+                playerView?.controllerShowTimeoutMs = 5000
+                playerView?.showController()
+            }
+        }
         return super.dispatchTouchEvent(ev)
     }
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -105,6 +106,11 @@ data class TState(
     val subAuto: TOption,
     val subTracks: List<TOption>,
     val subStyle: TSubStyle,
+    val subGenActive: Boolean,
+    val hasUserSubs: Boolean,
+    val autoSitesOn: Boolean,
+    val subPosPct: Int,
+    val captionSummary: String,
     val speeds: List<TOption>,
     val aspects: List<TOption>,
     val zoomPct: Int,
@@ -131,11 +137,17 @@ class TActions(
     val selectSub: (Int) -> Unit,
     val openSubSearch: () -> Unit,
     val openSubAdd: () -> Unit,
+    val openSubStyle: () -> Unit,
+    val genSub: () -> Unit,
+    val removeSubs: () -> Unit,
+    val toggleAutoSites: () -> Unit,
     val subSyncMinus: () -> Unit,
     val subSyncPlus: () -> Unit,
     val subSyncReset: () -> Unit,
     val subSizeMinus: () -> Unit,
     val subSizePlus: () -> Unit,
+    val subPosMinus: () -> Unit,
+    val subPosPlus: () -> Unit,
     val subColor: (Int) -> Unit,
     val subBold: () -> Unit,
     val selectSpeed: (Int) -> Unit,
@@ -296,19 +308,30 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
                 }
             }
         }
-        // Right-side tabbed panel.
+        // Right-side tabbed panel. Tapping anywhere outside it (the dimmed
+        // video area on the left) closes it — it never stays open on its own.
         if (tab != null) {
             val t = tab!!
             Row(Modifier.fillMaxSize()) {
-                Spacer(Modifier.weight(1f).clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { tab = null; subAppearance = false })
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { tab = null; subAppearance = false },
+                )
                 Column(
                     Modifier
                         .fillMaxWidth(0.62f)
                         .fillMaxSize()
                         .background(TSheetBg)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) {}
                         .padding(vertical = 12.dp),
                 ) {
                     Row(
@@ -551,6 +574,26 @@ private fun TSubList(s: TState, act: TActions, appearance: Boolean, onAppearance
                             .padding(horizontal = 14.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = TMuted, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Load from internet", color = Color.White, fontSize = 15.sp)
+                            Text("Search every subtitle site and addon", color = TMuted, fontSize = 12.sp)
+                        }
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = TAccent)
+                    }
+                }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(TRowBg)
+                            .clickable { onAppearance(true) }
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text("Sync subtitles", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = TAccent)
                     }
@@ -576,9 +619,53 @@ private fun TSubList(s: TState, act: TActions, appearance: Boolean, onAppearance
                         Text("Add external subtitle", color = Color.White, fontSize = 15.sp)
                     }
                 }
+                item {
+                    TRow(
+                        TOption(
+                            label = if (s.subGenActive) "Stop writing subtitle" else "Make subtitle from voice",
+                            sub = "Listen to the video's sound and write the subtitle",
+                            badge = null,
+                            selected = s.subGenActive,
+                            key = -20,
+                        ),
+                        onClick = { act.genSub() },
+                    )
+                }
+                if (s.hasUserSubs) {
+                    item {
+                        TRow(
+                            TOption(
+                                label = "Remove added subtitles",
+                                sub = "Delete files added from this device",
+                                badge = null,
+                                selected = false,
+                                key = -21,
+                            ),
+                            onClick = { act.removeSubs() },
+                        )
+                    }
+                }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 3.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(TRowBg)
+                            .clickable(onClick = act.openSubStyle)
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Caption style", color = Color.White, fontSize = 15.sp)
+                            Text(s.captionSummary, color = TMuted, fontSize = 12.sp, maxLines = 1)
+                        }
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = TAccent)
+                    }
+                }
                 item {
                     Row(
                         Modifier
@@ -639,6 +726,31 @@ private fun TSubList(s: TState, act: TActions, appearance: Boolean, onAppearance
                         Spacer(Modifier.width(10.dp))
                         Text("Reset", color = TAccent, fontSize = 14.sp, modifier = Modifier.clickable(onClick = act.subSyncReset))
                     }
+                }
+                item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Position", color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        TCircleBtn(Icons.Filled.Remove, act.subPosMinus)
+                        Text("${s.subPosPct}%", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 10.dp))
+                        TCircleBtn(Icons.Filled.Add, act.subPosPlus)
+                    }
+                }
+                item {
+                    TRow(
+                        TOption(
+                            label = "Find subtitles automatically",
+                            sub = if (s.autoSitesOn) "On — searches subtitle sites when playback starts" else "Off",
+                            badge = if (s.autoSitesOn) "On" else "Off",
+                            selected = s.autoSitesOn,
+                            key = -22,
+                        ),
+                        onClick = { act.toggleAutoSites() },
+                    )
                 }
             }
         }
@@ -746,6 +858,45 @@ private fun TMoreList(s: TState, act: TActions) {
             items(s.enhance.size, key = { "e${s.enhance[it].key}" }) { i ->
                 TRow(s.enhance[i], onClick = act.selectEnhance)
             }
+        }
+        item { TSection("PLAYBACK") }
+        item {
+            TRow(
+                TOption(
+                    label = "Captions",
+                    sub = if (s.captionsOn) "On" else "Off",
+                    badge = if (s.captionsOn) "On" else "Off",
+                    selected = s.captionsOn,
+                    key = -30,
+                ),
+                onClick = { act.toggleCaptions() },
+            )
+        }
+        item {
+            TRow(
+                TOption(
+                    label = "Picture in picture",
+                    sub = "Pop the video out over other apps",
+                    badge = null,
+                    selected = false,
+                    key = -31,
+                ),
+                onClick = { act.pip() },
+                chevron = true,
+            )
+        }
+        item {
+            TRow(
+                TOption(
+                    label = "Rotate",
+                    sub = "Cycle screen orientation",
+                    badge = null,
+                    selected = false,
+                    key = -32,
+                ),
+                onClick = { act.rotate() },
+                chevron = true,
+            )
         }
     }
 }
