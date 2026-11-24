@@ -331,6 +331,20 @@ class HikariApp : Application() {
                         store.setPlayerUiDefaultsSeeded(true)
                     }
                 }
+                // Hikari Player launch: one-time move from the old defaults
+                // (TV/Minimal) to Hikari Player. Explicit Cinema/Neon/Default
+                // choices are preserved; anyone can switch back in Settings.
+                if (!store.playerHikariDefaultsSeeded()) {
+                    runCatching {
+                        val cur = store.playerSkin()
+                        if (cur == com.hikari.app.player.PlayerSkins.TV ||
+                            cur == com.hikari.app.player.PlayerSkins.MINIMAL
+                        ) {
+                            store.setPlayerSkin(com.hikari.app.player.PlayerSkins.TESTING)
+                        }
+                        store.setPlayerHikariDefaultsSeeded(true)
+                    }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 store.tvModeFlow().distinctUntilChanged().collect { current ->

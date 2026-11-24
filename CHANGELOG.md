@@ -1,4 +1,10 @@
 
+## 0.12.147
+
+- Discovery rows now follow your watching per extension: most-recent watch in the opened extension sets the basis (Spiderman -> Spiderman recs, Death Note -> Death Note recs), rows genre/type-matched to it
+- No more wrong rows: movie basis never leaks into donghua/anime titles, Coming soon and Airing now hide in extension mode instead of showing released items as upcoming
+- Anime/Donghua picks personalized to your genres with daily rotation; Top 10 personalized; Greats reversed-personalized
+- Player renamed Testing Player UI -> Hikari Player and auto-selected on update (old TV/Minimal defaults migrate; explicit Cinema/Neon/Default kept; change anytime in Settings)
 ## 0.12.146
 
 - Testing dialogs match Testing UI: caption-style editor, Audio-only vs Audio+video choice and Hindi/Tamil/Telugu/English track picker now use the dark Testing rows/text instead of TV glass; portrait Testing tabs scroll instead of clipping

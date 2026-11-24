@@ -11,7 +11,7 @@ object PlayerSkins {
     const val CINEMA = "cinema"
     const val NEON = "neon"
     const val TV = "tv"
-    /** Temporary reference-style test skin (same settings, new look). */
+    /** Hikari Player skin (same settings, new look). */
     const val TESTING = "testing"
 
     val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON, TV, TESTING)
@@ -31,7 +31,7 @@ object PlayerSkins {
         CINEMA -> "Cinema"
         NEON -> "Neon"
         TV -> "TV Player"
-        TESTING -> "Testing Player UI"
+        TESTING -> "Hikari Player"
         else -> "Default"
     }
 
@@ -40,7 +40,7 @@ object PlayerSkins {
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
         TV -> "Netflix-style dark controls made for TV remotes and D-pad navigation"
-        TESTING -> "Reference-style dark player test — same settings, new look"
+        TESTING -> "Hikari's own player — dark reference style, same settings"
         else -> "Hikari's curved glass — frosted bars, neon-edged panels"
     }
 

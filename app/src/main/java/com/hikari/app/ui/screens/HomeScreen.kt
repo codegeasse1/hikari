@@ -4520,6 +4520,34 @@ private fun HomeDiscoveryBlock(
         dateFmt.format(c.time)
     }
 
+    val extIds = remember(extItems) { extItems.map { it.providerId }.toSet() }
+    val extRecent = remember(continueEntries, extIds) { continueEntries.filter { it.providerId in extIds } }
+    val extDistinct = remember(extItems) { extItems.distinctBy { it.providerId.toString() + "|" + it.type.toString() + "|" + it.id } }
+    // Seeds from YOUR recent watches inside this same extension (titles matched
+    // to catalog items for their genres). Empty when you have not watched here.
+    fun extSeedGenres(): Set<String> {
+        val byTitle = extDistinct.groupBy { it.title.trim().lowercase() }
+        val gs = LinkedHashSet<String>()
+        for (h in extRecent.take(6)) {
+            val hit = byTitle[h.title.trim().lowercase()]?.firstOrNull()
+                ?: extDistinct.firstOrNull { it.providerId == h.providerId && it.type == h.type }
+            hit?.genres?.forEach { gs.add(it.lowercase()) }
+        }
+        return gs
+    }
+    // Your-genres-first ordering of the extension catalog — updates as you watch.
+    fun personalizedExt(): List<MediaItem> {
+        val seeds = extSeedGenres()
+        if (seeds.isEmpty()) return extDistinct
+        val yes = ArrayList<MediaItem>()
+        val no = ArrayList<MediaItem>()
+        for (m in extDistinct) {
+            var hit = false
+            for (g in m.genres) { if (g.lowercase() in seeds) { hit = true; break } }
+            if (hit) yes.add(m) else no.add(m)
+        }
+        return yes + no
+    }
     var hot by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
     LaunchedEffect(flavour, extItems) {
         hot = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.trending()
@@ -4527,29 +4555,45 @@ private fun HomeDiscoveryBlock(
         else SearchDiscovery.discover(listOf("movie", "tv"), "16", animLang, "popularity.desc")
     }
 
-    val basis = remember(continueEntries, featured) {
-        continueEntries.firstOrNull()?.let { h ->
-            MediaItem(providerId = h.providerId, id = h.mediaId, title = h.title, type = h.type, posterUrl = h.posterUrl)
-        } ?: featured.firstOrNull()
+    fun com.hikari.app.data.HistoryEntry.toItem() = MediaItem(providerId = providerId, id = mediaId, title = title, type = type, posterUrl = posterUrl)
+    val basis = remember(continueEntries, featured, extRecent, extDistinct, flavour) {
+        if (flavour == HomeFlavour.DEFAULT) {
+            continueEntries.firstOrNull()?.toItem() ?: featured.firstOrNull()
+        } else {
+            // Same-extension basis only: your last watch inside THIS extension,
+            // else its first catalog item. A movie you watched must never title
+            // a donghua/anime row — and with no extension basis the row hides.
+            extRecent.firstOrNull()?.toItem() ?: extDistinct.firstOrNull()
+        }
     }
     var like by remember(basis) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(basis, flavour, extItems) {
-        like = if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) extItems.take(12)
-        else if (basis == null) emptyList() else SearchDiscovery.similarFor(basis)
+    LaunchedEffect(basis, flavour, extDistinct) {
+        if (flavour != HomeFlavour.DEFAULT) {
+            val b = basis
+            like = if (b == null || extDistinct.isEmpty()) emptyList()
+            else {
+                val pool = extDistinct.filterNot { it.providerId == b.providerId && it.id == b.id }
+                val bFull = extDistinct.firstOrNull { it.title.equals(b.title, ignoreCase = true) }
+                val bGenres = bFull?.genres.orEmpty().map { it.lowercase() }.toSet()
+                val matched = if (bGenres.isEmpty()) pool.filter { it.type == b.type }
+                else pool.filter { m -> m.type == b.type && m.genres.any { g -> g.lowercase() in bGenres } }
+                matched.ifEmpty { pool.filter { it.type == b.type } }.ifEmpty { pool }.take(12)
+            }
+        } else if (basis == null) like = emptyList() else like = SearchDiscovery.similarFor(basis)
     }
 
     var top10 by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { top10 = extItems.take(10); return@LaunchedEffect }
+    LaunchedEffect(flavour, extItems, extRecent) {
+        if (flavour != HomeFlavour.DEFAULT && extDistinct.isNotEmpty()) { top10 = personalizedExt().take(10); return@LaunchedEffect }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
         top10 = SearchDiscovery.discover(listOf("movie", "tv"), g, animLang, "vote_average.desc", 500).take(10)
     }
 
     var series by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) {
-            val s = extItems.filter { it.type == MediaType.SERIES }.take(12)
-            series = if (s.isNotEmpty()) s else extItems.take(12)
+    LaunchedEffect(flavour, extDistinct) {
+        if (flavour != HomeFlavour.DEFAULT && extDistinct.isNotEmpty()) {
+            val s = extDistinct.filter { it.type == MediaType.SERIES }.take(12)
+            series = if (s.isNotEmpty()) s else extDistinct.take(12)
             return@LaunchedEffect
         }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
@@ -4558,28 +4602,33 @@ private fun HomeDiscoveryBlock(
 
     var cinemas by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
     LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { cinemas = extItems.take(12); return@LaunchedEffect }
+        if (flavour != HomeFlavour.DEFAULT) { cinemas = emptyList(); return@LaunchedEffect }
         cinemas = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.nowPlaying()
         else SearchDiscovery.airingNow("16", animLang)
     }
 
     var picks by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
-    LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { picks = extItems.drop(6).take(12).ifEmpty { extItems.take(12) }; return@LaunchedEffect }
+    LaunchedEffect(flavour, extItems, extRecent) {
+        if (flavour != HomeFlavour.DEFAULT && extDistinct.isNotEmpty()) {
+            val ordered = personalizedExt()
+            val rot = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR) % ordered.size
+            picks = (ordered + ordered).drop(rot).take(12)
+            return@LaunchedEffect
+        }
         val lang = if (flavour == HomeFlavour.DEFAULT) "ja" else animLang
         picks = SearchDiscovery.discover(listOf("movie", "tv"), "16", lang, "popularity.desc")
     }
 
     var greats by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
     LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { greats = extItems.takeLast(12).take(12).ifEmpty { extItems.take(12) }; return@LaunchedEffect }
+        if (flavour != HomeFlavour.DEFAULT && extDistinct.isNotEmpty()) { greats = personalizedExt().asReversed().take(12); return@LaunchedEffect }
         val g = if (flavour == HomeFlavour.DEFAULT) "" else "16"
         greats = SearchDiscovery.discover(listOf("movie", "tv"), g, animLang, "vote_average.desc", 2000)
     }
 
     var soon by remember(flavour) { mutableStateOf<List<MediaItem>?>(null) }
     LaunchedEffect(flavour, extItems) {
-        if (flavour != HomeFlavour.DEFAULT && extItems.isNotEmpty()) { soon = extItems.take(12); return@LaunchedEffect }
+        if (flavour != HomeFlavour.DEFAULT) { soon = emptyList(); return@LaunchedEffect }
         soon = if (flavour == HomeFlavour.DEFAULT) SearchDiscovery.comingSoon()
         else SearchDiscovery.discover(listOf("movie", "tv"), "16", animLang, "popularity.desc")
     }
