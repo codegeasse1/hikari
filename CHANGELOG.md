@@ -1,4 +1,9 @@
 
+## 0.12.152
+
+- Hikari Player fresh look: header card, accent play disc, ends-at seek row, side tool rail and icon-rail option panel with radio rows — all in your accent colour
+- Discovery rows are now off by default (turn back on in Settings → Customize)
+
 ## 0.12.151
 
 - Apple TV+ and Prime Video tiles use your transparent logos (black glyph / blue smile on transparency, verified on-tile): printed on the tile, no black or white pasted box, wide fill kept

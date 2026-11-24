@@ -40,7 +40,7 @@ object PlayerSkins {
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
         TV -> "Netflix-style dark controls made for TV remotes and D-pad navigation"
-        TESTING -> "Hikari's own player — dark reference style, same settings"
+        TESTING -> "Hikari's own player — card chrome in your accent colour"
         else -> "Hikari's curved glass — frosted bars, neon-edged panels"
     }
 

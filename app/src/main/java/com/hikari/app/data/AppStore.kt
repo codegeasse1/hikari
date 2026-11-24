@@ -3392,7 +3392,7 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     /** Home Discovery rows (Top 10, trending, anime picks, in cinemas and
      *  more, matched to the picked extension). ON by default. */
     fun discoveryRowsFlow(): Flow<Boolean> =
-        store.data.map { it[K.DISCOVERY_ROWS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.DISCOVERY_ROWS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun setDiscoveryRows(enabled: Boolean) {
         write("DISCOVERY_ROWS") { it[K.DISCOVERY_ROWS] = enabled }

@@ -896,7 +896,7 @@ fun HomeScreen(nav: NavHostController) {
     // Television: the genre strip moves to the END of the feed (the Nuvio-style
     // Home starts straight on the first shelf), so it is one more key here.
     val tvHome = TvMode.current()
-    val discoveryOn by remember { app.store.discoveryRowsFlow() }.collectAsState(initial = true)
+    val discoveryOn by remember { app.store.discoveryRowsFlow() }.collectAsState(initial = false)
     // The catalogue flavour follows the picked extension: donghua houses
     // show donghua rows, anime houses anime rows, everything else the
     // normal movie/series rows. Unknown extensions fall back to normal.
