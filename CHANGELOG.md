@@ -1,4 +1,8 @@
 
+## 0.12.150
+
+- All 9 streaming tiles are wide TV wordmarks now: Netflix / Hulu / Paramount+ / Crunchyroll replaced with wide art (same TMDB logos you liked, bundled instant), padded so nothing touches the edges; Disney+ / Apple TV+ / Prime Video / Peacock keep your wide logos
+
 ## 0.12.149
 
 - Streaming tiles use your wide Disney+ / Apple TV+ / Prime Video / Peacock logos, cropped to fill the landscape box; Home row prefers bundled art over the square TMDB stamp so all 9 tiles fill evenly
