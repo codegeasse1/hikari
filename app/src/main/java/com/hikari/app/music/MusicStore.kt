@@ -158,6 +158,13 @@ object MusicStore {
         return id
     }
 
+    fun createPlaylistWithSongs(name: String, songs: List<MSong>): String {
+        val id = "pl" + System.currentTimeMillis()
+        _playlists.value = _playlists.value + MPlaylist(id, name.trim().ifBlank { "Imported playlist" }, songs)
+        savePlaylists()
+        return id
+    }
+
     fun renamePlaylist(id: String, name: String) {
         _playlists.value = _playlists.value.map { if (it.id == id) it.copy(name = name.trim().ifBlank { it.name }) else it }
         savePlaylists()

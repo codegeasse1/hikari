@@ -1,4 +1,9 @@
 
+## 0.12.162
+
+- Music Library gets playlist import: paste a public YouTube or Spotify playlist link and the songs land in Hikari as a normal playlist — Spotify tracks are matched to the same song on YouTube with a duration check, and anything not found is listed instead of playing the wrong song
+- Imported playlists play, queue, download and work offline like any playlist you made yourself
+
 ## 0.12.161
 
 - Cloned sites actually load now on every engine, not just some: catalogue, search, details, playback and web view all follow the new domain, including extensions whose code still names the old domain in its addresses and page parsing

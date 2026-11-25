@@ -17,6 +17,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * They give back an address on their own proxy servers, so it needs neither a PO token nor
  * the device's own YouTube lookup. Used only after Qobuz / JioSaavn and YouTube have failed.
  */
+/** One entry of a public YouTube playlist, read without any key. */
+data class OpenPlaylistVideo(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val durationSec: Int,
+    val thumb: String,
+)
+
 object OpenStreamApi {
     private const val TAG = "HikariOpenStream"
     private const val TOTAL_WAIT_MS = 12_000L
@@ -205,5 +214,82 @@ object OpenStreamApi {
         }
     } catch (e: Exception) {
         false
+    }
+
+    // ------------------------------------------------------------------ playlists
+
+    /**
+     * A public YouTube playlist (its name + tracks) read through the open
+     * front-ends, no key needed. Null when no mirror could read it (private,
+     * deleted, or a radio mix id).
+     */
+    fun playlistBlocking(id: String): Pair<String, List<OpenPlaylistVideo>>? {
+        val clean = if (id.startsWith("VL")) id.removePrefix("VL") else id
+        if (clean.isBlank()) return null
+        kotlin.concurrent.thread(start = true, isDaemon = true, name = "open-hosts") { refreshHosts() }
+        for (h in pipedHosts.take(6)) {
+            val r = runCatching { pipedPlaylist(h, clean) }.getOrNull()
+            if (r != null) return r
+        }
+        for (h in invidiousHosts.take(4)) {
+            val r = runCatching { invidiousPlaylist(h, clean) }.getOrNull()
+            if (r != null) return r
+        }
+        Logs.log(TAG, "no open mirror could read playlist $clean")
+        return null
+    }
+
+    private fun pipedPlaylist(host: String, id: String): Pair<String, List<OpenPlaylistVideo>>? {
+        val text = getText("$host/playlists/$id") ?: return null
+        val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        val arr = root.optJSONArray("videos") ?: return null
+        val out = ArrayList<OpenPlaylistVideo>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val vid = Regex("[?&]v=([A-Za-z0-9_-]{6,})").find(o.optString("url"))
+                ?.groupValues?.get(1).orEmpty()
+            if (vid.isBlank()) continue
+            out.add(
+                OpenPlaylistVideo(
+                    vid,
+                    o.optString("title").ifBlank { "Unknown title" },
+                    o.optString("uploaderName"),
+                    o.optInt("duration"),
+                    o.optString("thumbnailUrl"),
+                ),
+            )
+        }
+        if (out.isEmpty()) return null
+        return Pair(root.optString("name").ifBlank { "Imported playlist" }, out)
+    }
+
+    private fun invidiousPlaylist(host: String, id: String): Pair<String, List<OpenPlaylistVideo>>? {
+        val text = getText("$host/api/v1/playlists/$id") ?: return null
+        val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        if (root.has("error")) return null
+        val arr = root.optJSONArray("videos") ?: return null
+        val out = ArrayList<OpenPlaylistVideo>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val vid = o.optString("videoId")
+            if (vid.isBlank()) continue
+            var thumb = ""
+            val thumbs = o.optJSONArray("videoThumbnails")
+            if (thumbs != null && thumbs.length() > 0) {
+                thumb = thumbs.optJSONObject(thumbs.length() - 1)?.optString("url").orEmpty()
+                if (thumb.startsWith("/")) thumb = host + thumb
+            }
+            out.add(
+                OpenPlaylistVideo(
+                    vid,
+                    o.optString("title").ifBlank { "Unknown title" },
+                    o.optString("author"),
+                    o.optInt("lengthSeconds"),
+                    thumb,
+                ),
+            )
+        }
+        if (out.isEmpty()) return null
+        return Pair(root.optString("title").ifBlank { "Imported playlist" }, out)
     }
 }

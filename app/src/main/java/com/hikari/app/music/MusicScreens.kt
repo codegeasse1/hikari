@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -591,6 +592,7 @@ fun MusicLibraryScreen(state: LazyListState, onOpen: (MRoute) -> Unit, onMenu: (
     val saved by MusicStore.saved.collectAsState()
     var tab by rememberSaveable { mutableStateOf(0) }
     var creating by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
     val tabs = listOf("Playlists", "Songs", "Albums", "Artists")
     val tiles: List<Triple<ImageVector, String, String>> = listOf(
         Triple(Icons.Filled.Favorite, "Liked", "liked"),
@@ -642,7 +644,7 @@ fun MusicLibraryScreen(state: LazyListState, onOpen: (MRoute) -> Unit, onMenu: (
                     if (playlists.isEmpty()) {
                         item {
                             Text(
-                                "No playlists yet. Tap + to make one.",
+                                "No playlists yet. Tap + to make one, or the link button to import one.",
                                 color = cs.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                             )
@@ -706,22 +708,43 @@ fun MusicLibraryScreen(state: LazyListState, onOpen: (MRoute) -> Unit, onMenu: (
             }
         }
         if (tab == 0) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(cs.primary)
-                    .clickable { creating = true },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Filled.Add, contentDescription = "New playlist", tint = cs.onPrimary) }
+            Column(
+                Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(cs.surfaceVariant)
+                        .clickable { importing = true },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.Link, contentDescription = "Import playlist", tint = cs.onSurfaceVariant) }
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(cs.primary)
+                        .clickable { creating = true },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.Add, contentDescription = "New playlist", tint = cs.onPrimary) }
+            }
         }
     }
     if (creating) {
         MusicNameDialog("New playlist", "", "Create", onDismiss = { creating = false }) { name ->
             MusicStore.createPlaylist(name)
         }
+    }
+    if (importing) {
+        PlaylistImportDialog(
+            onDone = { id, name ->
+                importing = false
+                onOpen(MRoute.Local("pl:" + id, name))
+            },
+            onDismiss = { importing = false },
+        )
     }
 }
 
