@@ -389,6 +389,8 @@ object SoraPluginManager {
      *  searchBaseUrl first, then the module script's baseUrl, else null.
      *  Callers fall back to the manifest host (the old github.com behaviour). */
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         runCatching {
             val mf = File(dirOf(config), "manifest.json")
             if (mf.isFile) {

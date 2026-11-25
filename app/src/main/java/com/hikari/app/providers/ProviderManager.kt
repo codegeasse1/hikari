@@ -103,6 +103,9 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                 }.getOrElse { unique }
                 if (configs == lastConfigs && _providers.value.isNotEmpty()) continue
                 lastConfigs = configs
+                // Clone-site host map for images + Http (see CloneHosts): kept
+                // fresh on every resolve so saves apply without a restart.
+                runCatching { com.hikari.app.data.CloneHosts.refreshGlobal(configs) }
                 // LAZY: the config phase above is the whole cheap part (read +
                 // dedupe + NSFW filter). Instantiating all 785 providers here
                 // is what held startup for ~17s, so it no longer happens in

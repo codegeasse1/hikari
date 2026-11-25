@@ -3424,6 +3424,9 @@ private fun DetailHeaderCard(app: HikariApp) {
     var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
     LaunchedEffect(logoSize) { logoSlider = logoSize.toFloat() }
 
+    val logoOnFlow = remember { app.store.detailLogoEnabledFlow() }
+    val logoOn by logoOnFlow.collectAsState(initial = true)
+
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Panorama, tr("Details header"))
         ChoiceRow(
@@ -3432,28 +3435,41 @@ private fun DetailHeaderCard(app: HikariApp) {
             leadingIcon = Icons.Filled.Panorama,
             onClick = { pickerOpen = true },
         )
-        Spacer(Modifier.height(14.dp))
-        SettingsSlider(
-            label = tr("Title logo size"),
-            value = logoSlider,
-            valueText = logoSlider.roundToInt().toString() + "%",
-            valueRange = 50f..160f,
-            // 111 single-percent positions between 50% and 160% (110 gaps): the
-            // slider moves one point at a time instead of leaping in tens.
-            steps = 109,
-            onValueChange = { v -> logoSlider = v.roundToInt().toFloat().coerceIn(50f, 160f) },
-            onValueChangeFinished = {
-                val pct = logoSlider.roundToInt().coerceIn(50, 160)
-                logoSlider = pct.toFloat()
-                scope.launch { runCatching { app.store.setDetailLogoSize(pct) } }
+        Spacer(Modifier.height(10.dp))
+        SettingsToggle(
+            label = tr("Title artwork"),
+            supporting = if (logoOn) {
+                tr("Show the title logo over the header, and as the pinned title")
+            } else {
+                tr("Show the title as plain text")
             },
+            checked = logoOn,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setDetailLogoEnabled(on) } } },
         )
-        if (!LocalHideHelp.current) {
-        Text(
-            tr("How big the title artwork is drawn — over the header image, and as the pinned title once it scrolls up"),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (logoOn) {
+            Spacer(Modifier.height(10.dp))
+            SettingsSlider(
+                label = tr("Title logo size"),
+                value = logoSlider,
+                valueText = logoSlider.roundToInt().toString() + "%",
+                valueRange = 50f..160f,
+                // 111 single-percent positions between 50% and 160% (110 gaps): the
+                // slider moves one point at a time instead of leaping in tens.
+                steps = 109,
+                onValueChange = { v -> logoSlider = v.roundToInt().toFloat().coerceIn(50f, 160f) },
+                onValueChangeFinished = {
+                    val pct = logoSlider.roundToInt().coerceIn(50, 160)
+                    logoSlider = pct.toFloat()
+                    scope.launch { runCatching { app.store.setDetailLogoSize(pct) } }
+                },
+            )
+            if (!LocalHideHelp.current) {
+            Text(
+                tr("How big the title artwork is drawn — over the header image, and as the pinned title once it scrolls up"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            }
         }
     }
 

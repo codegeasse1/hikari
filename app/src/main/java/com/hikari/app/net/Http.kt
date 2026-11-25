@@ -49,7 +49,9 @@ object Http {
     }
 
     fun getQuiet(url: String, headers: Map<String, String> = emptyMap()): Response {
-        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        // Clone-site host moves (see CloneHosts): scrape the new host.
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
+        val builder = Request.Builder().url(eff).header("User-Agent", UA)
         headers.forEach { (k, v) -> builder.header(k, v) }
         // Prmovies 403 fix: probes and the safety-net fallback use getQuiet,
         // which bypassed the Cloudflare interceptor — so they never sent the
@@ -79,7 +81,9 @@ object Http {
         }
 
     fun get(url: String, headers: Map<String, String> = emptyMap()): Response {
-        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        // Clone-site host moves (see CloneHosts): scrape the new host.
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
+        val builder = Request.Builder().url(eff).header("User-Agent", UA)
         headers.forEach { (k, v) -> builder.header(k, v) }
         return client.newCall(builder.build()).execute()
     }

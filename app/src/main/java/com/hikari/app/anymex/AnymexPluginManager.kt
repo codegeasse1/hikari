@@ -74,6 +74,8 @@ object AnymexPluginManager {
     }
 
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         moduleBaseUrl(config)?.let { return it }
         val metaFile = File(dirOf(config), "meta.json")
         if (!metaFile.exists()) return null

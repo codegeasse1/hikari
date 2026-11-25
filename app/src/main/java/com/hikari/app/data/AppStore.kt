@@ -475,6 +475,15 @@ class AppStore(private val ctx: Context) {
          *  percentage of its default size (see
          *  [DEFAULT_DETAIL_LOGO_SIZE]) — the wordmark art TMDB provides. */
         val DETAIL_LOGO_SIZE = intPreferencesKey("detailLogoSize")
+        /** Show the title LOGO art on the detail page's header + as the pinned
+         *  title on scroll (see [detailLogoEnabledFlow]). Default ON. */
+        val DETAIL_LOGO_ENABLED = booleanPreferencesKey("detailLogoEnabled")
+        /** Clone-site host overrides: clone provider id → JSON
+         *  `{"orig": origId, "main": mainNew, "hosts": {old: new}}`. */
+        val CLONE_HOSTS = stringPreferencesKey("cloneHosts")
+        /** Provider-picker chip order (see ProviderPickerSheet): ordered list of
+         *  chip keys ("ALL", ProviderType names, "CLONED", "WEBSITES"). */
+        val PROVIDER_KIND_ORDER = stringPreferencesKey("providerKindOrder")
         /** Which player control shell the player wears — see
          *  [com.hikari.app.player.PlayerSkins]. */
         val PLAYER_SKIN = stringPreferencesKey("playerSkin")
@@ -1325,6 +1334,97 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setDetailLogoSize(percent: Int) {
         write("DETAIL_LOGO_SIZE") { it[K.DETAIL_LOGO_SIZE] = percent.coerceIn(50, 160) }
+    }
+
+    /** Show the detail page's title-logo artwork (header + pinned title).
+     *  Default true — existing users see no change. */
+    fun detailLogoEnabledFlow(): Flow<Boolean> =
+        store.data.map { it[K.DETAIL_LOGO_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun detailLogoEnabled(): Boolean = detailLogoEnabledFlow().first()
+
+    suspend fun setDetailLogoEnabled(on: Boolean) {
+        write("DETAIL_LOGO_ENABLED") { it[K.DETAIL_LOGO_ENABLED] = on }
+    }
+
+    // ---- Clone-site host overrides + provider chip order ----
+
+    /** Raw clone-host JSON (see [K.CLONE_HOSTS]). */
+    fun cloneHostsFlow(): Flow<Map<String, CloneEntry>> =
+        store.data.map { parseCloneHosts(it[K.CLONE_HOSTS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun cloneHosts(): Map<String, CloneEntry> = cloneHostsFlow().first()
+
+    suspend fun saveClone(entry: CloneEntry) {
+        write("CLONE_HOSTS") { prefs ->
+            val cur = parseCloneHosts(prefs[K.CLONE_HOSTS]).toMutableMap()
+            cur[entry.id] = entry
+            prefs[K.CLONE_HOSTS] = encodeCloneHosts(cur)
+        }
+    }
+
+    suspend fun removeClone(id: String) {
+        write("CLONE_HOSTS") { prefs ->
+            val cur = parseCloneHosts(prefs[K.CLONE_HOSTS]).toMutableMap()
+            cur.remove(id)
+            prefs[K.CLONE_HOSTS] = encodeCloneHosts(cur)
+        }
+    }
+
+    private fun parseCloneHosts(s: String?): Map<String, CloneEntry> {
+        if (s.isNullOrBlank()) return emptyMap()
+        return try {
+            val o = JSONObject(s)
+            val out = LinkedHashMap<String, CloneEntry>()
+            val ids = o.keys()
+            while (ids.hasNext()) {
+                val id = ids.next()
+                val e = o.optJSONObject(id) ?: continue
+                val hosts = LinkedHashMap<String, String>()
+                val ho = e.optJSONObject("hosts")
+                if (ho != null) {
+                    val hk = ho.keys()
+                    while (hk.hasNext()) {
+                        val k = hk.next()
+                        hosts[k] = ho.optString(k)
+                    }
+                }
+                out[id] = CloneEntry(
+                    id = id,
+                    name = e.optString("name"),
+                    cloneOfId = e.optString("orig"),
+                    mainNew = e.optString("main").takeIf { it.isNotBlank() },
+                    hosts = hosts,
+                )
+            }
+            out
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun encodeCloneHosts(map: Map<String, CloneEntry>): String {
+        val o = JSONObject()
+        for ((id, e) in map) {
+            val hosts = JSONObject()
+            for ((k, v) in e.hosts) hosts.put(k, v)
+            o.put(id, JSONObject().put("name", e.name).put("orig", e.cloneOfId)
+                .put("main", e.mainNew.orEmpty()).put("hosts", hosts))
+        }
+        return o.toString()
+    }
+
+    /** Ordered provider-picker chip keys. Empty = default order. */
+    fun providerKindOrderFlow(): Flow<List<String>> =
+        store.data.map { prefs ->
+            prefs[K.PROVIDER_KIND_ORDER]?.split(",")?.map { it.trim() }
+                ?.filter { it.isNotEmpty() } ?: emptyList()
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun providerKindOrder(): List<String> = providerKindOrderFlow().first()
+
+    suspend fun setProviderKindOrder(keys: List<String>) {
+        write("PROVIDER_KIND_ORDER") { it[K.PROVIDER_KIND_ORDER] = keys.joinToString(",") }
     }
 
     /** Which player control shell the player wears. */

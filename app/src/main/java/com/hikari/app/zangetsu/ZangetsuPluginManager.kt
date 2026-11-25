@@ -282,6 +282,8 @@ object ZangetsuPluginManager {
     /** The provider's site root (from its own getInfo, captured at install)
      *  for the verification globe — a file read, never an engine boot. */
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         if (config.type != ProviderType.ZANGETSU) return null
         return runCatching { JSONObject(metaFile(HikariApp.instance, config.id.substringAfter("zangetsu|", "")).readText()).optString("baseUrl") }
             .getOrNull()?.takeIf { it.startsWith("http") }

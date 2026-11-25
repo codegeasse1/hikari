@@ -78,7 +78,8 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         if (!freshnessChecked.add(value)) return
         detailScope.launch {
             runCatching {
-                val dist = config.extra?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }
+                // Clone-site: read the original's config (see CloneHosts).
+                val dist = com.hikari.app.data.CloneHosts.effectiveExtra(config)?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }
                     ?: return@launch
                 // Compare EVERY published module, not just meta.js: a stale or
                 // partial install can be missing a module the repo has (e.g.

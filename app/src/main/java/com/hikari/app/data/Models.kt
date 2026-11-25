@@ -44,6 +44,18 @@ data class ProviderConfig(
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
 enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, LNREADER, ZANGETSU, KOTATSU }
 
+/** A user-made clone-site entry: a copy of an installed extension with
+ *  overridden domains. The clone itself is a normal [ProviderConfig] row
+ *  (id starts with "clone|", same type + file url as the original); this
+ *  record carries the domain overrides applied at request time. */
+data class CloneEntry(
+    val id: String,
+    val name: String,
+    val cloneOfId: String,
+    val mainNew: String? = null,
+    val hosts: Map<String, String> = emptyMap(),
+)
+
 data class ProviderFolder(
     val name: String,
     val ids: List<String>,

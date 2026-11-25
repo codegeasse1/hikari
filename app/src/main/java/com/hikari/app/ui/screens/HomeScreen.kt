@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -112,6 +113,10 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.layout.offset
+import kotlin.math.roundToInt
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -600,6 +605,8 @@ fun HomeScreen(nav: NavHostController) {
     // extension; if TMDB is unreachable it says so in its own empty state.
     val activeProviders = providers.filter { it.config.enabled }
     var providerFilter by remember { mutableStateOf<com.hikari.app.data.ProviderType?>(null) }
+    // Cloned-only view for the Select Provider sheet (see the "Cloned" chip).
+    var providerClonesOnly by remember { mutableStateOf(false) }
     var showCrash by remember {
         mutableStateOf(HikariApp.lastCrash != null && !HikariApp.crashNoticeShown)
     }
@@ -1559,6 +1566,8 @@ fun HomeScreen(nav: NavHostController) {
             selection = selection,
             filter = providerFilter,
             onFilter = { providerFilter = it },
+            clonesOnly = providerClonesOnly,
+            onClonesOnly = { providerClonesOnly = it },
             onManageCollections = {
                 showPicker = false
                 Routes.safeNavigate(nav, Routes.COLLECTIONS)
@@ -1897,6 +1906,10 @@ internal fun ProviderPickerSheet(
     selection: List<String>,
     filter: ProviderType?,
     onFilter: (ProviderType?) -> Unit,
+    /** Cloned-only view (see the "Cloned" chip): lists only clone-site
+     *  copies, whatever engine they were cloned from. */
+    clonesOnly: Boolean = false,
+    onClonesOnly: (Boolean) -> Unit = {},
     onManageCollections: () -> Unit,
     /** A plain tap in single-select mode: this is now the only source. */
     onPick: (String?) -> Unit,
@@ -1941,6 +1954,26 @@ internal fun ProviderPickerSheet(
     val kinds = remember(providers) {
         providers.map { it.config.type }.distinct().sortedBy { it.groupLabel }
     }
+    // "Cloned" pseudo-kind: every clone-site copy, whatever its engine.
+    val clonesExist = remember(providers) {
+        providers.any { com.hikari.app.data.CloneHosts.isClone(it.config) }
+    }
+    // Chip order: the user's saved order first, anything new appended.
+    val savedChipOrder by remember { app.store.providerKindOrderFlow() }
+        .collectAsState(initial = emptyList())
+    val defaultChipKeys = remember(kinds, clonesExist, sites) {
+        buildList {
+            add("ALL")
+            kinds.forEach { add(it.name) }
+            if (clonesExist) add("CLONED")
+            if (sites.isNotEmpty()) add("WEBSITES")
+        }
+    }
+    val orderedChipKeys = remember(defaultChipKeys, savedChipOrder) {
+        savedChipOrder.filter { it in defaultChipKeys } + (defaultChipKeys - savedChipOrder.toSet())
+    }
+    var liveChipOrder by remember(orderedChipKeys) { mutableStateOf(orderedChipKeys) }
+    var dragChip by remember { mutableStateOf<String?>(null) }
     val pinOrder = remember(pinned) { pinned.withIndex().associate { (i, id) -> id to i } }
     // Engine + repository for the plain rows below. The sheet's rows say
     // nothing but the extension's name, and an install list with four "AniKoto"
@@ -1963,8 +1996,14 @@ internal fun ProviderPickerSheet(
     // row per source is what made one installed extension look like nine
     // installs. [ProviderPacks] folds them into the extension's own row; its
     // sources are a caret away and can still be picked one by one.
-    val packs = remember(providers, query, filter, pinOrder) {
-        val narrowed = providers.filter { filter == null || it.config.type == filter }
+    val packs = remember(providers, query, filter, clonesOnly, pinOrder) {
+        val narrowed = providers.filter {
+            when {
+                clonesOnly -> com.hikari.app.data.CloneHosts.isClone(it.config)
+                filter == null -> true
+                else -> it.config.type == filter
+            }
+        }
         val matches = if (query.isBlank()) narrowed
         else narrowed.filter { it.config.name.contains(query, ignoreCase = true) }
         val ordered = matches.sortedWith(
@@ -2152,30 +2191,83 @@ internal fun ProviderPickerSheet(
                     }
                 }
                 if (kinds.isNotEmpty() || sites.isNotEmpty()) {
-                    LazyRow(
-                        Modifier.fillMaxWidth(),
+                    // Engine chips: press-hold 0.5s, then drag left/right and
+                    // drop anywhere — the order saves and stays until moved
+                    // again. Same order in Home + Search (one shared key).
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        item {
-                            FilterChipLine(
-                                label = tr("All"),
-                                selected = filter == null,
-                                onClick = { onFilter(null) },
-                            )
-                        }
-                        items(kinds, key = { it.name }) { kind ->
-                            FilterChipLine(
-                                label = kind.groupLabel,
-                                selected = filter == kind,
-                                onClick = { onFilter(if (filter == kind) null else kind) },
-                            )
-                        }
-                        if (sites.isNotEmpty()) {
-                            item {
+                        val chipKeys = if (liveChipOrder.isEmpty()) orderedChipKeys else liveChipOrder
+                        chipKeys.forEach { key ->
+                            var chipOx by remember(key) { mutableStateOf(0f) }
+                            val label = when (key) {
+                                "ALL" -> tr("All")
+                                "CLONED" -> tr("Cloned")
+                                "WEBSITES" -> tr("Websites")
+                                else -> runCatching { ProviderType.valueOf(key).groupLabel }.getOrNull() ?: key
+                            }
+                            val selected = when (key) {
+                                "ALL" -> filter == null && !clonesOnly
+                                "CLONED" -> clonesOnly
+                                "WEBSITES" -> sitesOpen
+                                else -> runCatching { filter == ProviderType.valueOf(key) }.getOrDefault(false) && !clonesOnly
+                            }
+                            Box(
+                                Modifier
+                                    .offset { IntOffset(chipOx.roundToInt(), 0) }
+                                    .zIndex(if (dragChip == key) 1f else 0f)
+                                    .pointerInput(key) {
+                                        var acc = 0f
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = { dragChip = key; acc = 0f; chipOx = 0f },
+                                            onDrag = { change, amt ->
+                                                change.consume()
+                                                acc += amt.x
+                                                chipOx = acc
+                                                val idx = liveChipOrder.indexOf(key)
+                                                if (acc > 90f && idx >= 0 && idx < liveChipOrder.lastIndex) {
+                                                    liveChipOrder = liveChipOrder.toMutableList().also {
+                                                        it.add(idx + 1, it.removeAt(idx))
+                                                    }
+                                                    acc = 0f
+                                                    chipOx = 0f
+                                                } else if (acc < -90f && idx > 0) {
+                                                    liveChipOrder = liveChipOrder.toMutableList().also {
+                                                        it.add(idx - 1, it.removeAt(idx))
+                                                    }
+                                                    acc = 0f
+                                                    chipOx = 0f
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                dragChip = null
+                                                chipOx = 0f
+                                                val order = liveChipOrder.ifEmpty { orderedChipKeys }
+                                                scope.launch {
+                                                    runCatching { app.store.setProviderKindOrder(order) }
+                                                }
+                                            },
+                                            onDragCancel = { dragChip = null; chipOx = 0f },
+                                        )
+                                    },
+                            ) {
                                 FilterChipLine(
-                                    label = tr("Websites"),
-                                    selected = sitesOpen,
-                                    onClick = { sitesOpen = !sitesOpen },
+                                    label = label,
+                                    selected = selected,
+                                    onClick = {
+                                        when (key) {
+                                            "ALL" -> { onFilter(null); onClonesOnly(false) }
+                                            "CLONED" -> { onClonesOnly(true); onFilter(null) }
+                                            "WEBSITES" -> { sitesOpen = !sitesOpen }
+                                            else -> runCatching { ProviderType.valueOf(key) }.getOrNull()?.let { t ->
+                                                onClonesOnly(false)
+                                                onFilter(if (filter == t) null else t)
+                                            }
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -2984,7 +3076,7 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
         com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
     }
     ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
-    ProviderType.SORA -> runCatching { com.hikari.app.sora.SoraPluginManager.siteUrlOf(p.config) }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.config.extra?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
+    ProviderType.SORA -> runCatching { com.hikari.app.sora.SoraPluginManager.siteUrlOf(p.config) }.getOrNull()?.takeIf { it.isNotBlank() } ?: com.hikari.app.data.CloneHosts.effectiveExtra(p.config)?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
     ProviderType.NUVIO -> sourceSiteUrl(java.io.File(p.config.url), p.config.name)
     ProviderType.VEGA -> runCatching {
         val dir = com.hikari.app.providers.vega.VegaPluginManager.dirOf(p.config)

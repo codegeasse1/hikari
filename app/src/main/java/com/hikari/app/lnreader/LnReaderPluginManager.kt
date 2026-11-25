@@ -35,6 +35,8 @@ object LnReaderPluginManager {
     /** The source's own site, as captured at install (see [install]). Sync —
      *  a small local JSON read, safe wherever the globe button resolves. */
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         if (!LnReaderProvider.isLnReaderId(config.id)) return null
         val site = runCatching {
             JSONObject(File(dirOf(config), "meta.json").readText()).optString("site")

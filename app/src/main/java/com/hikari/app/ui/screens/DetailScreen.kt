@@ -21,6 +21,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -122,6 +124,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1999,6 +2002,10 @@ fun DetailScreen(
     // Title logo size), in percent of the size it has always been drawn at.
     val detailLogoFlow = remember { detailApp.store.detailLogoSizeFlow() }
     val detailLogoPercent by detailLogoFlow.collectAsState(initial = 100)
+    // Title-artwork toggle (Settings → App Layout → Details header): OFF hides
+    // the wordmark everywhere (header + pinned title) and shows plain text.
+    val detailLogoOnFlow = remember { detailApp.store.detailLogoEnabledFlow() }
+    val detailLogoOn by detailLogoOnFlow.collectAsState(initial = true)
     val screenAlive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
     DisposableEffect(Unit) { onDispose { screenAlive.set(false) } }
     val onUi: suspend (() -> Unit) -> Unit = { block ->
@@ -2186,6 +2193,10 @@ fun DetailScreen(
     val loadingLogoPercent by remember { app.store.loadingLogoSizeFlow() }
         .collectAsState(initial = 100)
     var heroLogo by remember { mutableStateOf<String?>(null) }
+    // Effective wordmark: null when the title-artwork toggle is OFF, so every
+    // draw site below (header, pinned overlay, text fallback) falls back to
+    // plain text without touching the fetch.
+    val heroLogoEff: String? = if (detailLogoOn) heroLogo else null
     val askServerFlow = remember { app.store.askServerOnPlayFlow() }
     val askServerOnPlay by askServerFlow.collectAsState(initial = false)
     val playScopeAskOn by remember { app.store.playScopeAskFlow() }.collectAsState(initial = false)
@@ -4672,6 +4683,8 @@ fun DetailScreen(
                                             sizeScale = tvEpisodeScale,
                                             glass = episodeGlass,
                                             hideSpoilers = antiSpoiler && !isEpSeen(ep),
+                                            watchState = epWatchState(ep),
+                                            onMarkEpisode = { w -> writeMark(ep, w) },
                                         )
                                     }
                                 }
@@ -4697,6 +4710,8 @@ fun DetailScreen(
                                             sizeScale = tvEpisodeScale,
                                             glass = episodeGlass,
                                             hideSpoilers = antiSpoiler && !isEpSeen(ep),
+                                            watchState = epWatchState(ep),
+                                            onMarkEpisode = { w -> writeMark(ep, w) },
                                         )
                                     }
                                 }
@@ -4752,8 +4767,9 @@ fun DetailScreen(
                         )
                         Spacer(Modifier.height(6.dp))
                     }
-                    if (!heroLogo.isNullOrBlank()) {
-                        AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
+                    val heroLogoEff = if (detailLogoOn) heroLogo else null
+                    if (!heroLogoEff.isNullOrBlank()) {
+                        AsyncImage(model = heroLogoEff, contentDescription = artTitle, contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth(0.90f).heightIn(max = 96.dp))
                     } else {
                         Text(artTitle, fontSize = 24.sp * tvText, lineHeight = 30.sp * tvText, fontWeight = FontWeight.Bold,
@@ -4877,7 +4893,7 @@ fun DetailScreen(
     val logoRestFrac = (0.62f * logoScale).coerceIn(0.2f, 1f)
     val logoPinnedFrac = (0.34f * logoScale).coerceIn(0.17f, 0.72f)
     val logoFrac = logoRestFrac + (logoPinnedFrac - logoRestFrac) * headerProgress
-    val pinnedLogoDp = if (logoSizePx > 0 && logoFrac > 0.01f && !heroLogo.isNullOrBlank()) {
+    val pinnedLogoDp = if (logoSizePx > 0 && logoFrac > 0.01f && !heroLogoEff.isNullOrBlank()) {
         with(density) { (logoSizePx * logoPinnedFrac / logoFrac).toDp() }
     } else {
         0.dp
@@ -5153,7 +5169,7 @@ fun DetailScreen(
                             top = 16.dp + pinnedLogoDp * headerProgress,
                         )
                     ) {
-                        if (heroLogo.isNullOrBlank()) {
+                        if (heroLogoEff.isNullOrBlank()) {
                             Text(
                                 m?.title ?: title,
                                 style = MaterialTheme.typography.headlineMedium,
@@ -5874,6 +5890,8 @@ fun DetailScreen(
                                             sizeScale = tvEpisodeScale,
                                             glass = episodeGlass,
                                             hideSpoilers = antiSpoiler && !isEpSeen(ep),
+                                            watchState = epWatchState(ep),
+                                            onMarkEpisode = { w -> writeMark(ep, w) },
                                         )
                                     }
                                 }
@@ -5899,6 +5917,8 @@ fun DetailScreen(
                                                 sizeScale = tvEpisodeScale,
                                                 glass = episodeGlass,
                                                 hideSpoilers = antiSpoiler && !isEpSeen(ep),
+                                                watchState = epWatchState(ep),
+                                                onMarkEpisode = { w -> writeMark(ep, w) },
                                             )
                                         }
                                         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -5921,6 +5941,7 @@ fun DetailScreen(
                                         glass = episodeGlass,
                                         hideSpoilers = antiSpoiler && !isEpSeen(ep),
                                         watchState = epWatchState(ep),
+                                        onMarkEpisode = { w -> writeMark(ep, w) },
                                     )
                                 }
                             }
@@ -6031,7 +6052,7 @@ fun DetailScreen(
         }
     }
 
-    val logoArt = heroLogo
+    val logoArt = heroLogoEff
     if (!logoArt.isNullOrBlank() && !(isTvLayout && episodePosterStyle)) {
         val logoHPx = logoSizePx.toFloat()
         val gapPx = with(density) { 10.dp.toPx() }
@@ -8612,6 +8633,12 @@ private fun EpisodePosterCard(
     glass: Boolean = false,
     /** Anti-spoiler: blur the still and mask the title/overview. */
     hideSpoilers: Boolean = false,
+    /** Per-episode watch state (see epWatchState): 0 = untouched, 1 =
+     *  watching, 2 = watched. */
+    watchState: Int = 0,
+    /** Manual mark (press-hold menu): true = Watched, false = Watching.
+     *  Null hides the menu (callers with nowhere to record). */
+    onMarkEpisode: ((watched: Boolean) -> Unit)? = null,
 ) {
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val tokens = rememberGlassTokens()
@@ -8620,7 +8647,9 @@ private fun EpisodePosterCard(
     val tvEp = com.hikari.app.tv.TvMode.current()
     val epCard = if (tvEp) RoundedCornerShape(com.hikari.app.tv.TvDesktop.CornerCard)
     else RoundedCornerShape(10.dp)
-    Column(
+    var markOpen by remember { mutableStateOf(false) }
+    var markHl by remember { mutableStateOf(-1) }
+    Box(
         (if (glass) {
             modifier
                 .clip(RoundedCornerShape(16.dp))
@@ -8631,7 +8660,22 @@ private fun EpisodePosterCard(
             modifier
                 .clip(epCard)
         })
-            .clickable(onClick = onClick)
+    ) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .episodeMarkGesture(
+                onClick = onClick,
+                enabled = onMarkEpisode != null,
+                onHoldOpen = { markHl = -1; markOpen = true },
+                onHighlight = { markHl = it },
+                onSlidePick = { hl ->
+                    if (hl == 0 || hl == 1) {
+                        onMarkEpisode?.invoke(hl == 0)
+                        markOpen = false
+                    }
+                },
+            )
             .tvPress(previewPass = false, onClick = onClick)
             .padding(bottom = (4f * s).dp)
     ) {
@@ -8751,6 +8795,16 @@ private fun EpisodePosterCard(
             )
         }
     }
+    if (onMarkEpisode != null) {
+        EpisodeMarkMenu(
+            expanded = markOpen,
+            watchState = watchState,
+            highlight = markHl,
+            onPick = { w -> onMarkEpisode.invoke(w); markOpen = false },
+            onDismiss = { markOpen = false },
+        )
+    }
+    }
 }
 
 private fun isEpisodeUnaired(released: String?): Boolean {
@@ -8802,11 +8856,19 @@ private fun EpisodeBigCard(
     glass: Boolean = false,
     /** Anti-spoiler: blur the still and mask the title/overview. */
     hideSpoilers: Boolean = false,
+    /** Per-episode watch state (see epWatchState): 0 = untouched, 1 =
+     *  watching, 2 = watched. */
+    watchState: Int = 0,
+    /** Manual mark (press-hold menu): true = Watched, false = Watching.
+     *  Null hides the menu (callers with nowhere to record). */
+    onMarkEpisode: ((watched: Boolean) -> Unit)? = null,
 ) {
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val unaired = isEpisodeUnaired(ep.released)
     val tokens = rememberGlassTokens()
-    Column(
+    var markOpen by remember { mutableStateOf(false) }
+    var markHl by remember { mutableStateOf(-1) }
+    Box(
         (if (glass) {
             modifier
                 .clip(RoundedCornerShape(16.dp))
@@ -8817,7 +8879,22 @@ private fun EpisodeBigCard(
             modifier
                 .clip(RoundedCornerShape(12.dp))
         })
-            .clickable(onClick = onClick)
+    ) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .episodeMarkGesture(
+                onClick = onClick,
+                enabled = onMarkEpisode != null,
+                onHoldOpen = { markHl = -1; markOpen = true },
+                onHighlight = { markHl = it },
+                onSlidePick = { hl ->
+                    if (hl == 0 || hl == 1) {
+                        onMarkEpisode?.invoke(hl == 0)
+                        markOpen = false
+                    }
+                },
+            )
             .tvPress(previewPass = false, onClick = onClick)
             .padding(bottom = (6f * s).dp)
     ) {
@@ -9004,6 +9081,16 @@ private fun EpisodeBigCard(
             }
         }
     }
+    if (onMarkEpisode != null) {
+        EpisodeMarkMenu(
+            expanded = markOpen,
+            watchState = watchState,
+            highlight = markHl,
+            onPick = { w -> onMarkEpisode.invoke(w); markOpen = false },
+            onDismiss = { markOpen = false },
+        )
+    }
+    }
 }
 
 /** "1999-10-20" (or a longer stamp starting with it) printed the way the
@@ -9049,13 +9136,18 @@ private fun EpisodeRow(
     /** Per-episode watch state (see epWatchState): 0 = untouched, 1 =
      *  watching, 2 = watched. Drawn as a small pill under the buttons. */
     watchState: Int = 0,
+    /** Manual mark (press-hold menu): true = Watched, false = Watching.
+     *  Null hides the menu (callers with nowhere to record). */
+    onMarkEpisode: ((watched: Boolean) -> Unit)? = null,
 ) {
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val tokens = rememberGlassTokens()
     // Television rows sit flat on the black page (desktop language) with
     // white/muted text; phones keep the near-page fill.
     val tvRow = com.hikari.app.tv.TvMode.current()
-    Row(
+    var markOpen by remember { mutableStateOf(false) }
+    var markHl by remember { mutableStateOf(-1) }
+    Box(
         (if (glass) {
             Modifier
                 .fillMaxWidth()
@@ -9071,7 +9163,22 @@ private fun EpisodeRow(
                     else com.hikari.app.ui.pageFill(0.98f)
                 )
         })
-            .clickable(onClick = onClick)
+    ) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .episodeMarkGesture(
+                onClick = onClick,
+                enabled = onMarkEpisode != null,
+                onHoldOpen = { markHl = -1; markOpen = true },
+                onHighlight = { markHl = it },
+                onSlidePick = { hl ->
+                    if (hl == 0 || hl == 1) {
+                        onMarkEpisode?.invoke(hl == 0)
+                        markOpen = false
+                    }
+                },
+            )
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = (16f * s).dp, vertical = if (glass) 12.dp else (8f * s).dp),
         verticalAlignment = Alignment.CenterVertically
@@ -9211,12 +9318,139 @@ private fun EpisodeRow(
         }
         }
     }
+    if (onMarkEpisode != null) {
+        EpisodeMarkMenu(
+            expanded = markOpen,
+            watchState = watchState,
+            highlight = markHl,
+            onPick = { w -> onMarkEpisode.invoke(w); markOpen = false },
+            onDismiss = { markOpen = false },
+        )
+    }
+    }
 }
 
 /** Nuvio parity: season 0 is shown as "Specials" (never "Season 0"). */
 @Composable
 private fun seasonTitle(season: Int): String =
     if (season <= 0) tr("Specials") else tr("Season %s").replace("%s", season.toString())
+
+/** Press-hold (0.5s) slide-to-mark for episodes: a SMALL popup with Watched on
+ *  top and Watching below. Long-press opens it; without lifting the finger the
+ *  user slides up/down to highlight and lifts to select (a plain tap on a row
+ *  picks it too). Works both ways: fresh episodes get marked, and an
+ *  auto-marked Watched flips back to Watching (and vice versa). */
+@Composable
+private fun EpisodeMarkMenu(
+    expanded: Boolean,
+    watchState: Int,
+    highlight: Int,
+    onPick: (watched: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        val hlWatched = highlight == 0
+        val hlWatching = highlight == 1
+        DropdownMenuItem(
+            text = {
+                Text(
+                    tr("Watched"),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = if (hlWatched || watchState == 2) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (hlWatched || watchState == 2) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = if (hlWatched || watchState == 2) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+            trailingIcon = if (watchState == 2) {
+                { Text("✓", color = MaterialTheme.colorScheme.primary) }
+            } else null,
+            onClick = { onPick(true) },
+        )
+        DropdownMenuItem(
+            text = {
+                Text(
+                    tr("Watching"),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = if (hlWatching || watchState == 1) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (hlWatching || watchState == 1) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            },
+            leadingIcon = {
+                Box(
+                    Modifier
+                        .size(16.dp)
+                        .border(
+                            1.5.dp,
+                            if (hlWatching || watchState == 1) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            CircleShape,
+                        ),
+                )
+            },
+            trailingIcon = if (watchState == 1) {
+                { Text("✓", color = MaterialTheme.colorScheme.primary) }
+            } else null,
+            onClick = { onPick(false) },
+        )
+    }
+}
+
+/** Gesture modifier for [EpisodeMarkMenu]: tap passes through to [onClick],
+ *  a 0.5s hold opens the menu, and a continued slide selects on release
+ *  (up = Watched, down = Watching). Highlight is -1 until the finger moves;
+ *  releasing without a slide keeps the menu open for a tap instead. */
+private fun Modifier.episodeMarkGesture(
+    onClick: () -> Unit,
+    enabled: Boolean,
+    onHoldOpen: () -> Unit,
+    onHighlight: (Int) -> Unit,
+    onSlidePick: (Int) -> Unit,
+): Modifier {
+    if (!enabled) return this.combinedClickable(onClick = onClick)
+    return this
+        .combinedClickable(
+            onClick = onClick,
+            onLongClick = { onHoldOpen() },
+        )
+        .pointerInput(enabled) {
+            var accum = 0f
+            var hl = -1
+            detectDragGesturesAfterLongPress(
+                onDragStart = {
+                    accum = 0f
+                    hl = -1
+                    onHighlight(-1)
+                    onHoldOpen()
+                },
+                onDrag = { change, amt ->
+                    change.consume()
+                    accum += amt.y
+                    hl = when {
+                        accum < -60f -> 0
+                        accum > 60f -> 1
+                        else -> -1
+                    }
+                    onHighlight(hl)
+                },
+                onDragEnd = { onSlidePick(hl) },
+                onDragCancel = { },
+            )
+        }
+}
 
 @Composable
 private fun EpisodeWatchBadge(

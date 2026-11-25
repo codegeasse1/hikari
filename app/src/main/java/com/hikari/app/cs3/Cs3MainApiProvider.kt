@@ -273,6 +273,18 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider,
                 val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
                 val a = apis.getOrNull(index)?.also { normalizeMainUrl(it) }
                 if (a != null) {
+                    // Clone-site: point this copy at the user's new domain
+                    // (see CloneHosts). The extension builds every request
+                    // from mainUrl, so a domain move heals here.
+                    runCatching {
+                        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { main ->
+                            if (a.mainUrl.trimEnd('/') != main.trimEnd('/')) {
+                                com.hikari.app.data.CloneHosts.applyCs3MainUrl(a, main)
+                            }
+                        }
+                    }
+                }
+                if (a != null) {
                     loadedApi = a
                     apiResolved = true
                 }

@@ -3676,6 +3676,9 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     var folderHistory by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var allReposOpen by rememberSaveable { mutableStateOf(false) }
     var installedOpen by rememberSaveable { mutableStateOf(false) }
+    // Clone-site flow: pick an installed extension, then edit its domains.
+    var clonePickOpen by rememberSaveable { mutableStateOf(false) }
+    var cloneEditId by rememberSaveable { mutableStateOf<String?>(null) }
     var showStremio by remember { mutableStateOf(false) }
     var showIptv by remember { mutableStateOf(false) }
     var iptvUrl by remember { mutableStateOf("") }
@@ -4134,6 +4137,20 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             },
             onRefreshRepo = { repo -> vm.clearStatus(); vm.refreshRepo(repo) },
         )
+        cloneEditId != null && providers.any { it.config.id == cloneEditId } -> CloneEditScreen(
+            orig = providers.first { it.config.id == cloneEditId }.config,
+            onSaved = {
+                cloneEditId = null
+                clonePickOpen = false
+                vm.setSuccess("Clone installed — find it under Cloned")
+            },
+            onBack = { cloneEditId = null },
+        )
+        clonePickOpen || cloneEditId != null -> ClonePickScreen(
+            providers = providers,
+            onPick = { cfg -> cloneEditId = cfg.id },
+            onBack = { clonePickOpen = false; cloneEditId = null; vm.clearStatus() },
+        )
         installedOpen -> InstalledExtensionsView(
             providers = providers,
             testStatus = tests,
@@ -4153,6 +4170,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             onOpenSettings = { prov -> openProviderSettings(prov) },
             reinstallFor = { p -> vm.reinstallProvider(p) },
             onRepairAllMissing = { vm.repairMissingExtensions() },
+            onCloneSite = { clonePickOpen = true; vm.clearStatus() },
         )
         sourcesOpen -> SourcesOverviewView(
             repos = repos,
@@ -9276,6 +9294,8 @@ private fun InstalledExtensionsView(
     reinstallFor: ((ContentProvider) -> Unit)? = null,
     /** Repairs every missing-file extension at once. Null hides the button. */
     onRepairAllMissing: (() -> Unit)? = null,
+    /** Opens the Clone-site picker (see ClonePickScreen). */
+    onCloneSite: () -> Unit = {},
     testStatus: Map<String, ProviderTest> = emptyMap(),
     onTest: (String) -> Unit = {},
 ) {
@@ -9322,6 +9342,15 @@ private fun InstalledExtensionsView(
                     Spacer(Modifier.width(4.dp))
                     Text(tr("Repair all"))
                 }
+            }
+            TextButton(onClick = onCloneSite) {
+                Icon(
+                    Icons.Filled.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(tr("Clone site"))
             }
         }
         HorizontalDivider()

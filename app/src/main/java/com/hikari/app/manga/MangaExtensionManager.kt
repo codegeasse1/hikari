@@ -383,6 +383,8 @@ object MangaExtensionManager {
     private val iconCache = ConcurrentHashMap<String, String>()
 
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         siteCache[config.id]?.let { return it }
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return null
         // Bundled Kotatsu parsers have no .ext file — their site root is the

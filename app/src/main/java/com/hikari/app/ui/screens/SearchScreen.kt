@@ -627,6 +627,8 @@ fun SearchScreen(
         }
     var showProviders by remember { mutableStateOf(false) }
     var providerKind by remember { mutableStateOf<ProviderType?>(null) }
+    // Cloned-only view for the Select Provider sheet (see the "Cloned" chip).
+    var providerClonesOnly by remember { mutableStateOf(false) }
         GlassSearchField(
             value = query,
             onValueChange = { vm.setQuery(it); translatedFrom = null; suggestOpen = true },
@@ -787,6 +789,8 @@ fun SearchScreen(
                         selection = selected.toList(),
                         filter = providerKind,
                         onFilter = { providerKind = it },
+                        clonesOnly = providerClonesOnly,
+                        onClonesOnly = { providerClonesOnly = it },
                         onManageCollections = {
                             showProviders = false
                             Routes.safeNavigate(nav, Routes.COLLECTIONS)

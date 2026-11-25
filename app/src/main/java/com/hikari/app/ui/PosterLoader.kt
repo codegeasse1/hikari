@@ -73,7 +73,9 @@ object PosterLoader {
             ) { "blank posterUrl from provider (no art to fetch)" }
             return null
         }
-        val u = normalize(url) ?: return null
+        val raw = normalize(url) ?: return null
+        // Clone-site host moves (see CloneHosts): stale cached art keeps loading.
+        val u = com.hikari.app.data.CloneHosts.rewriteGlobal(raw) ?: raw
         if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) {
             // Plain remote poster: the fetch census. If these lines exist but
             // no Image/refused lines follow, Coil either never fired or got a

@@ -1,4 +1,12 @@
 
+## 0.12.158
+
+- Details header gets a Title artwork toggle above the size slider — turn the title logo art off and the page shows a plain text title instead
+- Press-hold any episode for half a second for a small Watched / Watching tile — slide up or down and lift to mark, works on list rows, poster grids and big cards, and changes auto-marked episodes too
+- Clone site in Extensions → Installed extensions: pick any installed extension from the searchable list, set a new name and replacement domains, and the clone appears as its own extension with the same code and your new domains (original untouched)
+- New Cloned section in Select Provider next to Hikari, CloudStream and Nuvio — every clone lives there for direct picking
+- Provider chips are movable now: press-hold any chip for half a second, drag it anywhere and drop — the order saves and stays
+
 ## 0.12.157
 
 - Episode thumbnails now actually land: anime and donghua are no longer skipped, and rows where the provider stamped the same poster on every episode prefer the real per-episode still instead

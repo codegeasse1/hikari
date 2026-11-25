@@ -71,10 +71,11 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         }
 
         fun isImageMode(config: ProviderConfig): Boolean =
-            !imageSelectorFor(config.extra).isNullOrBlank()
+            !imageSelectorFor(com.hikari.app.data.CloneHosts.effectiveExtra(config)).isNullOrBlank()
     }
 
-    private val conf = runCatching { JSONObject(config.extra ?: "{}") }.getOrDefault(JSONObject())
+    // Clone-site: read the original's config (see CloneHosts).
+    private val conf = runCatching { JSONObject(com.hikari.app.data.CloneHosts.effectiveExtra(config) ?: "{}") }.getOrDefault(JSONObject())
     private val api = conf.optJSONObject("api")
     private val base: String get() = conf.optString("baseUrl").trimEnd('/')
     private var homeJson: JSONObject? = null

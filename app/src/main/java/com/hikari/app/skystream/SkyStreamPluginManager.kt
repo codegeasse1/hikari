@@ -333,8 +333,11 @@ object SkyStreamPluginManager {
         config.type == ProviderType.SKYSTREAM &&
             (config.url.isBlank() || !File(config.url).exists())
 
-    fun siteUrlOf(config: ProviderConfig): String? =
-        siteUrlOf(scriptFile(HikariApp.instance, packageOf(config.id)))
+    fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
+        return siteUrlOf(scriptFile(HikariApp.instance, packageOf(config.id)))
+    }
 
     fun siteUrlOf(scriptFile: File): String? {
         val o = manifestOf(scriptFile) ?: return null

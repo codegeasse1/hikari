@@ -897,6 +897,8 @@ object AniyomiExtensionManager {
         extensionOf(context, file)?.sources?.getOrNull(index)
 
     fun siteUrlOf(config: ProviderConfig): String? {
+        // Clone-site: the user's new domain wins (see CloneHosts).
+        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { return it }
         siteCache[config.id]?.let { return it }
         if (Looper.myLooper() == Looper.getMainLooper()) return null
         val url = runCatching {
