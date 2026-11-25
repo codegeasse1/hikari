@@ -353,6 +353,15 @@ class HikariApp : Application() {
                         store.setDiscoveryRowsReset155(true)
                     }
                 }
+                // 0.12.156: featured banner goes to Immersive 2 for everyone
+                // on update — even users on other styles. Runs once; they can
+                // pick another style afterwards, fresh installs start here.
+                if (!store.heroStyleSeeded156()) {
+                    runCatching {
+                        store.setHeroStyle(com.hikari.app.ui.components.HeroStyles.IMMERSIVE2)
+                        store.setHeroStyleSeeded156(true)
+                    }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 store.tvModeFlow().distinctUntilChanged().collect { current ->

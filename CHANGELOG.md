@@ -1,4 +1,10 @@
 
+## 0.12.156
+
+- Every episode row now shows its own thumbnail, rating and overview for all extensions, and episode art is a wide rectangle instead of a square — numbering, order and playback untouched
+- Featured banner switches to Immersive 2 for everyone on this update (pick another style in Settings → App layout if you want)
+- Recommendations source fixed: Original plugin shows a Recommended row from the same extension only, TMDB shows Related + Similar, TMDB + plugin shows all three
+
 ## 0.12.155
 
 - Double-tap left/right skips 10s even while the player buttons are showing (double-tap middle plays/pauses, single tap still shows/hides)

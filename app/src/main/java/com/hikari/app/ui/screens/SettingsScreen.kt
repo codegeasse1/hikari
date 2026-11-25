@@ -4946,9 +4946,9 @@ private fun Cs3RecommendationsCard(app: HikariApp) {
         icon = Icons.Filled.ViewModule,
         title = tr("Recommendations source"),
         summary = when (source) {
-            "tmdb" -> tr("CloudStream titles: TMDB recommendations")
-            "both" -> tr("CloudStream titles: TMDB plus the plugin's own")
-            else -> tr("CloudStream titles: the plugin's own recommendations")
+            "tmdb" -> tr("Extension titles: TMDB recommendations")
+            "both" -> tr("Extension titles: TMDB plus the extension's own")
+            else -> tr("Extension titles: the extension's own recommendations")
         },
     ) {
         Row(
@@ -4967,7 +4967,7 @@ private fun Cs3RecommendationsCard(app: HikariApp) {
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    tr("Show the recommendations the CloudStream plugin returns, like the CloudStream app. TMDB is used only when the plugin has none"),
+                    tr("Show the recommendations the extension itself returns, from the same extension only. TMDB is used only when the extension has none"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

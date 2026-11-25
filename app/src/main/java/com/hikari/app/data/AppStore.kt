@@ -587,6 +587,9 @@ class AppStore(private val ctx: Context) {
         /** One-time migration for the new player UI defaults. User choices are preserved. */
         val PLAYER_UI_DEFAULTS_SEEDED = booleanPreferencesKey("playerUiDefaultsSeeded")
         val PLAYER_HIKARI_DEFAULTS_SEEDED = booleanPreferencesKey("playerHikariDefaultsSeeded")
+        /** One-time switch of every install's featured banner to Immersive 2
+         *  (0.12.156): runs once, users can pick another style after. */
+        val HERO_STYLE_SEEDED_156 = booleanPreferencesKey("heroStyleSeeded156")
         val TV_POSTER_SCALE = intPreferencesKey("tvPosterScale")
         val TV_DETAIL_BIG = booleanPreferencesKey("tvDetailBig")
         val TV_DETAIL_BIG_CHOSEN = booleanPreferencesKey("tvDetailBigChosen")
@@ -628,7 +631,7 @@ class AppStore(private val ctx: Context) {
             K.TV_SEEDED.name,
             K.PLAYER_UI_DEFAULTS_SEEDED.name,
             K.PLAYER_HIKARI_DEFAULTS_SEEDED.name,
-            K.TV_POSTER_SCALE.name,
+            K.HERO_STYLE_SEEDED_156.name,            K.TV_POSTER_SCALE.name,
             K.TV_TEXT_SCALE.name,
             K.TV_DETAIL_BIG.name,
             K.TV_BLUR_DETAIL.name,
@@ -892,11 +895,11 @@ class AppStore(private val ctx: Context) {
     suspend fun trackerRecommendationsSource(): String = trackerRecommendationsSourceFlow().first()
     suspend fun setTrackerRecommendationsSource(value: String) { write("TRACKER_RECOMMENDATIONS_SOURCE") { it[K.TRACKER_RECOMMENDATIONS_SOURCE] = value } }
 
-    /** Where the detail page's recommendations come from for a CloudStream (.cs3)
-     *  title (Settings -> Customize): "plugin" = the plugin's own list (what the
-     *  CloudStream app shows), falling back to TMDB only when the plugin returns
-     *  none; "tmdb" = always TMDB, as before; "both" = TMDB's Related and Similar
-     *  plus a standalone Recommended row with the plugin list. Default: plugin. */
+    /** Where the detail page's recommendations come from for an extension
+     *  title (Settings -> Customize): "plugin" = the same extension's own
+     *  list, falling back to TMDB only when the extension returns none;
+     *  "tmdb" = always TMDB, as before; "both" = TMDB's Related and Similar
+     *  plus a standalone Recommended row with the extension list. Default: plugin. */
     fun cs3RecommendationsSourceFlow(): Flow<String> =
         store.data.map {
             when (it[K.CS3_RECOMMENDATIONS_SOURCE]) {
@@ -1075,7 +1078,7 @@ class AppStore(private val ctx: Context) {
         val DEFAULT_POSTER_EFFECTS: Set<String> = emptySet()
 
         /** Home's featured banner shape ([HeroStyles]). */
-        const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
+        const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.IMMERSIVE2
         /** 100% = the size the featured banner has always been drawn at. */
         const val DEFAULT_HERO_SCALE = 100
 
@@ -1917,6 +1920,14 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setPlayerHikariDefaultsSeeded(seeded: Boolean) {
         write("PLAYER_HIKARI_DEFAULTS_SEEDED") { it[K.PLAYER_HIKARI_DEFAULTS_SEEDED] = seeded }
+    }
+
+    /** One-time Immersive 2 banner switch (0.12.156). */
+    suspend fun heroStyleSeeded156(): Boolean =
+        store.data.map { it[K.HERO_STYLE_SEEDED_156] ?: false }.first()
+
+    suspend fun setHeroStyleSeeded156(seeded: Boolean) {
+        write("HERO_STYLE_SEEDED_156") { it[K.HERO_STYLE_SEEDED_156] = seeded }
     }
 
     suspend fun setTvSeeded(seeded: Boolean) {

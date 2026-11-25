@@ -234,6 +234,43 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+/** Same-extension recommendations for ANY provider, not just CloudStream:
+ *  the site's own list when it ships one (CS3's LoadResponse), otherwise the
+ *  extension's own catalogue matched by the title's keywords, then its
+ *  Popular rail. Items are ordinary catalogue rows of that same extension,
+ *  so they open straight into their own page. Display only. */
+private suspend fun providerRecommendations(
+    provider: com.hikari.app.providers.ContentProvider?,
+    item: MediaItem,
+): List<MediaItem> {
+    if (provider == null) return emptyList()
+    (provider as? com.hikari.app.cs3.Cs3MainApiProvider)?.let {
+        return runCatching { it.getRecommendations(item) }.getOrDefault(emptyList())
+    }
+    val self = item.id
+    val words = item.searchTitle
+        .split(Regex("[^\\p{L}\\p{N}]+"))
+        .map { it.trim() }
+        .filter { it.length >= 4 }
+        .distinct()
+    val query = words.take(4).joinToString(" ").ifBlank { item.searchTitle.trim() }
+    if (query.isNotBlank() && query.length >= 3) {
+        val hits = runCatching { provider.search(query, 1) }.getOrDefault(emptyList())
+            .filter { it.id != self }
+            .distinctBy { it.id }
+            .take(18)
+        if (hits.isNotEmpty()) return hits
+    }
+    return runCatching {
+        val refs = provider.catalogs()
+        val pop = refs.firstOrNull { it.id == "popular" } ?: refs.firstOrNull()
+        pop?.let { provider.getCatalog(it, 1) }.orEmpty()
+    }.getOrDefault(emptyList())
+        .filter { it.id != self }
+        .distinctBy { it.id }
+        .take(18)
+}
+
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
@@ -581,14 +618,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _similar = MutableStateFlow<List<MediaItem>>(emptyList())
     val similar: StateFlow<List<MediaItem>> = _similar.asStateFlow()
 
-    /** True when [related] holds the CloudStream plugin's OWN recommendations
+    /** True when [related] holds the extension's OWN recommendations
      *  (Settings -> Customize -> Recommendations source) rather than TMDB's. */
     private val _relatedFromPlugin = MutableStateFlow(false)
     val relatedFromPlugin: StateFlow<Boolean> = _relatedFromPlugin.asStateFlow()
 
-    /** The plugin's OWN recommendations as a standalone row (Settings ->
+    /** The extension's OWN recommendations as a standalone row (Settings ->
      *  Customize -> Recommendations source = "TMDB + plugin"): TMDB's
-     *  Related/Similar stay untouched and the plugin list renders under
+     *  Related/Similar stay untouched and the extension list renders under
      *  "Recommended". Empty unless the combined source is on and the plugin
      *  returned titles the TMDB lists don't already cover. */
     private val _recommended = MutableStateFlow<List<MediaItem>>(emptyList())
@@ -1301,23 +1338,23 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val resolved = if (tmdbOk) runCatching {
                 com.hikari.app.data.MetaSources.resolveForShelves(item, docs)
             }.getOrNull() else null
-            // CloudStream (.cs3) titles: "plugin" shows the plugin's OWN
-            // recommendations in the Related row; "tmdb" always shows TMDB's
-            // Related/Similar; "both" (TMDB + plugin) shows TMDB's Related and
-            // Similar plus a standalone Recommended row with the plugin list.
-            // TMDB fills in whenever the plugin row is not used. The first
-            // (nav-args) pass leaves the plugin shelf to the second one: the
-            // plugin's load() response is cached by then, so the site is not
-            // asked twice — except in "both" mode, where the TMDB shelves
-            // still load on every pass.
+            // Any extension's OWN recommendations in the Related row when
+            // "plugin" is picked; "tmdb" always shows TMDB's Related/Similar;
+            // "both" (TMDB + plugin) shows TMDB's Related and Similar plus a
+            // standalone Recommended row with the extension's own list.
+            // TMDB fills in whenever the extension row is not used. The first
+            // (nav-args) pass leaves the extension shelf to the second one:
+            // the extension's load()/search response is cached by then, so
+            // the site is not asked twice — except in "both" mode, where the
+            // TMDB shelves still load on every pass.
             val recSrc = runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
                 .getOrDefault("plugin")
-            val cs3 = manager.byId(item.providerId) as? com.hikari.app.cs3.Cs3MainApiProvider
+            val provider = manager.byId(item.providerId)
             // Every leg below only shares `resolved`: fan them out
             // concurrently instead of awaiting each in turn, so one pass
             // costs ~the slowest leg instead of the sum (instant detail).
             // The fast plugin pass still skips the TMDB shelves entirely.
-            val skipTmdbShelves = fastPass && recSrc == "plugin" && cs3 != null
+            val skipTmdbShelves = fastPass && recSrc == "plugin" && provider != null
             val exD = async {
                 if (tmdbOk) runCatching { TmdbMeta.extras(item, resolved) }.getOrNull() else null
             }
@@ -1327,12 +1364,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val simTmdbD = if (skipTmdbShelves) null else async {
                 if (tmdbOk) runCatching { TmdbMeta.similar(item, 18, resolved) }.getOrDefault(emptyList()) else emptyList()
             }
-            val wantCs3 = cs3 != null && (recSrc == "plugin" || recSrc == "both") && !fastPass
+            val wantPlugin = provider != null && (recSrc == "plugin" || recSrc == "both") && !fastPass
             val cs3D = async {
-                val p = cs3
-                if (!wantCs3 || p == null) emptyList()
+                val p = provider
+                if (!wantPlugin || p == null) emptyList()
                 else try {
-                    withTimeoutOrNull(15_000L) { p.getRecommendations(item) }.orEmpty()
+                    withTimeoutOrNull(15_000L) { providerRecommendations(p, item) }.orEmpty()
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -3074,24 +3111,30 @@ fun DetailScreen(
     var showDlScope by remember { mutableStateOf(false) }
     val batchItem = m ?: savedItem
     val tvEpStills = remember { mutableStateMapOf<Pair<Int, Int>, String>() }
-    val tvEpMeta = remember { mutableStateMapOf<Pair<Int, Int>, Pair<String?, String?>>() }
+    // Per-episode TMDB title/overview/rating fallback for rows whose
+    // provider shipped none (TV cards + phone rows; display only).
+    val tvEpMeta = remember { mutableStateMapOf<Pair<Int, Int>, Triple<String?, String?, Double?>>() }
     val tvScreenshots = remember { mutableStateListOf<String>() }
     // Television banner owns the desktop rule: the title's own TMDB
     // backdrops (plural) rotate behind the page; provider art only when
     // TMDB has nothing, and never flashing before TMDB lands.
     val tvBgUrls = remember { mutableStateListOf<String>() }
     var tvBgIndex by remember { mutableStateOf(0) }
-    if (isTvLayout) {
+    // Episode stills feed every layout now, not just TV: the phone rows
+    // never got them, which is why every row showed the same poster art.
+    // Display only (keyed by season+number with a position fallback) —
+    // numbering, order, names and playback never change.
+    if (detailIsSeries) {
         LaunchedEffect(m?.uniqueId, sortedEps) {
             tvEpStills.clear()
             tvEpMeta.clear()
-            if (!detailIsSeries || sortedEps.isEmpty()) return@LaunchedEffect
+            if (sortedEps.isEmpty()) return@LaunchedEffect
             val data = TmdbStills.stillsDataFor(batchItem, sortedEps.map { it.season }.toSet())
             for ((season, ss) in data) {
                 for ((num, rec) in ss.byNumber) {
                     if (rec.still?.isNotBlank() == true) tvEpStills[season to num] = rec.still
-                    if (rec.name != null || rec.overview != null) {
-                        tvEpMeta[season to num] = rec.name to rec.overview
+                    if (rec.name != null || rec.overview != null || rec.rating != null) {
+                        tvEpMeta[season to num] = Triple(rec.name, rec.overview, rec.rating)
                     }
                 }
             }
@@ -3104,12 +3147,15 @@ fun DetailScreen(
                     if (!tvEpStills.containsKey(key)) {
                         rec?.still?.takeIf { it.isNotBlank() }?.let { tvEpStills[key] = it }
                     }
-                    if (!tvEpMeta.containsKey(key) && (rec?.name != null || rec?.overview != null)) {
-                        tvEpMeta[key] = rec?.name to rec?.overview
+                    if (!tvEpMeta.containsKey(key) && (rec?.name != null || rec?.overview != null || rec?.rating != null)) {
+                        tvEpMeta[key] = Triple(rec?.name, rec?.overview, rec?.rating)
                     }
                 }
             }
         }
+    }
+    // Television-only dressing below: rotating backdrops and screenshots.
+    if (isTvLayout) {
         LaunchedEffect(m?.uniqueId) {
             tvBgUrls.clear()
             tvBgIndex = 0
@@ -5787,6 +5833,8 @@ fun DetailScreen(
                                         EpisodeBigCard(
                                             ep = ep,
                                             fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                            tmdbStill = tvEpStills[ep.season to ep.number],
+                                            tmdbFirst = false,
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width(300.dp),
@@ -5810,6 +5858,7 @@ fun DetailScreen(
                                             EpisodePosterCard(
                                                 ep = ep,
                                                 fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                                tmdbStill = tvEpStills[ep.season to ep.number],
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
                                                 modifier = Modifier.weight(1f),
@@ -5828,6 +5877,9 @@ fun DetailScreen(
                                     EpisodeRow(
                                         ep,
                                         fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                        tmdbStill = tvEpStills[ep.season to ep.number],
+                                        tmdbRating = tvEpMeta[ep.season to ep.number]?.third,
+                                        tmdbOverview = tvEpMeta[ep.season to ep.number]?.second,
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
                                         sizeScale = tvEpisodeScale,
@@ -8701,9 +8753,12 @@ private fun isEpisodeUnaired(released: String?): Boolean {
 private fun EpisodeBigCard(
     ep: Episode,
     fallbackImage: String? = null,
-    /** TMDB still for this episode (TV only; desktop parity puts the still
-     *  first). Null keeps the old provider-first art. */
+    /** TMDB still for this episode (TV puts it first for desktop parity;
+     *  phones keep provider art first via [tmdbFirst]). Null keeps the old
+     *  provider-first art. */
     tmdbStill: String? = null,
+    /** TV puts the TMDB still first; phones keep provider art first. */
+    tmdbFirst: Boolean = true,
     onClick: () -> Unit,
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -8738,8 +8793,13 @@ private fun EpisodeBigCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            val thumbUrl = tmdbStill?.takeIf { it.isNotBlank() }
-                ?: ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage
+            val thumbUrl = if (tmdbFirst) {
+                tmdbStill?.takeIf { it.isNotBlank() }
+                    ?: ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage
+            } else {
+                ep.image?.takeIf { it.isNotBlank() }
+                    ?: tmdbStill?.takeIf { it.isNotBlank() } ?: fallbackImage
+            }
             // 16:9 card still: decode at card size, not full resolution (see
             // PosterLoader.cellModel) — full-size stills per card are part of
             // what makes the episode list scroll heavy.
@@ -8930,6 +8990,13 @@ private fun formatEpisodeDate(raw: String?): String? {
 private fun EpisodeRow(
     ep: Episode,
     fallbackImage: String? = null,
+    /** TMDB still/rating/overview for this episode (every extension gets
+     *  them now, phone rows included): shown only where the provider
+     *  shipped none. Display only — numbering, order, names and playback
+     *  never change. */
+    tmdbStill: String? = null,
+    tmdbRating: Double? = null,
+    tmdbOverview: String? = null,
     onClick: () -> Unit,
     /** Download this episode without watching it: the player opens on it and
      *  shows its own download chooser the moment a server is ready. Null hides
@@ -8971,13 +9038,14 @@ private fun EpisodeRow(
             .padding(horizontal = (16f * s).dp, vertical = if (glass) 12.dp else (8f * s).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
+        val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: tmdbStill?.takeIf { it.isNotBlank() } ?: fallbackImage)
         if (thumb != null) {
             AsyncImage(
                 model = thumb,
                 contentDescription = null,
                 modifier = Modifier
-                    .size((56f * s).dp)
+                    .width((100f * s).dp)
+                    .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
                     .then(if (hideSpoilers) Modifier.blur(10.dp) else Modifier),
                 contentScale = ContentScale.Crop
@@ -8985,7 +9053,8 @@ private fun EpisodeRow(
         } else {
             Box(
                 Modifier
-                    .size(56.dp)
+                    .width(100.dp)
+                    .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
                     .background(
                         if (tvRow) com.hikari.app.tv.TvDesktop.SurfaceElevated
@@ -9027,7 +9096,7 @@ private fun EpisodeRow(
                 )
             }
             val ratedLine = buildString {
-                ep.rating?.takeIf { it > 0.0 }?.let {
+                (ep.rating?.takeIf { it > 0.0 } ?: tmdbRating?.takeIf { it > 0.0 })?.let {
                     append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
                 }
                 ep.runtime?.takeIf { it > 0 }?.let {
@@ -9056,9 +9125,10 @@ private fun EpisodeRow(
                 )
             }
             val showDescription = HikariApp.instance.store.episodeDescriptionFlow().collectAsState(initial = true).value
-            if (showDescription && (!ep.overview.isNullOrBlank() || hideSpoilers)) {
+            val tmdbOv = tmdbOverview?.takeIf { it.isNotBlank() }
+            if (showDescription && (!ep.overview.isNullOrBlank() || tmdbOv != null || hideSpoilers)) {
                 Text(
-                    if (hideSpoilers) tr("Hidden to avoid spoilers") else ep.overview!!.trim(),
+                    if (hideSpoilers) tr("Hidden to avoid spoilers") else (ep.overview?.takeIf { it.isNotBlank() } ?: tmdbOv!!).trim(),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = (MaterialTheme.typography.bodySmall.fontSize.value * s).sp
                     ),

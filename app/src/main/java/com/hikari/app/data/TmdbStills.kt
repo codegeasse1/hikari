@@ -11,14 +11,17 @@ object TmdbStills {
 
     private const val IMG_STILL = "https://image.tmdb.org/t/p/w780"
 
-    /** One TMDB episode: its still plus the title/overview the detail page
-     *  falls back to when the provider shipped none (see TvCs3EpisodeCard).
-     *  [still] is null where TMDB has no still — the position fallback fills
-     *  those from the episode's POSITION, like the desktop client. */
+    /** One TMDB episode: its still plus the title/overview/rating the
+     *  detail page falls back to when the provider shipped none (see
+     *  TvCs3EpisodeCard and EpisodeRow). [still] is null where TMDB has no
+     *  still — the position fallback fills those from the episode's
+     *  POSITION, like the desktop client. Display only: numbering, order
+     *  and playback never change. */
     data class EpisodeStill(
         val still: String? = null,
         val name: String? = null,
         val overview: String? = null,
+        val rating: Double? = null,
     )
 
     /** One season's stills: [byNumber] for direct hits, [ordered] (TMDB order,
@@ -36,7 +39,11 @@ object TmdbStills {
      */
     suspend fun stillsDataFor(item: MediaItem, seasons: Set<Int>): Map<Int, SeasonStills> =
         runCatching {
-            if (item.type != MediaType.SERIES || seasons.isEmpty()) return emptyMap()
+            // Aniyomi rows correct UNKNOWN to SERIES once the list lands, but
+            // the stills fetch keys off the same pass — accept both so anime
+            // and donghua rows get stills like every other extension.
+            if (item.type != MediaType.SERIES && item.type != MediaType.UNKNOWN) return emptyMap()
+            if (seasons.isEmpty()) return emptyMap()
             if (DonghuaDetails.pick(item) is DonghuaDetails.Pick.Anime) return emptyMap()
             val resolved = TmdbResolver.resolve(item) ?: return emptyMap()
             if (resolved.mediaType == "movie") return emptyMap()
@@ -79,6 +86,7 @@ object TmdbStills {
                         .takeIf { it.isNotBlank() && it != "null" },
                     overview = e.optString("overview").trim()
                         .takeIf { it.isNotBlank() && it != "null" },
+                    rating = e.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
                 )
                 ordered.add(rec)
                 if (en > 0 && (rec.still != null || rec.name != null || rec.overview != null)) {
