@@ -3100,10 +3100,11 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
         }
     }.getOrNull()
     ProviderType.CS3 -> runCatching {
+        com.hikari.app.data.CloneHosts.mainOverride(p.config)?.let { return@runCatching it }
         val file = java.io.File(p.config.url); if (!file.exists()) return@runCatching null
         val apis = com.hikari.app.cs3.Cs3PluginManager.apisFor(com.hikari.app.HikariApp.instance, file)
         apis.getOrNull(p.config.id.substringAfterLast("|").toIntOrNull() ?: 0)?.mainUrl?.takeIf { it.startsWith("http") }
-    }.getOrNull()
+    }.getOrNull()?.let { com.hikari.app.data.CloneHosts.rewriteGlobal(it) ?: it }
     else -> null
 }
 
@@ -3123,9 +3124,15 @@ internal fun webUrlRootOf(raw: String?): String? =
 
 internal fun webUrlChain(p: ContentProvider, vararg itemUrls: String?): String? {
     for (u in itemUrls) {
-        u?.trim()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let { return it }
+        u?.trim()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let {
+            com.hikari.app.data.CloneHosts.rewriteGlobal(it)?.let { rw -> return rw }
+            return it
+        }
     }
-    runCatching { webUrlFor(p) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+    runCatching { webUrlFor(p) }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
+        com.hikari.app.data.CloneHosts.rewriteGlobal(it)?.let { rw -> return rw }
+        return it
+    }
     webUrlRootOf(p.config.url)?.let { return it }
     webUrlRootOf(p.config.extra)?.takeIf { !isScriptArtifactUrl(it) }?.let { return it }
     return null

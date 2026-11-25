@@ -75,6 +75,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
@@ -840,6 +841,14 @@ fun SettingsScreen(nav: NavHostController) {
                     item {
                         SettingsCard(top = 2.dp) {
                             ExtensionsShortcutCard(installedProviders.size) {
+                                Routes.navigateTab(nav, Routes.EXTENSIONS)
+                            }
+                        }
+                    }
+                    item {
+                        SettingsCard {
+                            CloneSiteShortcutCard {
+                                app.clonePickerRequest.value += 1
                                 Routes.navigateTab(nav, Routes.EXTENSIONS)
                             }
                         }
@@ -1670,6 +1679,54 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
                     } else {
                         "Browse repos and install .hiki / CloudStream extensions."
                     },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .clip(GlassShape)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CloneSiteShortcutCard(onOpen: () -> Unit) {
+    GlassCard(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SettingsThemeTile(Icons.Filled.ContentCopy, "Clone", 44.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Clone site"),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(3.dp))
+                if (!LocalHideHelp.current) {
+                Text(
+                    "Moved domain? Clone an extension with its new domain.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

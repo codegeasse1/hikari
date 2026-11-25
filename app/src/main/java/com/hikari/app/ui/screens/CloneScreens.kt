@@ -12,14 +12,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,7 +30,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,6 +48,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.i18n.tr
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -115,7 +114,10 @@ fun ClonePickScreen(
         LazyColumn(
             state = rememberLazyListState(),
             modifier = Modifier.fillMaxWidth().weight(1f),
-            contentPadding = PaddingValues(bottom = 24.dp),
+            contentPadding = PaddingValues(
+                start = 0.dp, end = 0.dp, top = 0.dp,
+                bottom = LocalTaskbarInset.current + 24.dp,
+            ),
         ) {
             items(rows, key = { it.config.id }) { p ->
                 Surface(
@@ -158,8 +160,8 @@ fun ClonePickScreen(
     }
 }
 
-/** Edit a clone: new name + per-domain overrides. Every row defaults to
- *  "keep as it is" (new == old); only changed rows are stored. */
+/** Clone edit: new name + ONE new-domain field. The old domain is detected
+ *  automatically and never asked — the user cannot know it. */
 @Composable
 fun CloneEditScreen(
     orig: ProviderConfig,
@@ -170,20 +172,19 @@ fun CloneEditScreen(
     var name by remember(orig.id) { mutableStateOf(orig.name + " Clone") }
     var loading by remember(orig.id) { mutableStateOf(true) }
     var mainOld by remember(orig.id) { mutableStateOf<String?>(null) }
-    var mainNew by remember(orig.id) { mutableStateOf("") }
-    var rows by remember(orig.id) { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var extraOld by remember(orig.id) { mutableStateOf("") }
-    var extraNew by remember(orig.id) { mutableStateOf("") }
+    var newDomain by remember(orig.id) { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(orig.id) {
         loading = true
-        val (main, rest) = withContext(Dispatchers.IO) { detectCloneDomains(orig) }
-        mainOld = main
-        mainNew = main.orEmpty()
-        rows = rest.map { it to it }
+        mainOld = withContext(Dispatchers.IO) { detectCloneMain(orig) }
         loading = false
     }
+
+    val newHost = CloneHosts.hostOf(newDomain)
+    val oldHost = CloneHosts.hostOf(mainOld)
+    val canSave = name.isNotBlank() && !saving && !loading &&
+        !newHost.isNullOrBlank() && !oldHost.isNullOrBlank() && newHost != oldHost
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -235,70 +236,58 @@ fun CloneEditScreen(
                 }
             } else {
                 item {
-                    Text(
-                        tr("Domains — leave unchanged to keep as is"),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                if (mainOld != null) {
-                    item {
-                        DomainRow(
-                            oldHost = mainOld.orEmpty(),
-                            newHost = mainNew,
-                            onNewChange = { mainNew = CloneHosts.sanitizeDomain(it) },
-                            main = true,
-                            onRemove = null,
+                    if (oldHost.isNullOrBlank()) {
+                        Text(
+                            tr("Could not detect this extension's current domain — try opening it once, then come back."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        Text(
+                            tr("Current domain: ") + oldHost,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-                items(rows, key = { "ex-" + it.first }) { (old, new) ->
-                    DomainRow(
-                        oldHost = old,
-                        newHost = new,
-                        onNewChange = { nv ->
-                            rows = rows.map { r -> if (r.first == old) r.first to CloneHosts.sanitizeDomain(nv) else r }
-                        },
-                        main = false,
-                        onRemove = { rows = rows.filterNot { r -> r.first == old } },
-                    )
-                }
                 item {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = extraOld,
-                            onValueChange = { extraOld = CloneHosts.sanitizeDomain(it) },
-                            singleLine = true,
-                            label = { Text(tr("Old domain")) },
-                            modifier = Modifier.weight(1f),
+                    OutlinedTextField(
+                        value = newDomain,
+                        onValueChange = { newDomain = CloneHosts.sanitizeDomain(it) },
+                        singleLine = true,
+                        label = { Text(tr("New domain")) },
+                        placeholder = { Text(tr("e.g. 123av.com")) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    if (!oldHost.isNullOrBlank() && !newHost.isNullOrBlank() && newHost != oldHost) {
+                        Text(
+                            tr("This clone will load from ") + newHost + tr(" instead of ") + oldHost,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedTextField(
-                            value = extraNew,
-                            onValueChange = { extraNew = CloneHosts.sanitizeDomain(it) },
-                            singleLine = true,
-                            label = { Text(tr("New domain")) },
-                            modifier = Modifier.weight(1f),
+                    } else {
+                        Text(
+                            tr("Enter the site's new domain — everything (list, details, play, web view) moves over automatically."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        IconButton(
-                            onClick = {
-                                val o = CloneHosts.sanitizeDomain(extraOld)
-                                val n = CloneHosts.sanitizeDomain(extraNew)
-                                if (o.isNotBlank() && n.isNotBlank() && rows.none { it.first == o }) {
-                                    rows = rows + (o to n)
-                                    extraOld = ""
-                                    extraNew = ""
-                                }
-                            },
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = tr("Add domain"))
-                        }
                     }
                 }
             }
         }
+        // Action row sits above the floating taskbar + system nav so Save is
+        // always visible and tappable (was hidden behind the bar).
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 12.dp,
+                    bottom = 12.dp + LocalTaskbarInset.current,
+                ),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f)) {
@@ -306,18 +295,18 @@ fun CloneEditScreen(
             }
             Button(
                 onClick = {
-                    if (saving || name.isBlank()) return@Button
+                    if (!canSave) return@Button
                     scope.launch {
                         saving = true
                         try {
-                            saveClone(orig, name.trim(), mainOld, mainNew, rows)
+                            saveClone(orig, name.trim(), mainOld, newDomain)
                             onSaved()
                         } finally {
                             saving = false
                         }
                     }
                 },
-                enabled = name.isNotBlank() && !saving && !loading,
+                enabled = canSave,
                 modifier = Modifier.weight(1f),
             ) {
                 Text(if (saving) tr("Saving…") else tr("Save clone"))
@@ -326,49 +315,12 @@ fun CloneEditScreen(
     }
 }
 
-@Composable
-private fun DomainRow(
-    oldHost: String,
-    newHost: String,
-    onNewChange: (String) -> Unit,
-    main: Boolean,
-    onRemove: (() -> Unit)?,
-) {
-    Column(Modifier.fillMaxWidth()) {
-        Text(
-            (if (main) tr("Main site: ") else tr("Host: ")) + oldHost,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = newHost,
-                onValueChange = onNewChange,
-                singleLine = true,
-                label = { Text(if (main) tr("New main domain") else tr("New domain")) },
-                modifier = Modifier.weight(1f),
-            )
-            if (onRemove != null) {
-                IconButton(onClick = onRemove) {
-                    Icon(Icons.Filled.Delete, contentDescription = tr("Remove"))
-                }
-            }
-        }
-        if (newHost.isBlank() || newHost == oldHost) {
-            Text(
-                tr("Keep as it is"),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-    }
-}
-
-/** Main site host + extra hosts found in an installed extension. IO-bound. */
-private suspend fun detectCloneDomains(orig: ProviderConfig): Pair<String?, List<String>> {
+/** Current main-site host of an installed extension. IO-bound — never call
+ *  on the main thread (CS3 plugin load asserts a background thread). */
+private suspend fun detectCloneMain(orig: ProviderConfig): String? {
     return withContext(Dispatchers.IO) {
-        val helperMain = runCatching {
-            val url = when (orig.type) {
+        val helper = runCatching {
+            val url: String? = when (orig.type) {
                 ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA ->
                     com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(orig)
                 ProviderType.ANIYOMI ->
@@ -381,13 +333,27 @@ private suspend fun detectCloneDomains(orig: ProviderConfig): Pair<String?, List
                     com.hikari.app.zangetsu.ZangetsuPluginManager.siteUrlOf(orig)
                 ProviderType.MANGA ->
                     com.hikari.app.manga.MangaExtensionManager.siteUrlOf(orig)
+                ProviderType.HIKARI ->
+                    runCatching { com.hikari.app.hiki.HikariRuntime.providerFor(orig)?.mainUrl }.getOrNull()
+                ProviderType.CS3 -> {
+                    val file = java.io.File(orig.url)
+                    if (!file.exists()) null
+                    else {
+                        val idx = orig.id.substringAfterLast("|").toIntOrNull() ?: 0
+                        val apis = com.hikari.app.cs3.Cs3PluginManager.apisFor(
+                            com.hikari.app.HikariApp.instance, file,
+                        )
+                        apis.getOrNull(idx)?.mainUrl
+                    }
+                }
                 else -> null
             }
             CloneHosts.hostOf(url)
         }.getOrNull()
-        val scanned = runCatching {
+        if (!helper.isNullOrBlank()) return@withContext helper
+        runCatching {
             val f = java.io.File(orig.url)
-            if (!f.isFile) return@runCatching emptyList()
+            if (!f.isFile) return@runCatching null
             val cap = 262144
             val buf = ByteArray(cap)
             var total = 0
@@ -398,12 +364,9 @@ private suspend fun detectCloneDomains(orig: ProviderConfig): Pair<String?, List
                     total += n
                 }
             }
-            if (total <= 0) emptyList()
-            else CloneHosts.extractHosts(String(buf, 0, total, Charsets.UTF_8))
-        }.getOrDefault(emptyList())
-        val main = helperMain ?: scanned.firstOrNull()
-        val rest = scanned.filter { it != main }.distinct()
-        main to rest
+            if (total <= 0) null
+            else CloneHosts.extractHosts(String(buf, 0, total, Charsets.UTF_8)).firstOrNull()
+        }.getOrNull()
     }
 }
 
@@ -411,23 +374,14 @@ private suspend fun saveClone(
     orig: ProviderConfig,
     name: String,
     mainOld: String?,
-    mainNewRaw: String,
-    rows: List<Pair<String, String>>,
+    newDomainRaw: String,
 ) {
     val app = HikariApp.instance
-    val mainNewHost = CloneHosts.hostOf(mainNewRaw)
-    val mainOldHost = CloneHosts.hostOf(mainOld)
-    val hosts = LinkedHashMap<String, String>()
-    if (!mainOldHost.isNullOrBlank() && !mainNewHost.isNullOrBlank() && mainOldHost != mainNewHost) {
-        hosts[mainOldHost] = mainNewHost
-    }
-    for ((o0, n0) in rows) {
-        val o = CloneHosts.hostOf(o0) ?: o0.trim().lowercase()
-        val n = CloneHosts.hostOf(n0) ?: n0.trim().lowercase()
-        if (o.isNotBlank() && n.isNotBlank() && o != n) hosts[o] = n
-    }
-    val mainFull = mainNewHost?.takeIf { it.isNotBlank() }?.let { "https://$it/" }
-    val extra = CloneHosts.makeExtra(orig.id, mainFull, hosts, orig.extra)
+    val newHost = CloneHosts.hostOf(newDomainRaw)
+    val oldHost = CloneHosts.hostOf(mainOld)
+    if (newHost.isNullOrBlank() || oldHost.isNullOrBlank() || newHost == oldHost) return
+    val mainFull = "https://$newHost/"
+    val extra = CloneHosts.makeExtra(orig.id, oldHost, mainFull, emptyMap(), orig.extra)
     val id = CloneHosts.makeId(orig.id, name)
     val clean = name.trim().ifBlank { orig.name + " Clone" }
     withContext(Dispatchers.IO) {

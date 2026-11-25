@@ -17,6 +17,7 @@ object CloneHosts {
      *  config is not a clone. */
     data class CloneInfo(
         val origId: String,
+        val mainOld: String?,
         val mainNew: String?,
         val hosts: Map<String, String>,
         val origExtra: String?,
@@ -38,7 +39,9 @@ object CloneHosts {
             }
             CloneInfo(
                 origId = orig,
-                mainNew = o.optString("main").takeIf { it.isNotBlank() },
+                mainOld = o.optString("mainOld").takeIf { it.isNotBlank() }?.let { hostOf(it) },
+                mainNew = o.optString("main").takeIf { it.isNotBlank() }
+                    ?: o.optString("mainNew").takeIf { it.isNotBlank() },
                 hosts = hosts,
                 origExtra = o.optString("origExtra").takeIf { it.isNotBlank() },
             )
@@ -49,12 +52,20 @@ object CloneHosts {
 
     fun isClone(config: ProviderConfig): Boolean = infoOf(config) != null
 
-    /** The extra a clone stores on its own [ProviderConfig] row. */
-    fun makeExtra(origId: String, mainNew: String?, hosts: Map<String, String>, origExtra: String?): String {
+    /** The extra a clone stores on its own [ProviderConfig] row. Both hosts
+     *  are stored so the old->new pair survives without re-detection. */
+    fun makeExtra(
+        origId: String,
+        mainOld: String?,
+        mainNew: String?,
+        hosts: Map<String, String> = emptyMap(),
+        origExtra: String? = null,
+    ): String {
         val ho = org.json.JSONObject()
         for ((k, v) in hosts) ho.put(k, v)
         return org.json.JSONObject()
             .put("cloneOf", origId)
+            .put("mainOld", hostOf(mainOld).orEmpty())
             .put("main", mainNew.orEmpty())
             .put("hosts", ho)
             .put("origExtra", origExtra.orEmpty())
@@ -72,11 +83,14 @@ object CloneHosts {
         return if (m.startsWith("http")) m.trimEnd('/') + "/" else "https://$m".trimEnd('/') + "/"
     }
 
+    /** Stored old main host for a clone, or null. */
+    fun mainOldOf(config: ProviderConfig): String? = infoOf(config)?.mainOld
+
     /** Old->new host map for a clone (main pair included when known). */
     fun hostsOf(config: ProviderConfig, mainOld: String? = null): Map<String, String> {
         val info = infoOf(config) ?: return emptyMap()
         val out = LinkedHashMap<String, String>()
-        val oldH = hostOf(mainOld)
+        val oldH = hostOf(mainOld) ?: info.mainOld
         val newH = hostOf(info.mainNew)
         if (!oldH.isNullOrBlank() && !newH.isNullOrBlank() && oldH != newH) out[oldH] = newH
         for ((k, v) in info.hosts) {
@@ -100,6 +114,9 @@ object CloneHosts {
         val out = LinkedHashMap<String, String>()
         for (c in configs) {
             val info = infoOf(c) ?: continue
+            val oldH = info.mainOld
+            val newH = hostOf(info.mainNew)
+            if (!oldH.isNullOrBlank() && !newH.isNullOrBlank() && oldH != newH) out[oldH] = newH
             for ((k, v) in info.hosts) {
                 val o = hostOf(k) ?: k.trim().lowercase()
                 val n = hostOf(v) ?: v.trim().lowercase()

@@ -94,8 +94,9 @@ object Http {
         headers: Map<String, String> = emptyMap(),
         contentType: String = "application/json; charset=utf-8",
     ): Response {
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
         val builder = Request.Builder()
-            .url(url)
+            .url(eff)
             .header("User-Agent", UA)
             .post(body.toRequestBody(contentType.toMediaType()))
         headers.forEach { (k, v) -> builder.header(k, v) }
@@ -110,7 +111,8 @@ object Http {
         contentType: String = "application/json; charset=utf-8",
     ): Response {
         if (method.equals("GET", ignoreCase = true) && body == null) return get(url, headers)
-        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
+        val builder = Request.Builder().url(eff).header("User-Agent", UA)
         builder.method(
             method,
             (body ?: "").toRequestBody(contentType.toMediaType()),
@@ -136,8 +138,9 @@ object Http {
         headers: Map<String, String> = emptyMap(),
         contentType: String = "application/json; charset=utf-8",
     ): String? = try {
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
         val builder = Request.Builder()
-            .url(url)
+            .url(eff)
             .header("User-Agent", UA)
             .post(body.toRequestBody(contentType.toMediaType()))
         headers.forEach { (k, v) -> builder.header(k, v) }

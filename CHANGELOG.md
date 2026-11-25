@@ -1,4 +1,10 @@
 
+## 0.12.159
+
+- Clone site asks only for the new domain — the old one is detected automatically, and clones now actually load from the new host across lists, details, playback and web view
+- Clone save buttons sit above the taskbar so Save is always visible and tappable
+- Clone site is also in Settings → Sources & Extensions and as a Cloned site folder in Sources, opening the same searchable extension list
+
 ## 0.12.158
 
 - Details header gets a Title artwork toggle above the size slider — turn the title logo art off and the page shows a plain text title instead

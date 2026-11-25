@@ -49,6 +49,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider,
     companion object {
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+        /** True mainUrl per plugin file+index, captured before any clone
+         *  rewrite — lets original rows heal back after a clone pass. */
+        val origMain = java.util.concurrent.ConcurrentHashMap<String, String>()
+
         val videoInterceptors = ConcurrentHashMap<String, okhttp3.Interceptor>()
 
         /** The cached video interceptor for [streamUrl], if its provider declared one. */
@@ -238,6 +242,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider,
     private var loadedApi: MainAPI? = null
     @Volatile
     private var apiResolved = false
+    /** Isolated MainAPI copy for a clone row (see [api]): never the shared
+     *  cached instance, so the clone's domain cannot leak into the original. */
+    @Volatile
+    private var cloneApi: MainAPI? = null
 
     /**
      * Drops the cached plugin instance so the next call re-resolves it from
@@ -254,6 +262,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider,
     override fun resetForStall() {
         synchronized(this) {
             loadedApi = null
+            cloneApi = null
             apiResolved = false
         }
         loadCache.clear()
@@ -271,24 +280,70 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider,
                 }
                 val apis = Cs3PluginManager.apisFor(HikariApp.instance, file)
                 val index = config.id.substringAfterLast("|").toIntOrNull() ?: 0
-                val a = apis.getOrNull(index)?.also { normalizeMainUrl(it) }
-                if (a != null) {
-                    // Clone-site: point this copy at the user's new domain
-                    // (see CloneHosts). The extension builds every request
-                    // from mainUrl, so a domain move heals here.
-                    runCatching {
-                        com.hikari.app.data.CloneHosts.mainOverride(config)?.let { main ->
-                            if (a.mainUrl.trimEnd('/') != main.trimEnd('/')) {
-                                com.hikari.app.data.CloneHosts.applyCs3MainUrl(a, main)
+                val template = apis.getOrNull(index)
+                if (template != null) {
+                    // Remember the true site once so a clone's rewrite can
+                    // never leak into the original (shared cache object).
+                    val key = file.absolutePath + "|" + index
+                    origMain[key] ?: run {
+                        val cur = runCatching { template.mainUrl }.getOrNull()
+                        if (!cur.isNullOrBlank()) origMain[key] = cur
+                    }
+                    normalizeMainUrl(template)
+                    val cloneMain =
+                        com.hikari.app.data.CloneHosts.mainOverride(config)
+                    val a = if (cloneMain != null) {
+                        // Isolated copy for the clone: same provider class,
+                        // pointed at the new domain. Never mutates the
+                        // shared cached instance the original uses.
+                        cloneApi ?: run {
+                            val fresh = runCatching {
+                                val ctor = template.javaClass.getDeclaredConstructor()
+                                ctor.isAccessible = true
+                                ctor.newInstance() as MainAPI
+                            }.getOrNull() ?: template
+                            if (fresh !== template) {
+                                com.hikari.app.data.CloneHosts.applyCs3MainUrl(fresh, cloneMain)
+                                // Castle-TV id-base strip applies to clones too.
+                                normalizeMainUrl(fresh)
+                                val stillOff = runCatching { fresh.mainUrl }.getOrNull()
+                                if (stillOff != null && stillOff.trimEnd('/') != cloneMain.trimEnd('/')) {
+                                    com.hikari.app.data.CloneHosts.applyCs3MainUrl(fresh, cloneMain)
+                                }
+                                cloneApi = fresh
+                            } else {
+                                // No-arg construction failed: fall back to the
+                                // shared instance but always re-point it.
+                                com.hikari.app.data.CloneHosts.applyCs3MainUrl(template, cloneMain)
+                            }
+                            fresh
+                        }.also { existing ->
+                            // Re-point every access (process restart reuses
+                            // the instance with a stale domain).
+                            runCatching {
+                                if (existing.mainUrl.trimEnd('/') != cloneMain.trimEnd('/')) {
+                                    com.hikari.app.data.CloneHosts.applyCs3MainUrl(existing, cloneMain)
+                                }
                             }
                         }
+                    } else {
+                        // Original row: heal back if an earlier clone pass
+                        // left the shared object pointed elsewhere.
+                        val want = origMain[key]
+                        if (want != null) {
+                            runCatching {
+                                if (template.mainUrl.trimEnd('/') != want.trimEnd('/')) {
+                                    com.hikari.app.data.CloneHosts.applyCs3MainUrl(template, want)
+                                }
+                            }
+                        }
+                        template
                     }
-                }
-                if (a != null) {
                     loadedApi = a
                     apiResolved = true
+                    return a
                 }
-                return a
+                return null
             }
         }
 

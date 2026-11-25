@@ -120,6 +120,10 @@ class HikariApp : Application() {
      *  when there is none pending — the Extensions screen consumes it. */
     val repoLinkRequest = MutableStateFlow<String?>(null)
 
+    /** Bumped when Settings → Sources & Extensions asks for the Clone-site
+     *  picker; the Extensions tab consumes it by opening the same flow. */
+    val clonePickerRequest = MutableStateFlow(0)
+
     /** Bumped by [onContentLanguageChanged] whenever the language TMDB titles
      *  and overviews are fetched in changes. Screens that hold localized
      *  content watch this and rebuild (see HomeViewModel). */
