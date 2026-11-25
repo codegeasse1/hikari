@@ -345,6 +345,14 @@ class HikariApp : Application() {
                         store.setPlayerHikariDefaultsSeeded(true)
                     }
                 }
+                // 0.12.155: Discovery rows go OFF for everyone on update —
+                // even users who had them ON. Runs once; later choices stick.
+                if (!store.discoveryRowsReset155()) {
+                    runCatching {
+                        store.setDiscoveryRows(false)
+                        store.setDiscoveryRowsReset155(true)
+                    }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 store.tvModeFlow().distinctUntilChanged().collect { current ->

@@ -1,4 +1,10 @@
 
+## 0.12.155
+
+- Double-tap left/right skips 10s even while the player buttons are showing (double-tap middle plays/pauses, single tap still shows/hides)
+- This update turns Discovery rows OFF for everyone (turn them back on in Settings → Customize if you want them)
+- New Explore genres toggle in Settings → Customize: hides the genre tiles from Home only, the Search tab keeps them
+
 ## 0.12.154
 
 - Player tool rail: stays exactly where you drop it up/down (no more sliding down); if it lands on any player item it sits just below that item instead of covering it

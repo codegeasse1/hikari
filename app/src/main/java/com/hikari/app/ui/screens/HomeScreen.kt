@@ -897,6 +897,7 @@ fun HomeScreen(nav: NavHostController) {
     // Home starts straight on the first shelf), so it is one more key here.
     val tvHome = TvMode.current()
     val discoveryOn by remember { app.store.discoveryRowsFlow() }.collectAsState(initial = false)
+    val exploreGenresOn by remember { app.store.exploreGenresFlow() }.collectAsState(initial = true)
     // The catalogue flavour follows the picked extension: donghua houses
     // show donghua rows, anime houses anime rows, everything else the
     // normal movie/series rows. Unknown extensions fall back to normal.
@@ -911,7 +912,7 @@ fun HomeScreen(nav: NavHostController) {
             else -> HomeFlavour.DEFAULT
         }
     }
-    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome, selected, selection, discoveryOn) {
+    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome, selected, selection, discoveryOn, exploreGenresOn) {
         buildList {
             add("home-header")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
@@ -921,7 +922,7 @@ fun HomeScreen(nav: NavHostController) {
             if (!tvHome) {
                 add("home-streaming")
                 if (discoveryOn) add("home-discovery")
-                add("home-explore")
+                if (exploreGenresOn) add("home-explore")
             }
             collectionFolderRows.forEach { c -> add("collection-folders|${c.id}") }
             if (loading && collectionFolderRows.isEmpty()) repeat(4) { i -> add("home-shimmer|$i") }
@@ -1194,8 +1195,10 @@ fun HomeScreen(nav: NavHostController) {
                         )
                     }
                 }
-                item(key = "home-explore") {
-                    HomeExploreGenresRow(onPick = onGenrePick, onMore = { showAllExplore = true })
+                if (exploreGenresOn) {
+                    item(key = "home-explore") {
+                        HomeExploreGenresRow(onPick = onGenrePick, onMore = { showAllExplore = true })
+                    }
                 }
             }
             collectionFolderRows.forEach { c ->

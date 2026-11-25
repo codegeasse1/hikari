@@ -107,6 +107,11 @@ class AppStore(private val ctx: Context) {
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         /** Home Discovery rows (Top 10, trending, anime picks, in cinemas…). */
         val DISCOVERY_ROWS = booleanPreferencesKey("discoveryRows")
+        /** Home Explore-genres row (Settings → Customize). ON = shown. */
+        val EXPLORE_GENRES = booleanPreferencesKey("exploreGenres")
+        /** One-time reset: the 0.12.155 update turns Discovery rows OFF for
+         *  everyone who had them ON (they can turn them back on after). */
+        val DISCOVERY_ROWS_RESET_155 = booleanPreferencesKey("discoveryRowsReset155")
         val HISTORY = stringPreferencesKey("history")
         val HISTORY_PAUSED = booleanPreferencesKey("historyPaused")
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
@@ -3396,6 +3401,21 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setDiscoveryRows(enabled: Boolean) {
         write("DISCOVERY_ROWS") { it[K.DISCOVERY_ROWS] = enabled }
+    }
+
+    /** Home Explore-genres row. ON by default; the Search tab is unaffected. */
+    fun exploreGenresFlow(): Flow<Boolean> =
+        store.data.map { it[K.EXPLORE_GENRES] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun setExploreGenres(enabled: Boolean) {
+        write("EXPLORE_GENRES") { it[K.EXPLORE_GENRES] = enabled }
+    }
+
+    suspend fun discoveryRowsReset155(): Boolean =
+        store.data.map { it[K.DISCOVERY_ROWS_RESET_155] ?: false }.first()
+
+    suspend fun setDiscoveryRowsReset155(done: Boolean) {
+        write("DISCOVERY_ROWS_RESET_155") { it[K.DISCOVERY_ROWS_RESET_155] = done }
     }
 
     /** When ON the app ignores the phone's Font size AND Display size settings

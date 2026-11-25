@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -272,13 +273,30 @@ fun TestingPlayerOverlay(get: () -> TState, act: TActions) {
     BackHandler(enabled = tab != null) {
         if (subAppearance) subAppearance = false else tab = null
     }
-    val tap = Modifier.clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null,
-    ) { act.toggleControls() }
+    // Tap zones on the picture: single tap shows/hides the controls;
+    // double-tap left = -10s, right = +10s, middle = play/pause — working
+    // even while the controls are showing (a plain tap catcher eats the
+    // second tap, which is why double-tap only worked with them hidden).
+    var rootWpx by remember { mutableIntStateOf(0) }
     Box(Modifier.fillMaxSize()) {
-        // Invisible tap catcher: tapping the picture hides the controls.
-        Box(Modifier.fillMaxSize().then(tap))
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { rootWpx = it.size.width }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { act.toggleControls() },
+                        onDoubleTap = { off ->
+                            val third = rootWpx / 3f
+                            when {
+                                off.x < third -> act.back10()
+                                off.x > third * 2f -> act.fwd10()
+                                else -> act.togglePlay()
+                            }
+                        },
+                    )
+                }
+        )
         // Header: title + server · quality badge · lock, floating free on
         // the video (no bar box) with drop shadows for bright scenes.
         Row(
