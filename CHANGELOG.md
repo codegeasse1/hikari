@@ -1,8 +1,21 @@
 
 ## 0.12.162
 
-- Music Library gets playlist import: paste a public YouTube or Spotify playlist link and the songs land in Hikari as a normal playlist — Spotify tracks are matched to the same song on YouTube with a duration check, and anything not found is listed instead of playing the wrong song
-- Imported playlists play, queue, download and work offline like any playlist you made yourself
+- Fixed slow metadata loading, detail pages open much faster now
+- Added cloned site option, clone any extension to a new domain
+- Added new player UI, and the settings bar can be dragged around, just hold it for half a second
+- Added title art on/off toggle
+- Added playlist import by link in music, paste a YouTube or Spotify link and it plays
+- Added discovery rows with on/off toggle
+- Added new search tab UI
+- Fixed recommendations not showing for your own plugins
+- Added explore genres with on/off toggle
+- Added new banner style
+- Added streaming services row
+- Episode thumbnails now load from TMDB for all extensions
+- Mark episodes watched or watching manually with press-hold
+- Mark manga chapters reading or completed manually with press-hold
+- Provider chips can be moved now, hold for half a second and drag them where you want
 
 ## 0.12.161
 
