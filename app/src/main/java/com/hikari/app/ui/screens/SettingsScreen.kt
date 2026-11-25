@@ -777,6 +777,10 @@ fun SettingsScreen(nav: NavHostController) {
     // Clone site (Sources & Extensions folder) is a full page too: the
     // searchable picker plus the new-domain editor, same as the Extensions
     // tab — Back returns to Sources & Extensions, never to another tab.
+    // (tr() is composable-only, so the toast texts are read here, outside
+    // the save/delete callbacks.)
+    val cloneInstalledMsg = tr("Clone installed")
+    val cloneRemovedMsg = tr("Clone removed")
     if (cloneEditId != null && installedProviders.any { it.config.id == cloneEditId }) {
         CloneEditScreen(
             orig = installedProviders.first { it.config.id == cloneEditId }.config,
@@ -784,7 +788,7 @@ fun SettingsScreen(nav: NavHostController) {
                 cloneEditId = null
                 clonePickOpen = false
                 scope.launch { runCatching { app.providers.refresh() } }
-                Toast.makeText(context, tr("Clone installed"), Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, cloneInstalledMsg, Toast.LENGTH_SHORT).show()
             },
             onBack = { cloneEditId = null },
         )
@@ -799,7 +803,7 @@ fun SettingsScreen(nav: NavHostController) {
                 scope.launch {
                     runCatching { app.store.removeProvider(cfg.id) }
                     runCatching { app.providers.refresh() }
-                    Toast.makeText(context, tr("Clone removed"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, cloneRemovedMsg, Toast.LENGTH_SHORT).show()
                 }
             },
         )
