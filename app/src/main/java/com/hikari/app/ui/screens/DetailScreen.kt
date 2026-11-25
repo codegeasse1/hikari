@@ -5846,7 +5846,7 @@ fun DetailScreen(
                         // episode: prefer the TMDB still then, or each row
                         // keeps the identical art and the stills never show.
                         val pageSameArt = pageEps
-                            .mapNotNull { it.image?.trim().takeIf { s -> s.isNotBlank() } }
+                            .mapNotNull { it.image?.trim().takeIf { s -> !s.isNullOrBlank() } }
                             .toSet().size <= 1
                         if (episodeBigStyle) {
                             // Phone big cards ride a horizontal rail (TV
