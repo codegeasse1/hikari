@@ -1036,6 +1036,10 @@ class HikariApp : Application() {
                 .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
+                // Clone-site host moves (see CloneHosts): posters scraped
+                // from a clone's pages name the old host — request the new
+                // one. Bodies are never touched here (images are bytes).
+                .addInterceptor(com.hikari.app.data.CloneHosts.requestInterceptor())
                 .addInterceptor { chain ->
                     val req = chain.request()
                     val host = req.url.host?.lowercase() ?: ""
@@ -1186,6 +1190,10 @@ class HikariApp : Application() {
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
+                // Clone-site mirroring FIRST (see CloneHosts): the plugin's
+                // own requests move to the clone's host before Cloudflare
+                // sees them, and HTML answers mirror back.
+                .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
                 .addInterceptor(com.hikari.app.net.ExtensionCloudflareInterceptor { com.hikari.app.net.Http.UA })
                 .build()
 

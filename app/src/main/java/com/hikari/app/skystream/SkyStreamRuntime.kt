@@ -150,6 +150,10 @@ object SkyStreamRuntime {
             .followSslRedirects(true)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // Clone-site mirroring FIRST (see CloneHosts): extension requests
+            // move to the clone's host before Cloudflare sees them, and HTML
+            // answers mirror back so old-host parse patterns keep matching.
+            .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
             .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             // Some extension-repo hosts answer only via a public resolver on
             // some devices/ISPs — fall back to DNS-over-HTTPS (see DohDns).

@@ -34,6 +34,10 @@ object PlayerHttp {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
+            // Clone-site host moves (see CloneHosts): a clone's pages hand
+            // the player old-host media URLs — fetch them from the new host.
+            // Bodies are never touched here (media bytes).
+            .addInterceptor(com.hikari.app.data.CloneHosts.requestInterceptor())
             // Playback must use the same Cloudflare/session-aware path as
             // extraction. Some hosts return a playable URL only after the
             // extractor has established clearance cookies; a separate plain

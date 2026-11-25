@@ -243,6 +243,10 @@ object VegaRuntime {
                 }
             )
             .cookieJar(jar)
+            // Clone-site mirroring FIRST (see CloneHosts): extension requests
+            // move to the clone's host before Cloudflare sees them, and HTML
+            // answers mirror back so old-host parse patterns keep matching.
+            .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .dns(DohDns)
             .build()

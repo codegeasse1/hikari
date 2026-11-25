@@ -206,7 +206,9 @@ object MangaStore {
         if (mangaKey.isBlank() || chapterUrl.isBlank()) return
         val map = chapterReadMap()
         val per = map.getOrPut(mangaKey) { HashMap() }
-        if (per[chapterUrl]?.finished == true) return
+        // No finished-guard on purpose: picking Reading on an already
+        // Completed chapter must flip it back (the guard made Completed
+        // permanent — the menu closed but the badge never changed).
         per[chapterUrl] = MangaChapterRead(chapterUrl, finished = false, at = System.currentTimeMillis())
         chapterReadCache = map
         saveChapterRead(map)

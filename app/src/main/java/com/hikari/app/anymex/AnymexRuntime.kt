@@ -122,6 +122,9 @@ object AnymexRuntime {
                 }
             )
             .dns(DohDns)
+            // Clone-site mirroring (see CloneHosts): extension requests move
+            // to the clone's host and HTML answers mirror back, on any site.
+            .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .build()
     }

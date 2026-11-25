@@ -33,6 +33,9 @@ object KotatsuContext : MangaLoaderContext() {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .cookieJar(cookieJar)
+            // Clone-site mirroring FIRST (see CloneHosts): parser requests
+            // move to the clone's host and HTML answers mirror back, on any site.
+            .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .dns(DohDns)
             .build()

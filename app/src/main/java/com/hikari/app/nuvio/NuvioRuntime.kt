@@ -238,6 +238,8 @@ object NuvioRuntime {
             // sit behind an interactive Cloudflare challenge simply won't
             // resolve (they don't in nuvio either); the fetch log records the
             // challenge so it's diagnosable.
+            // Clone-site mirroring (see CloneHosts): mirrors work on any site.
+            .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
             .dns(DohDns)
             .build()
     }

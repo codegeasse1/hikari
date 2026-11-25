@@ -86,6 +86,9 @@ object HikariNet {
     /** GET and return the rendered DOM HTML by loading [url] in a real WebView. */
     suspend fun getStringRendered(url: String, timeoutMs: Long = 25_000): String? =
         withContext(Dispatchers.IO) {
+            // Clone-site host moves (see CloneHosts): a WebView is not our
+            // Http stack, so the new host is applied here at the entry point.
+            val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
             val main = Handler(Looper.getMainLooper())
             val result = AtomicReference<String?>()
             val latch = CountDownLatch(1)
@@ -146,7 +149,7 @@ object HikariNet {
                         }
                     }
                     webView = wv
-                    wv.loadUrl(url)
+                    wv.loadUrl(eff)
                     main.postDelayed({ latch.countDown() }, timeoutMs)
                 } catch (t: Throwable) {
                     latch.countDown()
@@ -160,7 +163,12 @@ object HikariNet {
                 }
                 webView = null
             }
-            result.get()
+            // The page rendered from the new host but the extension parses
+            // with old-host patterns: mirror it back (see CloneHosts).
+            val html = result.get()
+            if (html == null) null else com.hikari.app.data.CloneHosts.mirrorResponseBody(
+                url, eff, "text/html", html,
+            )
         }
 
     /** Distinguishes a WAF challenge page from real content. */
@@ -213,7 +221,17 @@ object HikariNet {
         withContext(Dispatchers.IO) {
             try {
                 com.hikari.app.net.Http.get(url, headers).use { r ->
-                    HikariResponse(r.code, r.request.url.toString(), r.body?.string())
+                    val body = r.body?.string()
+                    HikariResponse(
+                        r.code,
+                        r.request.url.toString(),
+                        body?.let {
+                            com.hikari.app.data.CloneHosts.mirrorResponseBody(
+                                url, r.request.url.toString(),
+                                r.header("Content-Type"), it,
+                            )
+                        },
+                    )
                 }
             } catch (t: Throwable) {
                 null
@@ -227,6 +245,9 @@ object HikariNet {
         timeoutMs: Long = 60_000,
         script: String? = null,
     ): List<HikariWebViewResult> = withContext(Dispatchers.IO) {
+        // Clone-site host moves (see CloneHosts): the video page lives on
+        // the new host now; the WebView must open it there.
+        val eff = com.hikari.app.data.CloneHosts.rewriteGlobal(url) ?: url
         val resolver = WebViewResolver(
             interceptUrl = capture,
             additionalUrls = additional,
@@ -234,7 +255,7 @@ object HikariNet {
             script = script,
         )
         runCatching {
-            val (fixed, extra) = resolver.resolveUsingWebView(url)
+            val (fixed, extra) = resolver.resolveUsingWebView(eff)
             buildList {
                 fixed?.let { add(it.toResult()) }
                 extra.forEach { add(it.toResult()) }

@@ -48,6 +48,10 @@ class NetworkHelper(private val context: Context) {
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(2, TimeUnit.MINUTES)
         .cache(Cache(File(context.cacheDir, "aniyomi_network_cache"), 5L * 1024 * 1024))
+        // Clone-site mirroring FIRST (see CloneHosts): extension requests
+        // move to the clone's host before anything else sees them, and HTML
+        // answers mirror back so old-host parse patterns keep matching.
+        .addInterceptor(com.hikari.app.data.CloneHosts.mirrorInterceptor())
         .addInterceptor(UncaughtExceptionInterceptor())
         .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
         // Named `CloudflareInterceptor` ON PURPOSE, and it must stay that name:

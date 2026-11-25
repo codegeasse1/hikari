@@ -1,5 +1,7 @@
 package com.hikari.app.data
 
+import okhttp3.ResponseBody.Companion.toResponseBody
+
 /** Clone-site helpers: id checks, host extraction + URL rewriting.
  *
  *  A clone is a normal [ProviderConfig] row whose id starts with "clone|"
@@ -244,4 +246,102 @@ object CloneHosts {
 
     fun sanitizeDomain(input: String): String =
         hostOf(input) ?: input.trim().lowercase().trim('.', '/')
+
+    // ---- Universal clone mirroring (works for EVERY engine) ----
+    //
+    //  A clone is the same site under a new domain, but extensions keep
+    //  naming the OLD domain in two places our old fix never reached:
+    //  compiled-in constants/regexes (e.g. a hardcoded "https://oldhost/en"
+    //  base plus parse patterns matching "oldhost" in the HTML) and their
+    //  own HTTP clients (CloudStream/Aniyomi/JS runtimes never touched our
+    //  Http layer). So a clone fetched from the new host but parsed with
+    //  old-host patterns always came back empty — for every engine, not
+    //  just one. The mirror fixes both directions at the transport layer:
+    //  requests to a mapped old host go to the new host, and HTML answers
+    //  from the new host read as the old host, so old-host URL building
+    //  AND old-host parsing both keep working, on any engine, with no
+    //  per-extension changes. Only hosts of an installed clone are ever
+    //  touched; everything else passes through byte-identical.
+
+    /** (oldHost, newHost) when [effectiveUrl] came from [originalUrl] through
+     *  a currently-installed clone mapping, else null. The extra check
+     *  against [globalHosts] keeps random server-side redirects from ever
+     *  being treated as a clone move. */
+    fun appliedMove(originalUrl: String, effectiveUrl: String): Pair<String, String>? {
+        if (originalUrl == effectiveUrl) return null
+        val o = runCatching { java.net.URI(originalUrl).host?.lowercase() }.getOrNull()
+        val n = runCatching { java.net.URI(effectiveUrl).host?.lowercase() }.getOrNull()
+        if (o.isNullOrBlank() || n.isNullOrBlank() || o == n) return null
+        val want = globalHosts[o] ?: return null
+        if (!want.equals(n, ignoreCase = true)) return null
+        return o to n
+    }
+
+    fun isHtmlType(contentType: String?): Boolean {
+        val t = contentType?.lowercase()?.substringBefore(';')?.trim() ?: return false
+        return t == "text/html" || t == "application/xhtml+xml"
+    }
+
+    /** Maps every mention of the NEW host back to the OLD host in an HTML
+     *  body fetched through a clone move (no-op for anything else). Only
+     *  HTML is ever rewritten: JSON/media/manifests keep their real hosts
+     *  (parsed fields and players resolve through the request rewrite). */
+    fun mirrorResponseBody(
+        originalUrl: String,
+        effectiveUrl: String,
+        contentType: String?,
+        body: String,
+    ): String {
+        val move = appliedMove(originalUrl, effectiveUrl) ?: return body
+        if (!isHtmlType(contentType)) return body
+        if (body.isEmpty() || !body.contains(move.second, ignoreCase = true)) return body
+        // Same host-boundary rule as [rewrite] (which also moves subdomains):
+        // a preceding dot is a subdomain separator and mirrors too, while a
+        // preceding letter/digit/dash is a longer name and must not match.
+        val re = Regex(
+            "(?<![A-Za-z0-9-])" + Regex.escape(move.second) + "(?![A-Za-z0-9.-])",
+            RegexOption.IGNORE_CASE,
+        )
+        return re.replace(body, move.first.lowercase())
+    }
+
+    /** [request] with its host moved through [globalHosts] (same instance
+     *  back when no installed clone maps it — zero cost then). */
+    fun mirroredRequest(request: okhttp3.Request): okhttp3.Request {
+        val orig = request.url.toString()
+        val eff = rewrite(orig, globalHosts) ?: return request
+        if (eff == orig) return request
+        return request.newBuilder().url(eff).build()
+    }
+
+    /** Request rewrite only — for players and image loaders: response
+     *  bodies (media bytes) must never be touched. */
+    fun requestInterceptor(): okhttp3.Interceptor = okhttp3.Interceptor { chain ->
+        chain.proceed(mirroredRequest(chain.request()))
+    }
+
+    /** Request rewrite + HTML response mirror — for extension HTTP stacks
+     *  (CloudStream, Aniyomi, JS runtimes): covers extensions whose code
+     *  hardcodes the old domain in URLs AND in parse patterns. */
+    fun mirrorInterceptor(): okhttp3.Interceptor = okhttp3.Interceptor { chain ->
+        val origReq = chain.request()
+        val effReq = mirroredRequest(origReq)
+        val resp = chain.proceed(effReq)
+        if (effReq === origReq) return@Interceptor resp
+        val origUrl = origReq.url.toString()
+        val finalUrl = resp.request.url.toString()
+        if (appliedMove(origUrl, finalUrl) == null) return@Interceptor resp
+        val ct = resp.header("Content-Type") ?: return@Interceptor resp
+        if (!isHtmlType(ct)) return@Interceptor resp
+        val body = resp.body ?: return@Interceptor resp
+        val raw = runCatching { body.bytes() }.getOrNull()
+            ?: return@Interceptor resp
+        val mediaType = body.contentType()
+        val text = runCatching {
+            String(raw, mediaType?.charset() ?: Charsets.UTF_8)
+        }.getOrNull() ?: return@Interceptor resp.newBuilder()
+            .body(raw.toResponseBody(mediaType)).build()
+        val fixed = mirrorResponseBody(origUrl, finalUrl, ct, text)
+        resp.newBuilder().body(fixed.toResponseBody(mediaType)).build()
+    }
 }

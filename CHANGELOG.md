@@ -1,4 +1,9 @@
 
+## 0.12.161
+
+- Cloned sites actually load now on every engine, not just some: catalogue, search, details, playback and web view all follow the new domain, including extensions whose code still names the old domain in its addresses and page parsing
+- Marking a manga or novel chapter Reading after Completed works again — the badge flips back instead of staying stuck on Completed
+
 ## 0.12.160
 
 - Clone site screen has Cloned sites and All extensions tabs, with a delete button on every clone; one Clone site row everywhere instead of two
