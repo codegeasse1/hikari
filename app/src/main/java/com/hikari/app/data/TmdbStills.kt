@@ -44,7 +44,9 @@ object TmdbStills {
             // and donghua rows get stills like every other extension.
             if (item.type != MediaType.SERIES && item.type != MediaType.UNKNOWN) return emptyMap()
             if (seasons.isEmpty()) return emptyMap()
-            if (DonghuaDetails.pick(item) is DonghuaDetails.Pick.Anime) return emptyMap()
+            // No anime/donghua exclusion here on purpose: the stills ride
+            // the same TMDB resolve the episode ratings already trust, and
+            // rows with no TMDB still simply keep their old art.
             val resolved = TmdbResolver.resolve(item) ?: return emptyMap()
             if (resolved.mediaType == "movie") return emptyMap()
             if (resolved.tmdbId.toLongOrNull() == null) return emptyMap()

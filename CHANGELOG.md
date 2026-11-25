@@ -1,4 +1,10 @@
 
+## 0.12.157
+
+- Episode thumbnails now actually land: anime and donghua are no longer skipped, and rows where the provider stamped the same poster on every episode prefer the real per-episode still instead
+- Recommended row can never show the opened title itself anymore, and same-extension picks rank by shared genres first, so similar series show up instead
+- This update switches everyone to Hikari Player (pick another player skin in Settings → Player if you want)
+
 ## 0.12.156
 
 - Every episode row now shows its own thumbnail, rating and overview for all extensions, and episode art is a wide rectangle instead of a square — numbering, order and playback untouched

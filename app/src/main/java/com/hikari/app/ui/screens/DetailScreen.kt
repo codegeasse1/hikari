@@ -236,9 +236,11 @@ import java.util.UUID
 
 /** Same-extension recommendations for ANY provider, not just CloudStream:
  *  the site's own list when it ships one (CS3's LoadResponse), otherwise the
- *  extension's own catalogue matched by the title's keywords, then its
- *  Popular rail. Items are ordinary catalogue rows of that same extension,
- *  so they open straight into their own page. Display only. */
+ *  extension's own catalogue matched by the title's keywords, ranked by
+ *  shared genres, then its Popular rail. The opened title can never
+ *  recommend itself (matched by ID and by title). Items are ordinary
+ *  catalogue rows of that same extension, so they open straight into their
+ *  own page. Display only. */
 private suspend fun providerRecommendations(
     provider: com.hikari.app.providers.ContentProvider?,
     item: MediaItem,
@@ -247,28 +249,53 @@ private suspend fun providerRecommendations(
     (provider as? com.hikari.app.cs3.Cs3MainApiProvider)?.let {
         return runCatching { it.getRecommendations(item) }.getOrDefault(emptyList())
     }
-    val self = item.id
+    fun normId(id: String) = id.trim().trimEnd('/').lowercase()
+    val selfId = normId(item.id)
+    val selfTitle = item.searchTitle.trim().lowercase()
+    fun isSelf(m: MediaItem): Boolean {
+        if (normId(m.id) == selfId) return true
+        val t = m.searchTitle.trim().lowercase()
+        return t.isNotBlank() && t == selfTitle
+    }
     val words = item.searchTitle
         .split(Regex("[^\\p{L}\\p{N}]+"))
         .map { it.trim() }
         .filter { it.length >= 4 }
         .distinct()
     val query = words.take(4).joinToString(" ").ifBlank { item.searchTitle.trim() }
+    val found = ArrayList<MediaItem>()
     if (query.isNotBlank() && query.length >= 3) {
-        val hits = runCatching { provider.search(query, 1) }.getOrDefault(emptyList())
-            .filter { it.id != self }
-            .distinctBy { it.id }
+        runCatching { provider.search(query, 1) }.getOrDefault(emptyList())
+            .filterNot(::isSelf)
+            .distinctBy { normId(it.id) }
             .take(18)
-        if (hits.isNotEmpty()) return hits
+            .let { found += it }
     }
-    return runCatching {
-        val refs = provider.catalogs()
-        val pop = refs.firstOrNull { it.id == "popular" } ?: refs.firstOrNull()
-        pop?.let { provider.getCatalog(it, 1) }.orEmpty()
-    }.getOrDefault(emptyList())
-        .filter { it.id != self }
-        .distinctBy { it.id }
-        .take(18)
+    if (found.size < 3) {
+        runCatching {
+            val refs = provider.catalogs()
+            val pop = refs.firstOrNull { it.id == "popular" } ?: refs.firstOrNull()
+            pop?.let { provider.getCatalog(it, 1) }.orEmpty()
+        }.getOrDefault(emptyList())
+            .filterNot(::isSelf)
+            .distinctBy { normId(it.id) }
+            .let { hits ->
+                for (h in hits) {
+                    if (found.none { normId(it.id) == normId(h.id) }) found += h
+                    if (found.size >= 30) break
+                }
+            }
+    }
+    if (found.isEmpty()) return emptyList()
+    // Same-kind series first: candidates sharing a genre with the opened
+    // title rank ahead, so a xianxia page suggests xianxia — the rest still
+    // fill the row when nothing shares a tag.
+    val tags = item.genres.map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+    if (tags.isEmpty()) return found.take(18)
+    val matched = found.filter { m ->
+        m.genres.any { it.trim().lowercase() in tags }
+    }
+    return (if (matched.isNotEmpty()) matched + (found - matched.toSet()) else found).take(18)
 }
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
@@ -5815,6 +5842,12 @@ fun DetailScreen(
                             }
                         }
                     } else {
+                        // Providers that stamp the same poster on every
+                        // episode: prefer the TMDB still then, or each row
+                        // keeps the identical art and the stills never show.
+                        val pageSameArt = pageEps
+                            .mapNotNull { it.image?.trim().takeIf { s -> s.isNotBlank() } }
+                            .toSet().size <= 1
                         if (episodeBigStyle) {
                             // Phone big cards ride a horizontal rail (TV
                             // already does): one LazyColumn item holding one
@@ -5834,7 +5867,7 @@ fun DetailScreen(
                                             ep = ep,
                                             fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                             tmdbStill = tvEpStills[ep.season to ep.number],
-                                            tmdbFirst = false,
+                                            tmdbFirst = pageSameArt,
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width(300.dp),
@@ -5859,6 +5892,7 @@ fun DetailScreen(
                                                 ep = ep,
                                                 fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                                 tmdbStill = tvEpStills[ep.season to ep.number],
+                                                tmdbFirst = pageSameArt,
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
                                                 modifier = Modifier.weight(1f),
@@ -5880,6 +5914,7 @@ fun DetailScreen(
                                         tmdbStill = tvEpStills[ep.season to ep.number],
                                         tmdbRating = tvEpMeta[ep.season to ep.number]?.third,
                                         tmdbOverview = tvEpMeta[ep.season to ep.number]?.second,
+                                        tmdbFirst = pageSameArt,
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
                                         sizeScale = tvEpisodeScale,
@@ -8997,6 +9032,9 @@ private fun EpisodeRow(
     tmdbStill: String? = null,
     tmdbRating: Double? = null,
     tmdbOverview: String? = null,
+    /** The whole page shares one identical provider image: the TMDB still
+     *  wins, or every row would show that same art forever. */
+    tmdbFirst: Boolean = false,
     onClick: () -> Unit,
     /** Download this episode without watching it: the player opens on it and
      *  shows its own download chooser the moment a server is ready. Null hides
@@ -9038,7 +9076,9 @@ private fun EpisodeRow(
             .padding(horizontal = (16f * s).dp, vertical = if (glass) 12.dp else (8f * s).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: tmdbStill?.takeIf { it.isNotBlank() } ?: fallbackImage)
+        val providerArt = ep.image?.takeIf { it.isNotBlank() }
+        val tmdbArt = tmdbStill?.takeIf { it.isNotBlank() }
+        val thumb = PosterLoader.model(if (tmdbFirst) tmdbArt ?: providerArt ?: fallbackImage else providerArt ?: tmdbArt ?: fallbackImage)
         if (thumb != null) {
             AsyncImage(
                 model = thumb,

@@ -362,6 +362,15 @@ class HikariApp : Application() {
                         store.setHeroStyleSeeded156(true)
                     }
                 }
+                // 0.12.157: player goes to Hikari Player for everyone on
+                // update — even users on other skins. Runs once; they can
+                // pick another skin afterwards in Settings → Player.
+                if (!store.hikariPlayerForced157()) {
+                    runCatching {
+                        store.setPlayerSkin(com.hikari.app.player.PlayerSkins.TESTING)
+                        store.setHikariPlayerForced157(true)
+                    }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 store.tvModeFlow().distinctUntilChanged().collect { current ->

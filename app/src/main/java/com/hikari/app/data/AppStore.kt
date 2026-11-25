@@ -590,6 +590,9 @@ class AppStore(private val ctx: Context) {
         /** One-time switch of every install's featured banner to Immersive 2
          *  (0.12.156): runs once, users can pick another style after. */
         val HERO_STYLE_SEEDED_156 = booleanPreferencesKey("heroStyleSeeded156")
+        /** One-time switch of every install's player to Hikari Player
+         *  (0.12.157): runs once, users can pick another skin after. */
+        val HIKARI_PLAYER_FORCED_157 = booleanPreferencesKey("hikariPlayerForced157")
         val TV_POSTER_SCALE = intPreferencesKey("tvPosterScale")
         val TV_DETAIL_BIG = booleanPreferencesKey("tvDetailBig")
         val TV_DETAIL_BIG_CHOSEN = booleanPreferencesKey("tvDetailBigChosen")
@@ -631,7 +634,8 @@ class AppStore(private val ctx: Context) {
             K.TV_SEEDED.name,
             K.PLAYER_UI_DEFAULTS_SEEDED.name,
             K.PLAYER_HIKARI_DEFAULTS_SEEDED.name,
-            K.HERO_STYLE_SEEDED_156.name,            K.TV_POSTER_SCALE.name,
+            K.HERO_STYLE_SEEDED_156.name,
+            K.HIKARI_PLAYER_FORCED_157.name,            K.TV_POSTER_SCALE.name,
             K.TV_TEXT_SCALE.name,
             K.TV_DETAIL_BIG.name,
             K.TV_BLUR_DETAIL.name,
@@ -1928,6 +1932,14 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setHeroStyleSeeded156(seeded: Boolean) {
         write("HERO_STYLE_SEEDED_156") { it[K.HERO_STYLE_SEEDED_156] = seeded }
+    }
+
+    /** One-time Hikari Player switch (0.12.157). */
+    suspend fun hikariPlayerForced157(): Boolean =
+        store.data.map { it[K.HIKARI_PLAYER_FORCED_157] ?: false }.first()
+
+    suspend fun setHikariPlayerForced157(done: Boolean) {
+        write("HIKARI_PLAYER_FORCED_157") { it[K.HIKARI_PLAYER_FORCED_157] = done }
     }
 
     suspend fun setTvSeeded(seeded: Boolean) {
