@@ -629,6 +629,11 @@ fun SettingsScreen(nav: NavHostController) {
     var checkingUpdates by remember { mutableStateOf(false) }
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    // Settings → Sources & Extensions → Clone site: the whole flow lives
+    // here (never leaves Settings) — same screens as the Extensions tab.
+    var clonePickOpen by remember { mutableStateOf(false) }
+    var cloneEditId by rememberSaveable { mutableStateOf<String?>(null) }
+
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
     var settingsQuery by remember { mutableStateOf("") }
     val searchHits = remember(settingsQuery) {
@@ -696,10 +701,12 @@ fun SettingsScreen(nav: NavHostController) {
     val profileActive by Profiles.activeId.collectAsState()
 
     BackHandler(
-        enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
+        enabled = cloneEditId != null || clonePickOpen || openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
             showPair || showProfiles || showPlayerStyle || showPlayerGestures || showPosterCards,
     ) {
         when {
+            cloneEditId != null -> cloneEditId = null
+            clonePickOpen -> clonePickOpen = false
             showPosterCards -> showPosterCards = false
             showPlayerStyle -> showPlayerStyle = false
             showPlayerGestures -> showPlayerGestures = false
@@ -764,6 +771,38 @@ fun SettingsScreen(nav: NavHostController) {
     // the actions on them (see ProfilesScreen).
     if (showProfiles) {
         ProfilesScreen(app, onBack = { showProfiles = false })
+        return
+    }
+
+    // Clone site (Sources & Extensions folder) is a full page too: the
+    // searchable picker plus the new-domain editor, same as the Extensions
+    // tab — Back returns to Sources & Extensions, never to another tab.
+    if (cloneEditId != null && installedProviders.any { it.config.id == cloneEditId }) {
+        CloneEditScreen(
+            orig = installedProviders.first { it.config.id == cloneEditId }.config,
+            onSaved = {
+                cloneEditId = null
+                clonePickOpen = false
+                scope.launch { runCatching { app.providers.refresh() } }
+                Toast.makeText(context, tr("Clone installed"), Toast.LENGTH_SHORT).show()
+            },
+            onBack = { cloneEditId = null },
+        )
+        return
+    }
+    if (clonePickOpen) {
+        ClonePickScreen(
+            providers = installedProviders,
+            onPick = { cfg -> cloneEditId = cfg.id },
+            onBack = { clonePickOpen = false; cloneEditId = null },
+            onDelete = { cfg ->
+                scope.launch {
+                    runCatching { app.store.removeProvider(cfg.id) }
+                    runCatching { app.providers.refresh() }
+                    Toast.makeText(context, tr("Clone removed"), Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
         return
     }
 
@@ -848,8 +887,8 @@ fun SettingsScreen(nav: NavHostController) {
                     item {
                         SettingsCard {
                             CloneSiteShortcutCard {
-                                app.clonePickerRequest.value += 1
-                                Routes.navigateTab(nav, Routes.EXTENSIONS)
+                                cloneEditId = null
+                                clonePickOpen = true
                             }
                         }
                     }

@@ -1,4 +1,10 @@
 
+## 0.12.160
+
+- Clone site screen has Cloned sites and All extensions tabs, with a delete button on every clone; one Clone site row everywhere instead of two
+- Clone site lives inside Settings → Sources & Extensions now — no more jump to the Extensions tab
+- Manga and novel chapters get the episode treatment: press-hold a chapter for half a second for a small Completed / Reading tile — slide and lift to mark
+
 ## 0.12.159
 
 - Clone site asks only for the new domain — the old one is detected automatically, and clones now actually load from the new host across lists, details, playback and web view

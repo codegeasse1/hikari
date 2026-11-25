@@ -3784,19 +3784,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
         )
     }
 
-    LaunchedEffect(Unit) {
-        val app = context.applicationContext as HikariApp
-        var last = app.clonePickerRequest.value
-        app.clonePickerRequest.collect { v ->
-            if (v != last) {
-                last = v
-                cloneEditId = null
-                clonePickOpen = true
-                vm.clearStatus()
-            }
-        }
-    }
-
     var showSite by remember { mutableStateOf(false) }
     var siteName by remember { mutableStateOf("") }
     var siteUrl by remember { mutableStateOf("") }
@@ -4163,6 +4150,12 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             providers = providers,
             onPick = { cfg -> cloneEditId = cfg.id },
             onBack = { clonePickOpen = false; cloneEditId = null; vm.clearStatus() },
+            onDelete = { cfg ->
+                scope.launch {
+                    vm.remove(cfg.id)
+                    vm.setSuccess("Clone removed")
+                }
+            },
         )
         installedOpen -> InstalledExtensionsView(
             providers = providers,
@@ -5724,8 +5717,7 @@ private fun RepoBrowserView(
                         srcCard(Icons.Filled.Extension, tr("Installed extensions"), tr("Manage, toggle & uninstall · ") + providers.size + " installed", onOpenInstalled)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        srcCard(Icons.Filled.ContentCopy, tr("Clone site"), tr("Moved domain? Clone with the new domain"), onCloneSite)
-                        srcCard(Icons.Filled.ContentCopy, tr("Cloned site"), tr("Your clones — tap to clone another"), onCloneSite)
+                        srcCard(Icons.Filled.ContentCopy, tr("Clone site"), tr("Moved domain? Your clones live here"), onCloneSite)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         srcCard(Icons.Filled.Cloud, tr("CloudStream repos"), tr("repo.json · CloudStream extensions"), { onOpenFolder(SourceFolder.CLOUDSTREAM) })
@@ -5781,13 +5773,7 @@ private fun RepoBrowserView(
                     SourceActionRow(
                         icon = Icons.Filled.ContentCopy,
                         title = tr("Clone site"),
-                        subtitle = tr("Moved domain? Clone with the new domain"),
-                        onClick = onCloneSite
-                    )
-                    SourceActionRow(
-                        icon = Icons.Filled.ContentCopy,
-                        title = tr("Cloned site"),
-                        subtitle = tr("Your clones — tap to clone another"),
+                        subtitle = tr("Moved domain? Your clones live here"),
                         onClick = onCloneSite
                     )
                     SourceDivider()
@@ -8826,14 +8812,7 @@ private fun SourcesOverviewView(
                         SourceActionRow(
                             icon = Icons.Filled.ContentCopy,
                             title = tr("Clone site"),
-                            subtitle = tr("Moved domain? Clone with the new domain"),
-                            onClick = onCloneSite
-                        )
-                        SourceDivider()
-                        SourceActionRow(
-                            icon = Icons.Filled.ContentCopy,
-                            title = tr("Cloned site"),
-                            subtitle = tr("Your clones — tap to clone another"),
+                            subtitle = tr("Moved domain? Your clones live here"),
                             onClick = onCloneSite
                         )
                     }

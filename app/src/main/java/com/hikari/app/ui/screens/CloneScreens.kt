@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,6 +30,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,23 +56,33 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** "Clone site" entry: every installed extension with a search bar. Clones
- *  themselves are excluded — a clone of a clone gets confusing. */
+/** "Clone site" entry: two tabs — the user's clones (with delete) and every
+ *  installed extension with a search bar. Clones themselves are excluded from
+ *  the All tab — a clone of a clone gets confusing. */
 @Composable
 fun ClonePickScreen(
     providers: List<ContentProvider>,
     onPick: (ProviderConfig) -> Unit,
     onBack: () -> Unit,
+    onDelete: (ProviderConfig) -> Unit = {},
 ) {
+    var tab by remember(providers) {
+        mutableStateOf(if (providers.any { CloneHosts.isClone(it.config) }) 0 else 1)
+    }
     var query by remember { mutableStateOf("") }
-    val rows = remember(providers, query) {
-        val base = providers.filter { !CloneHosts.isClone(it.config) }
-        val matches = if (query.isBlank()) base
+    val clones = remember(providers) {
+        providers.filter { CloneHosts.isClone(it.config) }.sortedBy { it.config.name.lowercase() }
+    }
+    val all = remember(providers) {
+        providers.filter { !CloneHosts.isClone(it.config) }.sortedBy { it.config.name.lowercase() }
+    }
+    val base = if (tab == 0) clones else all
+    val rows = remember(base, query) {
+        if (query.isBlank()) base
         else base.filter {
             it.config.name.contains(query, ignoreCase = true) ||
                 it.config.id.contains(query, ignoreCase = true)
         }
-        matches.sortedBy { it.config.name.lowercase() }
     }
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -84,18 +97,41 @@ fun ClonePickScreen(
             Column(Modifier.weight(1f)) {
                 Text(tr("Clone site"), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    tr("Pick the extension whose domain moved"),
+                    if (tab == 0) tr("Your clones — tap to delete one")
+                    else tr("Pick the extension whose domain moved"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
         HorizontalDivider()
+        TabRow(selectedTabIndex = tab) {
+            Tab(
+                selected = tab == 0,
+                onClick = { tab = 0 },
+                text = {
+                    Text(
+                        tr("Cloned sites") + if (clones.isNotEmpty()) " (${clones.size})" else "",
+                        maxLines = 1,
+                    )
+                },
+            )
+            Tab(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                text = { Text(tr("All extensions"), maxLines = 1) },
+            )
+        }
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
             singleLine = true,
-            placeholder = { Text(tr("Search installed extensions…")) },
+            placeholder = {
+                Text(
+                    if (tab == 0) tr("Search your clones…")
+                    else tr("Search installed extensions…")
+                )
+            },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -104,7 +140,8 @@ fun ClonePickScreen(
         if (rows.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    tr("No matches"),
+                    if (tab == 0) tr("No clones yet — open All extensions to clone one")
+                    else tr("No matches"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -121,7 +158,8 @@ fun ClonePickScreen(
         ) {
             items(rows, key = { it.config.id }) { p ->
                 Surface(
-                    onClick = { onPick(p.config) },
+                    onClick = { if (tab == 1) onPick(p.config) },
+                    enabled = tab == 1,
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                     modifier = Modifier
@@ -152,6 +190,16 @@ fun ClonePickScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                             )
+                        }
+                        if (tab == 0) {
+                            IconButton(onClick = { onDelete(p.config) }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = tr("Delete clone"),
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
                         }
                     }
                 }

@@ -5,7 +5,11 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forum
@@ -754,6 +759,10 @@ fun MangaDetailScreen(
                     onClick = {
                         openChapter(nav, providerId, mangaUrl, title, posterUrl, chapter)
                     },
+                    onMarkChapter = { finished ->
+                        if (finished) MangaStore.markChapterFinished(key, chapter.url)
+                        else MangaStore.markChapterStarted(key, chapter.url)
+                    },
                 )
             }
 
@@ -1178,11 +1187,28 @@ private fun ChapterRow(
     dl: com.hikari.app.manga.DlState = com.hikari.app.manga.DlState(),
     onDownload: () -> Unit = {},
     onClick: () -> Unit,
+    /** Manual mark (press-hold menu): true = Completed, false = Reading.
+     *  Null hides the menu (callers with nowhere to record). */
+    onMarkChapter: ((finished: Boolean) -> Unit)? = null,
 ) {
+    var markOpen by remember { mutableStateOf(false) }
+    var markHl by remember { mutableStateOf(-1) }
+    Box(Modifier.fillMaxWidth()) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .chapterMarkGesture(
+                onClick = onClick,
+                enabled = onMarkChapter != null,
+                onHoldOpen = { markHl = -1; markOpen = true },
+                onHighlight = { markHl = it },
+                onSlidePick = { hl ->
+                    if (hl == 0 || hl == 1) {
+                        onMarkChapter?.invoke(hl == 0)
+                        markOpen = false
+                    }
+                },
+            )
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1301,6 +1327,134 @@ private fun ChapterRow(
             }
         }
     }
+    ChapterMarkMenu(
+        expanded = markOpen,
+        readState = readState,
+        highlight = markHl,
+        onPick = { finished ->
+            onMarkChapter?.invoke(finished)
+            markOpen = false
+        },
+        onDismiss = { markOpen = false },
+    )
+    }
+}
+
+/** Small Completed / Reading tile for [chapterMarkGesture]: Completed on top,
+ *  Reading below (the episode menu's Watched / Watching, for chapters). */
+@Composable
+private fun ChapterMarkMenu(
+    expanded: Boolean,
+    readState: com.hikari.app.manga.MangaChapterRead?,
+    highlight: Int,
+    onPick: (finished: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        val finished = readState?.finished == true
+        val started = readState != null && !finished
+        val hlDone = highlight == 0
+        val hlReading = highlight == 1
+        DropdownMenuItem(
+            text = {
+                Text(
+                    tr("Completed"),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = if (hlDone || finished) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (hlDone || finished) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = if (hlDone || finished) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+            trailingIcon = if (finished) {
+                { Text("✓", color = MaterialTheme.colorScheme.primary) }
+            } else null,
+            onClick = { onPick(true) },
+        )
+        DropdownMenuItem(
+            text = {
+                Text(
+                    tr("Reading"),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = if (hlReading || started) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (hlReading || started) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            },
+            leadingIcon = {
+                Box(
+                    Modifier
+                        .size(16.dp)
+                        .border(
+                            1.5.dp,
+                            if (hlReading || started) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            CircleShape,
+                        ),
+                )
+            },
+            trailingIcon = if (started) {
+                { Text("✓", color = MaterialTheme.colorScheme.primary) }
+            } else null,
+            onClick = { onPick(false) },
+        )
+    }
+}
+
+/** Gesture modifier for [ChapterMarkMenu]: tap passes through to [onClick],
+ *  a 0.5s hold opens the menu, and a continued slide selects on release
+ *  (up = Completed, down = Reading). Highlight is -1 until the finger moves;
+ *  releasing without a slide keeps the menu open for a tap instead. */
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.chapterMarkGesture(
+    onClick: () -> Unit,
+    enabled: Boolean,
+    onHoldOpen: () -> Unit,
+    onHighlight: (Int) -> Unit,
+    onSlidePick: (Int) -> Unit,
+): Modifier {
+    if (!enabled) return this.combinedClickable(onClick = onClick)
+    return this
+        .combinedClickable(
+            onClick = onClick,
+            onLongClick = { onHoldOpen() },
+        )
+        .pointerInput(enabled) {
+            var accum = 0f
+            var hl = -1
+            detectDragGesturesAfterLongPress(
+                onDragStart = {
+                    accum = 0f
+                    hl = -1
+                    onHighlight(-1)
+                    onHoldOpen()
+                },
+                onDrag = { change, amt ->
+                    change.consume()
+                    accum += amt.y
+                    hl = when {
+                        accum < -60f -> 0
+                        accum > 60f -> 1
+                        else -> -1
+                    }
+                    onHighlight(hl)
+                },
+                onDragEnd = { onSlidePick(hl) },
+                onDragCancel = { },
+            )
+        }
 }
 
 /** The chapter the reading button opens: the one in progress, else the FIRST in
