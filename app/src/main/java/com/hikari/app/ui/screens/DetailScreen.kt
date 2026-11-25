@@ -22,6 +22,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -9413,6 +9414,7 @@ private fun EpisodeMarkMenu(
  *  a 0.5s hold opens the menu, and a continued slide selects on release
  *  (up = Watched, down = Watching). Highlight is -1 until the finger moves;
  *  releasing without a slide keeps the menu open for a tap instead. */
+@OptIn(ExperimentalFoundationApi::class)
 private fun Modifier.episodeMarkGesture(
     onClick: () -> Unit,
     enabled: Boolean,
