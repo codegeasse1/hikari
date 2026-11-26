@@ -52,6 +52,29 @@ class StremioClientTest {
     }
 
     @Test
+    fun catalogPageTwoRequestsTheStremioSkipOffset() = runBlocking {
+        val requestUrls = mutableListOf<String>()
+        val expectedUrl = "https://addons.example/catalog/movie/popular/skip=100.json"
+        val client = StremioClient { url ->
+            requestUrls += url
+            if (url == expectedUrl) {
+                """{"metas":[{"id":"tt200","type":"movie","name":"Later page"}]}"""
+            } else {
+                error("Unexpected request: $url")
+            }
+        }
+
+        val titles = client.catalog(
+            addonUrl = "https://addons.example/manifest.json",
+            catalog = AddonCatalog("movie", "popular", "Popular"),
+            page = 2,
+        )
+
+        assertEquals(listOf(expectedUrl), requestUrls)
+        assertEquals("Later page", titles.single().title)
+    }
+
+    @Test
     fun searchesOnlySearchableCatalogsAndAppliesPageOffset() = runBlocking {
         val responses = mapOf(
             "https://addons.example/manifest.json" to """

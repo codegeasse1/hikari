@@ -18,8 +18,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,9 +43,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +56,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.hikari.desktop.CatalogBrowseState
 import com.hikari.desktop.HomeMediaFilter
 import com.hikari.desktop.ShelfState
 import com.hikari.desktop.SourceState
@@ -59,12 +64,14 @@ import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
 import com.hikari.desktop.data.StreamKind
+import kotlinx.coroutines.flow.collectLatest
 import java.net.URI
 
 internal enum class DesktopPage {
     HOME,
     SEARCH,
     SOURCES,
+    CATALOG,
     DETAIL,
 }
 
@@ -147,6 +154,7 @@ internal fun HomeScreen(
     onSelectProvider: (String?) -> Unit,
     onSelectMediaFilter: (HomeMediaFilter) -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
+    onOpenCatalog: (ShelfState) -> Unit,
     onOpenSources: () -> Unit,
     onRetry: () -> Unit,
 ) {
@@ -304,7 +312,7 @@ internal fun HomeScreen(
                         items = shelves,
                         key = { "${it.addonUrl}:${it.catalog.type}:${it.catalog.id}" },
                     ) { shelf ->
-                        CatalogShelf(shelf, onOpenTitle, onRetry)
+                        CatalogShelf(shelf, onOpenTitle, onRetry, onOpenCatalog)
                 }
             }
         }
@@ -316,6 +324,7 @@ private fun CatalogShelf(
     shelf: ShelfState,
     onOpenTitle: (AddonTitle) -> Unit,
     onRetry: () -> Unit,
+    onOpenCatalog: (ShelfState) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -328,6 +337,7 @@ private fun CatalogShelf(
                 )
             }
             if (shelf.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp))
+            TextButton(onClick = { onOpenCatalog(shelf) }) { Text("Lihat semua") }
         }
         when {
             shelf.loading -> Text(
@@ -357,6 +367,118 @@ private fun CatalogShelf(
                         modifier = Modifier.width(164.dp),
                         onClick = { onOpenTitle(title) },
                     )
+                }
+            }
+        }
+    }
+}
+
+private const val CATALOG_PREFETCH_THRESHOLD = 6
+
+@Composable
+internal fun CatalogBrowseScreen(
+    state: CatalogBrowseState,
+    onBack: () -> Unit,
+    onLoadNextPage: () -> Unit,
+    onOpenTitle: (AddonTitle) -> Unit,
+) {
+    val target = state.target
+    if (target == null) {
+        EmptyState(
+            title = "Katalog tidak tersedia",
+            message = "Pilih katalog dari beranda untuk menelusuri judul.",
+            actionLabel = "Kembali ke beranda",
+            onAction = onBack,
+        )
+        return
+    }
+
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(gridState, state.titles.size, state.loading, state.hasMore, state.error) {
+        if (state.titles.isEmpty() || state.loading || !state.hasMore || state.error != null) {
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            val lastVisible = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible to gridState.layoutInfo.totalItemsCount
+        }.collectLatest { (lastVisible, totalItems) ->
+            if (totalItems > 0 && lastVisible >= totalItems - CATALOG_PREFETCH_THRESHOLD) {
+                onLoadNextPage()
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onBack) { Text("Kembali") }
+            if (state.canShowManualLoadAction()) {
+                OutlinedButton(onClick = onLoadNextPage) { Text("Muat lebih banyak") }
+            }
+        }
+        when {
+            state.loading && state.titles.isEmpty() -> ProgressMessage("Memuat judul dari katalog…")
+            state.error != null && state.titles.isEmpty() -> MessagePanel(
+                title = "Katalog gagal dimuat",
+                message = state.error,
+                actionLabel = "Coba lagi",
+                onAction = onLoadNextPage,
+                isError = true,
+            )
+            state.titles.isEmpty() -> EmptyState(
+                title = "Katalog ini belum memiliki judul",
+                message = "Add-on belum mengembalikan judul untuk katalog ini.",
+                actionLabel = "Kembali ke beranda",
+                onAction = onBack,
+            )
+            else -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(164.dp),
+                state = gridState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentPadding = PaddingValues(bottom = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                items(
+                    items = state.titles,
+                    key = { "${it.addonUrl}:${it.type}:${it.id}" },
+                ) { title ->
+                    TitleCard(
+                        title = title,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onOpenTitle(title) },
+                    )
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    when {
+                        state.loading -> Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                            Text("  Memuat judul berikutnya…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        state.error != null -> MessagePanel(
+                            title = "Halaman berikutnya gagal dimuat",
+                            message = state.error,
+                            actionLabel = "Coba lagi",
+                            onAction = onLoadNextPage,
+                            isError = true,
+                        )
+                        state.hasMore -> Spacer(Modifier.height(8.dp))
+                        else -> Text(
+                            "Sudah mencapai akhir katalog.",
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

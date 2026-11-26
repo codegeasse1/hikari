@@ -207,7 +207,7 @@ class StremioClient(
         page: Int,
     ): List<AddonTitle> {
         require(page > 0) { "page must be greater than zero" }
-        val skip = (page - 1) * PAGE_SIZE
+        val skip = (page - 1) * STREMIO_PAGE_SIZE
         val url = AddonUrls.catalogUrl(
             manifestUrl = addonUrl,
             type = catalog.type,
@@ -308,10 +308,9 @@ class StremioClient(
     private fun JsonObject.int(name: String, default: Int): Int =
         get(name)?.takeUnless { it.isJsonNull }?.let { runCatching { it.asInt }.getOrNull() } ?: default
 
-    private companion object {
-        const val PAGE_SIZE = 100
-    }
 }
+
+internal const val STREMIO_PAGE_SIZE = 100
 
 private val defaultHttpClient: HttpClient = HttpClient.newBuilder()
     .connectTimeout(Duration.ofSeconds(10))

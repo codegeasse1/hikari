@@ -39,11 +39,13 @@ import com.hikari.desktop.playback.StreamLauncher
 import com.hikari.desktop.ui.DesktopPage
 import com.hikari.desktop.ui.DesktopSidebar
 import com.hikari.desktop.ui.DetailScreen
+import com.hikari.desktop.ui.CatalogBrowseScreen
 import com.hikari.desktop.ui.HomeScreen
 import com.hikari.desktop.ui.SearchScreen
 import com.hikari.desktop.ui.SourceManagerScreen
 import com.hikari.desktop.ui.StreamPickerDialog
 import com.hikari.desktop.ui.HikariDesktopTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -91,6 +93,7 @@ private fun HikariDesktopApp() {
     var selectedProviderUrl by remember { mutableStateOf<String?>(null) }
     var selectedMediaFilter by remember { mutableStateOf(HomeMediaFilter.ALL) }
     var shelves by remember { mutableStateOf(emptyList<ShelfState>()) }
+    var catalogBrowse by remember { mutableStateOf(CatalogBrowseState()) }
     var homeCatalogsLoading by remember { mutableStateOf(false) }
     var sourceUrlInput by remember { mutableStateOf("") }
     var addSourceLoading by remember { mutableStateOf(false) }
@@ -179,6 +182,39 @@ private fun HikariDesktopApp() {
 
     fun reloadSources() {
         scope.launch { loadSources(sourceStore.all()) }
+    }
+
+    fun loadNextCatalogPage() {
+        val current = catalogBrowse
+        val target = current.target ?: return
+        if (!current.canLoadNextPage()) return
+        val requestedPage = current.nextPage
+        catalogBrowse = current.beginPageLoad()
+        scope.launch {
+            try {
+                val pageTitles = client.catalog(target.addonUrl, target.catalog, page = requestedPage)
+                val latest = catalogBrowse
+                if (latest.target == target && latest.nextPage == requestedPage) {
+                    catalogBrowse = latest.finishPage(pageTitles)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                val latest = catalogBrowse
+                if (latest.target == target && latest.nextPage == requestedPage) {
+                    catalogBrowse = latest.failPage(error.userMessage())
+                }
+            }
+        }
+    }
+
+    fun openCatalog(shelf: ShelfState) {
+        catalogBrowse = CatalogBrowseState(
+            target = CatalogBrowseTarget(shelf.addonUrl, shelf.addonName, shelf.catalog),
+            hasMore = true,
+        )
+        page = DesktopPage.CATALOG
+        loadNextCatalogPage()
     }
 
     fun addSource() {
@@ -323,18 +359,24 @@ private fun HikariDesktopApp() {
         DesktopPage.HOME -> "Beranda"
         DesktopPage.SEARCH -> "Cari judul"
         DesktopPage.SOURCES -> "Sumber"
+        DesktopPage.CATALOG -> catalogBrowse.target?.catalog?.name ?: "Katalog"
         DesktopPage.DETAIL -> "Detail"
     }
     val subtitle = when (page) {
         DesktopPage.HOME -> "Katalog dari add-on Stremio yang sudah ditambahkan"
         DesktopPage.SEARCH -> "Cari lintas katalog yang menyediakan pencarian"
         DesktopPage.SOURCES -> "Tambah dan kelola sumber katalog Stremio"
+        DesktopPage.CATALOG -> catalogBrowse.target?.addonName ?: "Semua judul dalam katalog"
         DesktopPage.DETAIL -> "Informasi judul dan pilihan pemutaran"
     }
 
     Row(Modifier.fillMaxSize()) {
         DesktopSidebar(
-            selectedPage = if (page == DesktopPage.DETAIL) previousPage else page,
+            selectedPage = when (page) {
+                DesktopPage.CATALOG -> DesktopPage.HOME
+                DesktopPage.DETAIL -> if (previousPage == DesktopPage.CATALOG) DesktopPage.HOME else previousPage
+                else -> page
+            },
             onNavigate = { page = it },
         )
         Column(
@@ -357,8 +399,15 @@ private fun HikariDesktopApp() {
                                 onSelectProvider = { selectedProviderUrl = it },
                                 onSelectMediaFilter = { selectedMediaFilter = it },
                                 onOpenTitle = ::openTitle,
+                                onOpenCatalog = ::openCatalog,
                                 onOpenSources = { page = DesktopPage.SOURCES },
                                 onRetry = ::reloadSources,
+                            )
+                            DesktopPage.CATALOG -> CatalogBrowseScreen(
+                                state = catalogBrowse,
+                                onBack = { page = DesktopPage.HOME },
+                                onLoadNextPage = ::loadNextCatalogPage,
+                                onOpenTitle = ::openTitle,
                             )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,
