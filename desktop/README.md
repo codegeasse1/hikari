@@ -6,6 +6,8 @@ The first milestone supports Stremio add-on catalogs, searching, title details, 
 
 Home shows up to eight catalog shelves as a preview. Open **Semua katalog** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
 
+Search keeps the 20 most recent submitted queries locally. A query can be run again from its chip, removed by itself, or cleared with the rest of the history. This is a small search-UX parity slice, not full APK parity.
+
 ## Build and run
 
 Use Gradle 8.11.1 or newer with JDK 17 or newer:

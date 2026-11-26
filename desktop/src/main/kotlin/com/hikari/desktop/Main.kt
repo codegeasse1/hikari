@@ -32,6 +32,7 @@ import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonSourceStore
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.SearchHistoryStore
 import com.hikari.desktop.data.StreamKind
 import com.hikari.desktop.net.AddonClientException
 import com.hikari.desktop.net.StremioClient
@@ -88,6 +89,7 @@ private fun HikariDesktopApp() {
     val client = remember { StremioClient() }
     val catalogPageSource = remember { StremioCatalogPageSource(client) }
     val sourceStore = remember { AddonSourceStore() }
+    val searchHistoryStore = remember { SearchHistoryStore() }
     val scope = rememberCoroutineScope()
 
     var page by remember { mutableStateOf(DesktopPage.HOME) }
@@ -110,6 +112,10 @@ private fun HikariDesktopApp() {
     var searchResults by remember { mutableStateOf(emptyList<AddonTitle>()) }
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    var searchHistory by remember {
+        mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
+    }
+    var searchHistoryError by remember { mutableStateOf<String?>(null) }
     var streamDialogOpen by remember { mutableStateOf(false) }
     var streamDialogTitle by remember { mutableStateOf("") }
     var streams by remember { mutableStateOf(emptyList<AddonStream>()) }
@@ -327,8 +333,27 @@ private fun HikariDesktopApp() {
         }
     }
 
-    fun search() {
-        val query = searchQuery.trim()
+    fun updateSearchHistory(update: () -> List<String>) {
+        runCatching(update)
+            .onSuccess {
+                searchHistory = it
+                searchHistoryError = null
+            }
+            .onFailure {
+                searchHistoryError = "Riwayat pencarian tidak dapat diperbarui."
+            }
+    }
+
+    fun removeSearchHistory(query: String) {
+        updateSearchHistory { searchHistoryStore.remove(query) }
+    }
+
+    fun clearSearchHistory() {
+        updateSearchHistory { searchHistoryStore.clear() }
+    }
+
+    fun search(queryOverride: String? = null) {
+        val query = (queryOverride ?: searchQuery).trim()
         if (query.isBlank()) {
             searchError = "Ketik judul yang ingin dicari."
             return
@@ -338,6 +363,8 @@ private fun HikariDesktopApp() {
             searchError = "Tambahkan sumber Stremio sebelum mencari."
             return
         }
+        searchQuery = query
+        updateSearchHistory { searchHistoryStore.record(query) }
         scope.launch {
             searchLoading = true
             searchError = null
@@ -430,12 +457,23 @@ private fun HikariDesktopApp() {
                             )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,
-                                onQueryChange = { searchQuery = it },
+                                onQueryChange = {
+                                    searchQuery = it
+                                    if (it.isBlank()) {
+                                        searchResults = emptyList()
+                                        searchError = null
+                                    }
+                                },
                                 loading = searchLoading,
                                 error = searchError,
                                 results = searchResults,
+                                recentSearches = searchHistory,
+                                historyError = searchHistoryError,
                                 hasSources = sourceStates.isNotEmpty(),
-                                onSearch = ::search,
+                                onSearch = { search() },
+                                onRunRecentSearch = { search(it) },
+                                onRemoveRecentSearch = ::removeSearchHistory,
+                                onClearRecentSearches = ::clearSearchHistory,
                                 onOpenTitle = ::openTitle,
                                 onOpenSources = { page = DesktopPage.SOURCES },
                             )

@@ -9,3 +9,4 @@ Reading this as: a Windows desktop media browser for existing Hikari users, carr
 - System sans-serif typography keeps long titles and metadata readable at Windows desktop sizes.
 - Motion is limited to hover and selection feedback so it does not compete with artwork or streaming state.
 - The wordmark is rendered as text. No new logo, portraits, or decorative artwork are introduced.
+- Recent searches appears only when the query is empty, so a past query can be repeated or removed without competing with active results.

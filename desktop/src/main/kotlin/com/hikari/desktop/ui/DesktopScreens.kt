@@ -54,6 +54,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.hikari.desktop.CatalogBrowseState
@@ -593,8 +595,13 @@ internal fun SearchScreen(
     loading: Boolean,
     error: String?,
     results: List<AddonTitle>,
+    recentSearches: List<String>,
+    historyError: String?,
     hasSources: Boolean,
     onSearch: () -> Unit,
+    onRunRecentSearch: (String) -> Unit,
+    onRemoveRecentSearch: (String) -> Unit,
+    onClearRecentSearches: () -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
     onOpenSources: () -> Unit,
 ) {
@@ -617,6 +624,16 @@ internal fun SearchScreen(
             Button(onClick = onSearch, enabled = !loading && hasSources && query.isNotBlank()) {
                 if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Cari")
             }
+        }
+
+        if (query.isBlank() && !loading) {
+            RecentSearches(
+                queries = recentSearches,
+                error = historyError,
+                onSelect = onRunRecentSearch,
+                onRemove = onRemoveRecentSearch,
+                onClear = onClearRecentSearches,
+            )
         }
 
         if (!hasSources) {
@@ -667,6 +684,55 @@ internal fun SearchScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun RecentSearches(
+    queries: List<String>,
+    error: String?,
+    onSelect: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    if (queries.isEmpty() && error == null) return
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (queries.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Pencarian terakhir", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onClear) { Text("Hapus semua") }
+            }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(queries, key = { it.lowercase() }) { query ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { onSelect(query) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(
+                                query,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 170.dp),
+                            )
+                        }
+                        TextButton(
+                            onClick = { onRemove(query) },
+                            modifier = Modifier.semantics { contentDescription = "Hapus pencarian: $query" },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                        ) {
+                            Text("Hapus")
+                        }
+                    }
+                }
+            }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     }
 }
 
