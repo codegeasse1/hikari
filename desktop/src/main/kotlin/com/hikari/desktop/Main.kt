@@ -51,6 +51,8 @@ import com.hikari.desktop.ui.catalogBrowseReturnDestination
 import com.hikari.desktop.ui.HomeScreen
 import com.hikari.desktop.ui.LibraryScreen
 import com.hikari.desktop.ui.SearchScreen
+import com.hikari.desktop.ui.SearchSourceOption
+import com.hikari.desktop.ui.selectSearchSourceUrls
 import com.hikari.desktop.ui.SourceManagerScreen
 import com.hikari.desktop.ui.StreamPickerDialog
 import com.hikari.desktop.ui.HikariDesktopTheme
@@ -120,6 +122,7 @@ private fun HikariDesktopApp() {
     var searchResults by remember { mutableStateOf(emptyList<AddonTitle>()) }
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    var selectedSearchSourceUrl by remember { mutableStateOf<String?>(null) }
     var searchHistory by remember {
         mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
     }
@@ -151,6 +154,9 @@ private fun HikariDesktopApp() {
         }
         if (selectedProviderUrl != null && sourceStates.none { it.url == selectedProviderUrl }) {
             selectedProviderUrl = null
+        }
+        if (selectedSearchSourceUrl != null && sourceStates.none { it.url == selectedSearchSourceUrl }) {
+            selectedSearchSourceUrl = null
         }
     }
 
@@ -357,6 +363,7 @@ private fun HikariDesktopApp() {
             sourceStore.remove(url)
             sourceStates = sourceStates.filterNot { it.url == url }
             if (selectedProviderUrl == url) selectedProviderUrl = null
+            if (selectedSearchSourceUrl == url) selectedSearchSourceUrl = null
         } catch (error: Exception) {
             addSourceError = error.userMessage()
             page = DesktopPage.SOURCES
@@ -454,7 +461,7 @@ private fun HikariDesktopApp() {
             searchError = "Ketik judul yang ingin dicari."
             return
         }
-        val urls = sourceStates.map { it.url }
+        val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrl)
         if (urls.isEmpty()) {
             searchError = "Tambahkan sumber Stremio sebelum mencari."
             return
@@ -599,6 +606,19 @@ private fun HikariDesktopApp() {
                                 onClearRecentSearches = ::clearSearchHistory,
                                 onOpenTitle = ::openTitle,
                                 onOpenSources = { page = DesktopPage.SOURCES },
+                                searchSources = sourceStates.map { source ->
+                                    SearchSourceOption(
+                                        url = source.url,
+                                        name = source.manifest?.name ?: source.url,
+                                    )
+                                },
+                                selectedSearchSourceUrl = selectedSearchSourceUrl,
+                                onSearchSourceSelected = { sourceUrl ->
+                                    if (selectedSearchSourceUrl != sourceUrl) {
+                                        selectedSearchSourceUrl = sourceUrl
+                                        if (searchQuery.isNotBlank()) search(searchQuery)
+                                    }
+                                },
                             )
                             DesktopPage.SOURCES -> SourceManagerScreen(
                                 sources = sourceStates,

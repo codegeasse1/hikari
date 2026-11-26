@@ -1030,11 +1030,16 @@ internal fun SearchScreen(
     onClearRecentSearches: () -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
     onOpenSources: () -> Unit,
+    searchSources: List<SearchSourceOption>,
+    selectedSearchSourceUrl: String?,
+    onSearchSourceSelected: (String?) -> Unit,
 ) {
     var selectedTypeFilter by remember { mutableStateOf(SearchTypeFilter.ALL) }
     val visibleResults = remember(results, selectedTypeFilter) {
         filterSearchResults(results, selectedTypeFilter)
     }
+    var sourceMenuOpen by remember { mutableStateOf(false) }
+    val selectedSource = searchSources.firstOrNull { it.url == selectedSearchSourceUrl }
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1053,6 +1058,54 @@ internal fun SearchScreen(
             )
             Button(onClick = onSearch, enabled = !loading && hasSources && query.isNotBlank()) {
                 if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Cari")
+            }
+        }
+
+        if (searchSources.size > 1) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Sumber",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Box {
+                    OutlinedButton(
+                        onClick = { sourceMenuOpen = true },
+                        enabled = !loading,
+                    ) {
+                        Text(
+                            selectedSource?.name ?: "Semua sumber",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = sourceMenuOpen,
+                        onDismissRequest = { sourceMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Semua sumber") },
+                            onClick = {
+                                onSearchSourceSelected(null)
+                                sourceMenuOpen = false
+                            },
+                        )
+                        searchSources.forEach { source ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(source.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                onClick = {
+                                    onSearchSourceSelected(source.url)
+                                    sourceMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
             }
         }
 
