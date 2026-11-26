@@ -8,7 +8,7 @@ Home shows up to eight catalog shelves as a preview. Open **Semua katalog** to b
 
 Search keeps the 20 most recent submitted queries locally. A query can be run again from its chip, removed by itself, or cleared with the rest of the history. This is a small search-UX parity slice, not full APK parity.
 
-Desktop **Pustaka** adds a local saved-title slice: save a title from its detail page, reopen it from a poster grid, or remove it. Compact title snapshots are stored in this Windows account's local preferences, newest first. Android categories, tracker shelves, manga, watch history, and continue-watching are not included, so desktop is still not at full APK parity.
+Desktop **Pustaka** stores compact title snapshots in this Windows account's local preferences, newest first. It now includes the four Android default categories, custom category creation, rename and delete, multi-category assignment, and category filtering. Category order management, tracker shelves, manga, watch history, and continue-watching are still missing, so desktop is not at full APK parity.
 
 ## Build and run
 

@@ -4,7 +4,7 @@ Reading this as: a Windows desktop media browser for existing Hikari users, carr
 
 - The navy background and amber accent reuse Hikari's existing `HikariBg`, `HikariSurface`, and `HikariPrimary` colors. They preserve product identity and keep artwork prominent.
 - A desktop navigation rail groups Home, Search, Pustaka, and installed sources because each is a real destination.
-- Pustaka shows compact local title snapshots as posters, newest first, with direct removal. Its empty-state action leads back to Home.
+- Pustaka shows compact local title snapshots as posters, newest first, with direct removal. Category chips narrow the saved grid, assignment stays beside each poster, and category maintenance sits in a separate dialog so it does not crowd browsing. Its empty-state action leads back to Home.
 - Content is organized around catalog rows and title posters, matching the media-browsing task instead of a generic dashboard layout.
 - Home keeps a bounded set of shelves and opens the complete catalog directory on demand, so every installed catalog is discoverable without making the primary rail longer.
 - System sans-serif typography keeps long titles and metadata readable at Windows desktop sizes.

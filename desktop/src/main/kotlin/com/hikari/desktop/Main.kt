@@ -32,6 +32,9 @@ import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonSourceStore
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.LibraryCategory
+import com.hikari.desktop.data.LibraryCategoryStore
+import com.hikari.desktop.data.SavedTitleIdentity
 import com.hikari.desktop.data.SavedTitlesStore
 import com.hikari.desktop.data.SearchHistoryStore
 import com.hikari.desktop.data.StreamKind
@@ -93,6 +96,7 @@ private fun HikariDesktopApp() {
     val catalogPageSource = remember { StremioCatalogPageSource(client) }
     val sourceStore = remember { AddonSourceStore() }
     val savedTitlesStore = remember { SavedTitlesStore() }
+    val libraryCategoryStore = remember { LibraryCategoryStore() }
     val searchHistoryStore = remember { SearchHistoryStore() }
     val scope = rememberCoroutineScope()
 
@@ -123,6 +127,9 @@ private fun HikariDesktopApp() {
     var savedTitles by remember { mutableStateOf(emptyList<AddonTitle>()) }
     var savedTitlesLoading by remember { mutableStateOf(true) }
     var savedTitlesError by remember { mutableStateOf<String?>(null) }
+    var libraryCategories by remember { mutableStateOf(emptyList<LibraryCategory>()) }
+    var libraryCategoryAssignments by remember { mutableStateOf(emptyMap<SavedTitleIdentity, Set<String>>()) }
+    var libraryCategoryError by remember { mutableStateOf<String?>(null) }
     var streamDialogOpen by remember { mutableStateOf(false) }
     var streamDialogTitle by remember { mutableStateOf("") }
     var streams by remember { mutableStateOf(emptyList<AddonStream>()) }
@@ -159,28 +166,77 @@ private fun HikariDesktopApp() {
         }
     }
 
-    fun updateSavedTitles(operation: () -> List<AddonTitle>) {
+    fun reloadLibraryCategoryState() {
+        try {
+            libraryCategories = libraryCategoryStore.categories()
+            libraryCategoryAssignments = libraryCategoryStore.assignments()
+            libraryCategoryError = null
+        } catch (error: Exception) {
+            libraryCategoryError = error.userMessage()
+        }
+    }
+
+    fun createLibraryCategory(name: String): LibraryCategory {
+        try {
+            val created = libraryCategoryStore.create(name)
+            reloadLibraryCategoryState()
+            return created
+        } catch (error: Exception) {
+            libraryCategoryError = error.userMessage()
+            throw error
+        }
+    }
+
+    fun updateLibraryCategory(operation: () -> Unit) {
+        try {
+            operation()
+            reloadLibraryCategoryState()
+        } catch (error: Exception) {
+            libraryCategoryError = error.userMessage()
+        }
+    }
+
+    fun removeLibraryCategoryAssignments(title: AddonTitle) {
+        try {
+            libraryCategoryStore.removeTitle(title)
+            libraryCategoryAssignments = libraryCategoryStore.assignments()
+            libraryCategoryError = null
+        } catch (error: Exception) {
+            libraryCategoryError = error.userMessage()
+        }
+    }
+
+    fun updateSavedTitles(operation: () -> List<AddonTitle>): Boolean {
         try {
             savedTitles = operation()
             savedTitlesError = null
+            return true
         } catch (error: Exception) {
             savedTitlesError = error.userMessage()
+            return false
         }
     }
 
     fun toggleSavedTitle(title: AddonTitle) {
         val isSaved = savedTitles.any { it.savedTitleIdentity() == title.savedTitleIdentity() }
-        updateSavedTitles {
-            if (isSaved) savedTitlesStore.remove(title) else savedTitlesStore.save(title)
+        if (isSaved) {
+            if (updateSavedTitles { savedTitlesStore.remove(title) }) {
+                removeLibraryCategoryAssignments(title)
+            }
+        } else {
+            updateSavedTitles { savedTitlesStore.save(title) }
         }
     }
 
     fun removeSavedTitle(title: AddonTitle) {
-        updateSavedTitles { savedTitlesStore.remove(title) }
+        if (updateSavedTitles { savedTitlesStore.remove(title) }) {
+            removeLibraryCategoryAssignments(title)
+        }
     }
 
     LaunchedEffect(Unit) {
         reloadSavedTitles()
+        reloadLibraryCategoryState()
         loadSources(sourceStore.all())
     }
 
@@ -501,10 +557,23 @@ private fun HikariDesktopApp() {
                                 titles = savedTitles,
                                 loading = savedTitlesLoading,
                                 error = savedTitlesError,
+                                categories = libraryCategories,
+                                categoryAssignments = libraryCategoryAssignments,
+                                categoryError = libraryCategoryError,
                                 onRetry = ::reloadSavedTitles,
                                 onBrowseHome = { page = DesktopPage.HOME },
                                 onOpenTitle = ::openTitle,
                                 onRemoveTitle = ::removeSavedTitle,
+                                onCreateCategory = ::createLibraryCategory,
+                                onRenameCategory = { id, name ->
+                                    updateLibraryCategory { libraryCategoryStore.rename(id, name) }
+                                },
+                                onDeleteCategory = { id ->
+                                    updateLibraryCategory { libraryCategoryStore.delete(id) }
+                                },
+                                onAssignCategories = { title, ids ->
+                                    updateLibraryCategory { libraryCategoryStore.assign(title, ids) }
+                                },
                             )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,

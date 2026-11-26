@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -33,8 +36,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -56,6 +62,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.hikari.desktop.CatalogBrowseState
@@ -69,6 +76,9 @@ import com.hikari.desktop.catalogDirectoryContentState
 import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.LibraryCategory
+import com.hikari.desktop.data.SavedTitleIdentity
+import com.hikari.desktop.data.filterSavedTitlesByCategory
 import com.hikari.desktop.data.savedTitleIdentity
 import com.hikari.desktop.data.StreamKind
 import kotlinx.coroutines.flow.collectLatest
@@ -434,11 +444,30 @@ internal fun LibraryScreen(
     titles: List<AddonTitle>,
     loading: Boolean,
     error: String?,
+    categories: List<LibraryCategory>,
+    categoryAssignments: Map<SavedTitleIdentity, Set<String>>,
+    categoryError: String?,
     onRetry: () -> Unit,
     onBrowseHome: () -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
     onRemoveTitle: (AddonTitle) -> Unit,
+    onCreateCategory: (String) -> LibraryCategory,
+    onRenameCategory: (String, String) -> Unit,
+    onDeleteCategory: (String) -> Unit,
+    onAssignCategories: (AddonTitle, Set<String>) -> Unit,
 ) {
+    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
+    var categoryManagerOpen by remember { mutableStateOf(false) }
+    var categoryTitle by remember { mutableStateOf<AddonTitle?>(null) }
+    LaunchedEffect(categories) {
+        if (selectedCategoryId != null && categories.none { it.id == selectedCategoryId }) {
+            selectedCategoryId = null
+        }
+    }
+    val visibleTitles = remember(titles, selectedCategoryId, categoryAssignments) {
+        filterSavedTitlesByCategory(titles, selectedCategoryId, categoryAssignments)
+    }
+
     when {
         loading -> ProgressMessage("Memuat pustaka…")
         error != null -> MessagePanel(
@@ -448,35 +477,359 @@ internal fun LibraryScreen(
             onAction = onRetry,
             isError = true,
         )
-        titles.isEmpty() -> EmptyState(
-            title = "Pustaka kosong",
-            message = "Judul yang disimpan dari halaman detail akan muncul di sini.",
-            actionLabel = "Jelajahi beranda",
-            onAction = onBrowseHome,
-        )
+        titles.isEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            EmptyState(
+                title = "Pustaka kosong",
+                message = "Judul yang disimpan dari halaman detail akan muncul di sini.",
+                actionLabel = "Jelajahi beranda",
+                onAction = onBrowseHome,
+            )
+            TextButton(onClick = { categoryManagerOpen = true }) { Text("Kelola kategori") }
+        }
         else -> Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("${titles.size} judul", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (selectedCategoryId == null) "${titles.size} judul" else "${visibleTitles.size} dari ${titles.size} judul",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = { categoryManagerOpen = true }) { Text("Kelola kategori") }
             }
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(152.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(bottom = 20.dp),
-            ) {
-                items(titles, key = { it.savedTitleIdentity() }) { title ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        TitleCard(title = title, modifier = Modifier.fillMaxWidth()) { onOpenTitle(title) }
-                        TextButton(onClick = { onRemoveTitle(title) }) { Text("Hapus dari Pustaka") }
+            if (categoryError != null) {
+                MessagePanel(
+                    title = "Kategori tidak dapat diperbarui",
+                    message = categoryError,
+                    isError = true,
+                )
+            }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item(key = "library-category-all") {
+                    FilterChip(
+                        selected = selectedCategoryId == null,
+                        onClick = { selectedCategoryId = null },
+                        label = { Text("Semua") },
+                    )
+                }
+                items(categories, key = LibraryCategory::id) { category ->
+                    FilterChip(
+                        selected = selectedCategoryId == category.id,
+                        onClick = { selectedCategoryId = category.id },
+                        label = { Text(category.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    )
+                }
+            }
+            if (visibleTitles.isEmpty()) {
+                val activeCategory = categories.firstOrNull { it.id == selectedCategoryId }
+                EmptyState(
+                    title = "Belum ada judul di kategori ini",
+                    message = activeCategory?.let { "Tambahkan judul ke ${it.name} dari kartu di Pustaka." }
+                        ?: "Pilih kategori lain atau tampilkan semua judul.",
+                    actionLabel = "Tampilkan semua judul",
+                    onAction = { selectedCategoryId = null },
+                )
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(152.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    contentPadding = PaddingValues(bottom = 20.dp),
+                ) {
+                    items(visibleTitles, key = { it.savedTitleIdentity() }) { title ->
+                        val assignedNames = categories
+                            .filter { it.id in categoryAssignments[title.savedTitleIdentity()].orEmpty() }
+                            .joinToString(" · ") { it.name }
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            TitleCard(title = title, modifier = Modifier.fillMaxWidth()) { onOpenTitle(title) }
+                            if (assignedNames.isNotBlank()) {
+                                Text(
+                                    assignedNames,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                )
+                            }
+                            TextButton(onClick = { categoryTitle = title }) { Text("Atur kategori") }
+                            TextButton(onClick = { onRemoveTitle(title) }) { Text("Hapus dari Pustaka") }
+                        }
                     }
                 }
             }
         }
     }
+
+    categoryTitle?.let { title ->
+        LibraryCategoryAssignmentDialog(
+            title = title,
+            categories = categories,
+            selectedCategoryIds = categoryAssignments[title.savedTitleIdentity()].orEmpty(),
+            onCreateCategory = onCreateCategory,
+            onConfirm = { selected ->
+                onAssignCategories(title, selected)
+                categoryTitle = null
+            },
+            onDismiss = { categoryTitle = null },
+        )
+    }
+    if (categoryManagerOpen) {
+        LibraryCategoryManagerDialog(
+            categories = categories,
+            onCreateCategory = onCreateCategory,
+            onRenameCategory = onRenameCategory,
+            onDeleteCategory = onDeleteCategory,
+            onDismiss = { categoryManagerOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun LibraryCategoryAssignmentDialog(
+    title: AddonTitle,
+    categories: List<LibraryCategory>,
+    selectedCategoryIds: Set<String>,
+    onCreateCategory: (String) -> LibraryCategory,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember(title.savedTitleIdentity(), selectedCategoryIds) {
+        mutableStateOf(selectedCategoryIds)
+    }
+    var newName by remember { mutableStateOf("") }
+    var inputError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Kategori Pustaka") },
+        text = {
+            Column(
+                modifier = Modifier.widthIn(max = 480.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(title.title, style = MaterialTheme.typography.bodyMedium)
+                if (categories.isEmpty()) {
+                    Text("Belum ada kategori. Buat kategori baru di bawah.")
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 240.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(categories, key = LibraryCategory::id) { category ->
+                            val checked = category.id in selected
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .toggleable(
+                                        value = checked,
+                                        role = Role.Checkbox,
+                                        onValueChange = {
+                                            selected = if (checked) selected - category.id else selected + category.id
+                                        },
+                                    )
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = checked, onCheckedChange = null)
+                                Text(category.name)
+                            }
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = {
+                            newName = it
+                            inputError = null
+                        },
+                        singleLine = true,
+                        label = { Text("Kategori baru") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = newName.isNotBlank(),
+                        onClick = {
+                            val nameError = categoryNameError(newName, categories)
+                            if (nameError != null) {
+                                inputError = nameError
+                            } else {
+                                runCatching { onCreateCategory(newName.trim()) }
+                                    .onSuccess { created ->
+                                        selected = selected + created.id
+                                        newName = ""
+                                        inputError = null
+                                    }
+                                    .onFailure { inputError = "Kategori tidak dapat dibuat." }
+                            }
+                        },
+                    ) {
+                        Text("Tambah")
+                    }
+                }
+                inputError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(selected) }) { Text("Simpan") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Batal") }
+        },
+    )
+}
+
+@Composable
+private fun LibraryCategoryManagerDialog(
+    categories: List<LibraryCategory>,
+    onCreateCategory: (String) -> LibraryCategory,
+    onRenameCategory: (String, String) -> Unit,
+    onDeleteCategory: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var newName by remember { mutableStateOf("") }
+    var editingId by remember { mutableStateOf<String?>(null) }
+    var editingName by remember { mutableStateOf("") }
+    var pendingDelete by remember { mutableStateOf<LibraryCategory?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Kelola kategori") },
+        text = {
+            Column(
+                modifier = Modifier.widthIn(max = 560.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Kategori dapat dipakai untuk mengelompokkan beberapa judul.")
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 300.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(categories, key = LibraryCategory::id) { category ->
+                        if (editingId == category.id) {
+                            val nameError = categoryNameError(editingName, categories, excludingId = category.id)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = editingName,
+                                        onValueChange = {
+                                            editingName = it
+                                            message = null
+                                        },
+                                        singleLine = true,
+                                        label = { Text("Nama kategori") },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextButton(
+                                        enabled = nameError == null,
+                                        onClick = {
+                                            runCatching { onRenameCategory(category.id, editingName.trim()) }
+                                                .onSuccess {
+                                                    editingId = null
+                                                    message = null
+                                                }
+                                                .onFailure { message = "Kategori tidak dapat diubah." }
+                                        },
+                                    ) { Text("Simpan") }
+                                    TextButton(onClick = { editingId = null }) { Text("Batal") }
+                                }
+                                if (nameError != null) Text(nameError, color = MaterialTheme.colorScheme.error)
+                            }
+                        } else {
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(category.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        if (category.builtIn) {
+                                            Text(
+                                                "Bawaan",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            editingId = category.id
+                                            editingName = category.name
+                                            message = null
+                                        },
+                                    ) { Text("Ubah") }
+                                    TextButton(onClick = { pendingDelete = category }) { Text("Hapus") }
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                            }
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = {
+                            newName = it
+                            message = null
+                        },
+                        singleLine = true,
+                        label = { Text("Kategori baru") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = categoryNameError(newName, categories) == null,
+                        onClick = {
+                            runCatching { onCreateCategory(newName.trim()) }
+                                .onSuccess {
+                                    newName = ""
+                                    message = null
+                                }
+                                .onFailure { message = "Kategori tidak dapat dibuat." }
+                        },
+                    ) { Text("Tambah") }
+                }
+                message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Tutup") }
+        },
+    )
+
+    pendingDelete?.let { category ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Hapus kategori ${category.name}?") },
+            text = {
+                Text("Judul yang disimpan tetap ada, tetapi akan dikeluarkan dari kategori ini.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        runCatching { onDeleteCategory(category.id) }
+                            .onSuccess { message = null }
+                            .onFailure { message = "Kategori tidak dapat dihapus." }
+                        pendingDelete = null
+                    },
+                ) { Text("Hapus") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Batal") }
+            },
+        )
+    }
+}
+
+private fun categoryNameError(
+    name: String,
+    categories: List<LibraryCategory>,
+    excludingId: String? = null,
+): String? = when {
+    name.isBlank() -> "Masukkan nama kategori."
+    categories.any { it.id != excludingId && it.name.equals(name.trim(), ignoreCase = true) } ->
+        "Nama kategori sudah digunakan."
+    else -> null
 }
 
 @Composable
