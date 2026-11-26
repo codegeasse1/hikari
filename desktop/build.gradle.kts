@@ -53,3 +53,35 @@ compose.desktop {
         }
     }
 }
+
+val stripAppLocalUcrt = tasks.register("stripAppLocalUcrt") {
+    group = "distribution"
+    description = "Use the Windows system UCRT instead of packaging app-local copies."
+    dependsOn("createRuntimeImage")
+    outputs.upToDateWhen { false }
+
+    doLast {
+        val composeBuildDir = layout.buildDirectory.dir("compose").get().asFile
+        val ucrtFiles = composeBuildDir.walkTopDown().filter { file ->
+            val parentName = file.parentFile?.name?.lowercase()
+            val runtimeName = file.parentFile?.parentFile?.name?.lowercase()
+            file.isFile &&
+                parentName == "bin" &&
+                runtimeName == "runtime" &&
+                (file.name.equals("ucrtbase.dll", ignoreCase = true) ||
+                    (file.name.startsWith("api-ms-win-crt-", ignoreCase = true) &&
+                        file.extension.equals("dll", ignoreCase = true)))
+        }.toList()
+
+        ucrtFiles.forEach { file ->
+            if (!file.delete()) {
+                throw org.gradle.api.GradleException("Could not remove app-local UCRT file: ${file.path}")
+            }
+        }
+        logger.lifecycle("Removed ${ucrtFiles.size} app-local UCRT DLL(s) from the Windows runtime image.")
+    }
+}
+
+tasks.matching { it.name == "packageMsi" || it.name == "packageExe" }.configureEach {
+    dependsOn(stripAppLocalUcrt)
+}

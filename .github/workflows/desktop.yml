@@ -38,6 +38,37 @@ jobs:
         run: |
           gradle :desktop:test :desktop:packageMsi :desktop:packageExe --no-daemon
 
+      - name: Verify the runtime and smoke-test the launcher
+        shell: pwsh
+        run: |
+          $buildRoot = "desktop/build/compose/binaries/main"
+          $appRoot = Join-Path $buildRoot "app"
+          if (-not (Test-Path $appRoot)) {
+            throw "Compose app image was not found: $appRoot"
+          }
+
+          $ucrtFiles = @(Get-ChildItem -Path $appRoot -Recurse -File | Where-Object {
+            $_.Name -ieq "ucrtbase.dll" -or $_.Name -like "api-ms-win-crt-*.dll"
+          })
+          if ($ucrtFiles.Count -gt 0) {
+            $ucrtFiles | ForEach-Object { Write-Host $_.FullName }
+            throw "App-local UCRT DLLs are still present in the packaged runtime."
+          }
+
+          $launcher = Get-ChildItem -Path $appRoot -Recurse -File -Filter "Hikari.exe" | Select-Object -First 1
+          if (-not $launcher) {
+            throw "Hikari.exe was not found in the Compose app image."
+          }
+
+          $process = Start-Process -FilePath $launcher.FullName -PassThru
+          Start-Sleep -Seconds 10
+          $process.Refresh()
+          if ($process.HasExited) {
+            throw "Hikari exited during startup with code $($process.ExitCode)."
+          }
+          Stop-Process -Id $process.Id -Force
+          Write-Host "Hikari remained running for the smoke-test interval without app-local UCRT files."
+
       - uses: actions/upload-artifact@v4
         with:
           name: hikari-windows-${{ github.sha }}
