@@ -35,6 +35,8 @@ data class AddonTitle(
     val description: String? = null,
     val releaseInfo: String? = null,
     val genres: List<String> = emptyList(),
+    val year: Int? = null,
+    val rating: Double? = null,
 )
 
 data class AddonEpisode(

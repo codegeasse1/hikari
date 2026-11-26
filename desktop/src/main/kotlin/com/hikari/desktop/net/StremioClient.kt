@@ -129,6 +129,8 @@ class StremioClient(
             backgroundUrl = meta.stringOrNull("background") ?: meta.stringOrNull("backdrop") ?: title.backgroundUrl,
             releaseInfo = meta.stringOrNull("releaseInfo") ?: title.releaseInfo,
             genres = meta.stringList("genres").ifEmpty { title.genres },
+            year = meta.string("year").toIntOrNull() ?: releaseYear(meta.stringOrNull("releaseInfo")) ?: title.year,
+            rating = meta.doubleOrNull("imdbRating") ?: meta.doubleOrNull("rating") ?: title.rating,
         )
         val episodes = meta.array("videos")?.mapNotNull { element ->
             val video = element.asObjectOrNull() ?: return@mapNotNull null
@@ -277,8 +279,13 @@ class StremioClient(
             description = json.stringOrNull("description"),
             releaseInfo = json.stringOrNull("releaseInfo"),
             genres = json.stringList("genres"),
+            year = json.string("year").toIntOrNull() ?: releaseYear(json.stringOrNull("releaseInfo")),
+            rating = json.doubleOrNull("imdbRating") ?: json.doubleOrNull("rating"),
         )
     }
+
+    private fun releaseYear(value: String?): Int? =
+        Regex("(19|20)\\d{2}").find(value.orEmpty())?.value?.toIntOrNull()
 
     private fun isHttpUrl(value: String): Boolean = try {
         val uri = URI(value)
@@ -313,6 +320,10 @@ class StremioClient(
 
     private fun JsonObject.int(name: String, default: Int): Int =
         get(name)?.takeUnless { it.isJsonNull }?.let { runCatching { it.asInt }.getOrNull() } ?: default
+
+    private fun JsonObject.doubleOrNull(name: String): Double? =
+        get(name)?.takeUnless { it.isJsonNull }?.let { runCatching { it.asDouble }.getOrNull() }
+            ?.takeIf { it.isFinite() && it in 0.0..10.0 }
 
 }
 

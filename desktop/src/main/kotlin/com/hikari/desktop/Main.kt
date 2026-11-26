@@ -122,6 +122,7 @@ private fun HikariDesktopApp() {
     var searchResults by remember { mutableStateOf(emptyList<AddonTitle>()) }
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    var searchPartialFailure by remember { mutableStateOf(false) }
     var selectedSearchSourceUrl by remember { mutableStateOf<String?>(null) }
     var searchHistory by remember {
         mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
@@ -473,11 +474,13 @@ private fun HikariDesktopApp() {
         val query = (queryOverride ?: searchQuery).trim()
         if (query.isBlank()) {
             searchError = "Ketik judul yang ingin dicari."
+            searchPartialFailure = false
             return
         }
         val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrl)
         if (urls.isEmpty()) {
             searchError = "Tambahkan sumber Stremio sebelum mencari."
+            searchPartialFailure = false
             return
         }
         searchQuery = query
@@ -485,6 +488,7 @@ private fun HikariDesktopApp() {
         scope.launch {
             searchLoading = true
             searchError = null
+            searchPartialFailure = false
             searchResults = emptyList()
             try {
                 val batches = coroutineScope {
@@ -498,6 +502,7 @@ private fun HikariDesktopApp() {
                         ?: "Pencarian dari sumber ini gagal."
                 } else if (batches.any { it.isFailure }) {
                     searchError = "Sebagian sumber tidak merespons; hasil yang berhasil tetap ditampilkan."
+                    searchPartialFailure = true
                 }
             } finally {
                 searchLoading = false
@@ -608,10 +613,12 @@ private fun HikariDesktopApp() {
                                     if (it.isBlank()) {
                                         searchResults = emptyList()
                                         searchError = null
+                                        searchPartialFailure = false
                                     }
                                 },
                                 loading = searchLoading,
                                 error = searchError,
+                                partialFailure = searchPartialFailure,
                                 results = searchResults,
                                 recentSearches = searchHistory,
                                 historyError = searchHistoryError,

@@ -52,6 +52,24 @@ class StremioClientTest {
     }
 
     @Test
+    fun mapsYearAndImdbRatingIntoDesktopTitles() = runBlocking {
+        val client = StremioClient {
+            """
+                {"metas":[{"id":"tt456","type":"movie","name":"Rated Film",
+                  "releaseInfo":"2021–2023","imdbRating":"8.4"}]}
+            """.trimIndent()
+        }
+
+        val titles = client.catalog(
+            addonUrl = "https://addons.example/",
+            catalog = AddonCatalog("movie", "popular", "Popular"),
+        )
+
+        assertEquals(2021, titles.single().year)
+        assertEquals(8.4, titles.single().rating!!, 0.0)
+    }
+
+    @Test
     fun catalogPageTwoRequestsTheStremioSkipOffset() = runBlocking {
         val requestUrls = mutableListOf<String>()
         val expectedUrl = "https://addons.example/catalog/movie/popular/skip=100.json"

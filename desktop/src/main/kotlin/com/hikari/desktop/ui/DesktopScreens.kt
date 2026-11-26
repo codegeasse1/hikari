@@ -1069,6 +1069,7 @@ internal fun SearchScreen(
     onQueryChange: (String) -> Unit,
     loading: Boolean,
     error: String?,
+    partialFailure: Boolean,
     results: List<AddonTitle>,
     recentSearches: List<String>,
     historyError: String?,
@@ -1083,9 +1084,9 @@ internal fun SearchScreen(
     selectedSearchSourceUrl: String?,
     onSearchSourceSelected: (String?) -> Unit,
 ) {
-    var selectedTypeFilter by remember { mutableStateOf(SearchTypeFilter.ALL) }
-    val visibleResults = remember(results, selectedTypeFilter) {
-        filterSearchResults(results, selectedTypeFilter)
+    var searchFilters by remember { mutableStateOf(SearchFilters()) }
+    val visibleResults = remember(results, searchFilters) {
+        filterSearchResults(results, searchFilters)
     }
     var sourceMenuOpen by remember { mutableStateOf(false) }
     val selectedSource = searchSources.firstOrNull { it.url == selectedSearchSourceUrl }
@@ -1179,7 +1180,7 @@ internal fun SearchScreen(
             ProgressMessage("Mencari di katalog…")
         } else {
             if (error != null) MessagePanel(
-                title = "Pencarian belum lengkap",
+                title = if (partialFailure) "Pencarian belum lengkap" else "Pencarian gagal",
                 message = error,
                 isError = true,
             )
@@ -1189,31 +1190,13 @@ internal fun SearchScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text("Hasil pencarian", style = MaterialTheme.typography.titleLarge)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            "Tipe",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        SearchTypeFilter.values().forEach { filter ->
-                            FilterChip(
-                                selected = selectedTypeFilter == filter,
-                                onClick = { selectedTypeFilter = filter },
-                                label = { Text(filter.label) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                ),
-                            )
-                        }
-                    }
+                    SearchResultFilters(results, searchFilters) { searchFilters = it }
                     if (visibleResults.isEmpty()) {
                         EmptyState(
-                            title = "Tidak ada ${selectedTypeFilter.label.lowercase()} dalam hasil ini",
-                            message = "Pilih Semua untuk menampilkan jenis hasil lainnya.",
+                            title = "Tidak ada hasil sesuai filter",
+                            message = "Ubah filter atau reset untuk melihat hasil lainnya.",
+                            actionLabel = "Reset filter",
+                            onAction = { searchFilters = SearchFilters() },
                         )
                     } else {
                         LazyVerticalGrid(
@@ -1236,16 +1219,152 @@ internal fun SearchScreen(
                         }
                     }
                 }
-            } else if (error == null && query.isNotBlank()) {
-                EmptyState(
+            } else when (searchResultsPresentation(query, results, error, partialFailure)) {
+                SearchResultsPresentation.PARTIAL_FAILURE_WITHOUT_MATCH -> EmptyState(
+                    title = "Belum ada hasil yang cocok",
+                    message = "Sumber yang merespons tidak menemukan judul ini. Periksa ejaan, atau pilih satu sumber untuk mengisolasi add-on yang bermasalah.",
+                )
+                SearchResultsPresentation.SOURCE_FAILURE_WITHOUT_MATCH -> EmptyState(
+                    title = "Hasil pencarian tidak tersedia",
+                    message = "Lihat pesan error di atas, periksa koneksi atau endpoint sumber, lalu coba lagi.",
+                )
+                SearchResultsPresentation.NO_MATCH -> EmptyState(
                     title = "Tidak ada judul yang cocok",
                     message = "Coba kata kunci lain atau periksa apakah sumber mendukung pencarian.",
                 )
-            } else if (query.isBlank()) {
-                Text(
+                SearchResultsPresentation.QUERY_REQUIRED -> Text(
                     "Masukkan judul, lalu tekan Cari atau Enter.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SearchResultsPresentation.RESULTS -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResultFilters(
+    results: List<AddonTitle>,
+    filters: SearchFilters,
+    onFiltersChange: (SearchFilters) -> Unit,
+) {
+    val genres = remember(results) { availableSearchGenres(results) }
+    val years = remember(results) { availableSearchYears(results) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Tipe",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SearchTypeFilter.values().forEach { filter ->
+                FilterChip(
+                    selected = filters.type == filter,
+                    onClick = { onFiltersChange(filters.copy(type = filter)) },
+                    label = { Text(filter.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MultiSelectSearchFilterChip(
+                label = "Genre",
+                options = genres,
+                selected = filters.genres,
+                onToggle = { genre ->
+                    val next = if (genre in filters.genres) filters.genres - genre else filters.genres + genre
+                    onFiltersChange(filters.copy(genres = next))
+                },
+            )
+            MultiSelectSearchFilterChip(
+                label = "Tahun",
+                options = years,
+                selected = filters.years,
+                optionLabel = Int::toString,
+                onToggle = { year ->
+                    val next = if (year in filters.years) filters.years - year else filters.years + year
+                    onFiltersChange(filters.copy(years = next))
+                },
+            )
+            RatingSearchFilterChip(filters.minimumRating) { rating ->
+                onFiltersChange(filters.copy(minimumRating = rating))
+            }
+            if (filters.isActive) {
+                TextButton(onClick = { onFiltersChange(SearchFilters()) }) { Text("Reset filter") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> MultiSelectSearchFilterChip(
+    label: String,
+    options: List<T>,
+    selected: Set<T>,
+    optionLabel: (T) -> String = { it.toString() },
+    onToggle: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(
+            selected = selected.isNotEmpty(),
+            onClick = { expanded = true },
+            enabled = options.isNotEmpty(),
+            label = { Text(if (selected.isEmpty()) label else "$label (${selected.size})") },
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Checkbox(checked = option in selected, onCheckedChange = null)
+                            Text(optionLabel(option))
+                        }
+                    },
+                    onClick = { onToggle(option) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RatingSearchFilterChip(
+    minimumRating: Double?,
+    onRatingSelected: (Double?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(
+            selected = minimumRating != null,
+            onClick = { expanded = true },
+            label = { Text(minimumRating?.let { "Rating ${it.toInt()}+" } ?: "Rating") },
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Semua rating") },
+                onClick = {
+                    onRatingSelected(null)
+                    expanded = false
+                },
+            )
+            listOf(6.0, 7.0, 8.0, 9.0).forEach { rating ->
+                DropdownMenuItem(
+                    text = { Text("${rating.toInt()} ke atas") },
+                    onClick = {
+                        onRatingSelected(rating)
+                        expanded = false
+                    },
                 )
             }
         }

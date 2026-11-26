@@ -5,30 +5,102 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SearchTypeFilterTest {
-    private val movie = title(id = "film", type = "movie")
-    private val series = title(id = "show", type = "series")
-    private val other = title(id = "other", type = "anime")
-    private val results = listOf(movie, series, other)
+    private val addon = "https://catalog.example/manifest.json"
+    private val movie = title(id = "film", type = "movie", year = 2024, rating = 7.4)
+    private val series = title(id = "show", type = "series", year = 2021, genres = listOf("Drama"), rating = 8.2)
+    private val anime = title(id = "anime", type = "series", genres = listOf(" Anime "), rating = 8.8)
+    private val explicitAnime = title(id = "anime-type", type = "anime", year = 2023)
+    private val unscored = title(id = "unscored", type = "series", genres = listOf("Comedy"))
+    private val results = listOf(movie, series, anime, explicitAnime, unscored)
 
     @Test
     fun `all keeps results from every Stremio media type in their original order`() {
-        assertEquals(results, filterSearchResults(results, SearchTypeFilter.ALL))
+        assertEquals(results, filterSearchResults(results, SearchFilters()))
     }
 
     @Test
-    fun `movies keeps only movie results without changing their order`() {
-        assertEquals(listOf(movie), filterSearchResults(results, SearchTypeFilter.MOVIES))
+    fun `movies excludes anime even when an add-on reports it as a movie`() {
+        val animeMovie = title(id = "anime-film", type = "movie", genres = listOf("Anime"))
+        assertEquals(listOf(movie), filterSearchResults(listOf(movie, animeMovie), SearchFilters(type = SearchTypeFilter.MOVIES)))
     }
 
     @Test
-    fun `series matches its Stremio type without changing the result`() {
-        assertEquals(listOf(series), filterSearchResults(results, SearchTypeFilter.SERIES))
+    fun `series excludes anime`() {
+        assertEquals(listOf(series, unscored), filterSearchResults(results, SearchFilters(type = SearchTypeFilter.SERIES)))
     }
 
-    private fun title(id: String, type: String) = AddonTitle(
-        addonUrl = "https://catalog.example/manifest.json",
+    @Test
+    fun `anime includes declared anime types and anime genres`() {
+        assertEquals(listOf(anime, explicitAnime), filterSearchResults(results, SearchFilters(type = SearchTypeFilter.ANIME)))
+    }
+
+    @Test
+    fun `general animation genre is not enough to classify a title as anime`() {
+        val animatedMovie = title(id = "animation", type = "movie", genres = listOf("Animation"))
+
+        assertEquals(emptyList<AddonTitle>(), filterSearchResults(listOf(animatedMovie), SearchFilters(type = SearchTypeFilter.ANIME)))
+    }
+
+    @Test
+    fun `genre filtering matches selected genres case insensitively`() {
+        assertEquals(
+            listOf(series, unscored),
+            filterSearchResults(results, SearchFilters(genres = setOf(" drama ", "COMEDY"))),
+        )
+    }
+
+    @Test
+    fun `year filtering keeps only selected years`() {
+        assertEquals(listOf(movie, series), filterSearchResults(results, SearchFilters(years = setOf(2021, 2024))))
+    }
+
+    @Test
+    fun `filter choices come from result metadata and are sorted without duplicates`() {
+        val titles = listOf(
+            title(id = "first", type = "movie", year = 2024, genres = listOf("Drama", "Comedy")),
+            title(id = "second", type = "movie", genres = listOf("drama", "Action")).copy(releaseInfo = "2019–2020"),
+        )
+
+        assertEquals(listOf("Action", "Comedy", "Drama"), availableSearchGenres(titles))
+        assertEquals(listOf(2024, 2019), availableSearchYears(titles))
+    }
+
+    @Test
+    fun `minimum rating keeps qualifying and unscored results`() {
+        assertEquals(
+            listOf(series, anime, explicitAnime, unscored),
+            filterSearchResults(results, SearchFilters(minimumRating = 8.0)),
+        )
+    }
+
+    @Test
+    fun `partial source failure with no successful matches has a distinct presentation`() {
+        assertEquals(
+            SearchResultsPresentation.PARTIAL_FAILURE_WITHOUT_MATCH,
+            searchResultsPresentation("sunshine throught the rain", emptyList(), "Some sources failed", partialFailure = true),
+        )
+    }
+
+    @Test
+    fun `successful no-match and empty query are distinct from partial failure`() {
+        assertEquals(SearchResultsPresentation.NO_MATCH, searchResultsPresentation("unknown title", emptyList(), null, false))
+        assertEquals(SearchResultsPresentation.SOURCE_FAILURE_WITHOUT_MATCH, searchResultsPresentation("title", emptyList(), "All sources failed", false))
+        assertEquals(SearchResultsPresentation.QUERY_REQUIRED, searchResultsPresentation("  ", emptyList(), null, false))
+    }
+
+    private fun title(
+        id: String,
+        type: String,
+        year: Int? = null,
+        genres: List<String> = emptyList(),
+        rating: Double? = null,
+    ) = AddonTitle(
+        addonUrl = addon,
         id = id,
         type = type,
         title = id,
+        genres = genres,
+        year = year,
+        rating = rating,
     )
 }
