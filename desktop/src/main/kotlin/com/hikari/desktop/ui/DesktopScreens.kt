@@ -69,6 +69,7 @@ import com.hikari.desktop.catalogDirectoryContentState
 import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.savedTitleIdentity
 import com.hikari.desktop.data.StreamKind
 import kotlinx.coroutines.flow.collectLatest
 import java.net.URI
@@ -76,11 +77,21 @@ import java.net.URI
 internal enum class DesktopPage {
     HOME,
     SEARCH,
+    LIBRARY,
     SOURCES,
     CATALOGS,
     CATALOG,
     DETAIL,
 }
+
+internal data class DesktopNavigationDestination(val page: DesktopPage, val label: String)
+
+internal val desktopNavigationDestinations = listOf(
+    DesktopNavigationDestination(DesktopPage.HOME, "Beranda"),
+    DesktopNavigationDestination(DesktopPage.SEARCH, "Cari"),
+    DesktopNavigationDestination(DesktopPage.LIBRARY, "Pustaka"),
+    DesktopNavigationDestination(DesktopPage.SOURCES, "Sumber"),
+)
 
 internal fun catalogBrowseReturnDestination(origin: DesktopPage): DesktopPage =
     if (origin == DesktopPage.CATALOGS) DesktopPage.CATALOGS else DesktopPage.HOME
@@ -111,9 +122,9 @@ internal fun DesktopSidebar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp, bottom = 24.dp),
             )
-            NavigationItem("Beranda", selectedPage == DesktopPage.HOME) { onNavigate(DesktopPage.HOME) }
-            NavigationItem("Cari", selectedPage == DesktopPage.SEARCH) { onNavigate(DesktopPage.SEARCH) }
-            NavigationItem("Sumber", selectedPage == DesktopPage.SOURCES) { onNavigate(DesktopPage.SOURCES) }
+            desktopNavigationDestinations.forEach { destination ->
+                NavigationItem(destination.label, selectedPage == destination.page) { onNavigate(destination.page) }
+            }
             Spacer(Modifier.weight(1f))
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
             Text(
@@ -416,6 +427,56 @@ private fun catalogMediaLabel(type: String): String = when (type.lowercase()) {
     "movie", "film" -> "Film"
     "series", "tv" -> "Serial"
     else -> type
+}
+
+@Composable
+internal fun LibraryScreen(
+    titles: List<AddonTitle>,
+    loading: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
+    onBrowseHome: () -> Unit,
+    onOpenTitle: (AddonTitle) -> Unit,
+    onRemoveTitle: (AddonTitle) -> Unit,
+) {
+    when {
+        loading -> ProgressMessage("Memuat pustaka…")
+        error != null -> MessagePanel(
+            title = "Pustaka tidak dapat dimuat",
+            message = error,
+            actionLabel = "Coba lagi",
+            onAction = onRetry,
+            isError = true,
+        )
+        titles.isEmpty() -> EmptyState(
+            title = "Pustaka kosong",
+            message = "Judul yang disimpan dari halaman detail akan muncul di sini.",
+            actionLabel = "Jelajahi beranda",
+            onAction = onBrowseHome,
+        )
+        else -> Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Text("${titles.size} judul", style = MaterialTheme.typography.bodySmall)
+            }
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(152.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(bottom = 20.dp),
+            ) {
+                items(titles, key = { it.savedTitleIdentity() }) { title ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        TitleCard(title = title, modifier = Modifier.fillMaxWidth()) { onOpenTitle(title) }
+                        TextButton(onClick = { onRemoveTitle(title) }) { Text("Hapus dari Pustaka") }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -867,8 +928,11 @@ internal fun DetailScreen(
     loading: Boolean,
     error: String?,
     playbackMessage: String?,
+    isSaved: Boolean,
+    libraryError: String?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
+    onToggleSaved: () -> Unit,
     onPlayEpisode: (AddonEpisode) -> Unit,
 ) {
     Row(
@@ -906,9 +970,15 @@ internal fun DetailScreen(
                     )
                 }
                 Spacer(Modifier.height(2.dp))
-                Button(onClick = onPlay) {
-                    Text(if (title.type.equals("movie", ignoreCase = true)) "Pilih pemutar" else "Putar episode pertama")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onPlay) {
+                        Text(if (title.type.equals("movie", ignoreCase = true)) "Pilih pemutar" else "Putar episode pertama")
+                    }
+                    OutlinedButton(onClick = onToggleSaved) {
+                        Text(if (isSaved) "Hapus dari Pustaka" else "Simpan ke Pustaka")
+                    }
                 }
+                libraryError?.let { Text("Pustaka: $it", color = MaterialTheme.colorScheme.error) }
                 if (playbackMessage != null) {
                     Text(playbackMessage, color = MaterialTheme.colorScheme.primary)
                 }

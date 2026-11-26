@@ -32,8 +32,10 @@ import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonSourceStore
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.SavedTitlesStore
 import com.hikari.desktop.data.SearchHistoryStore
 import com.hikari.desktop.data.StreamKind
+import com.hikari.desktop.data.savedTitleIdentity
 import com.hikari.desktop.net.AddonClientException
 import com.hikari.desktop.net.StremioClient
 import com.hikari.desktop.playback.StreamLauncher
@@ -44,6 +46,7 @@ import com.hikari.desktop.ui.CatalogBrowseScreen
 import com.hikari.desktop.ui.CatalogDirectoryScreen
 import com.hikari.desktop.ui.catalogBrowseReturnDestination
 import com.hikari.desktop.ui.HomeScreen
+import com.hikari.desktop.ui.LibraryScreen
 import com.hikari.desktop.ui.SearchScreen
 import com.hikari.desktop.ui.SourceManagerScreen
 import com.hikari.desktop.ui.StreamPickerDialog
@@ -89,6 +92,7 @@ private fun HikariDesktopApp() {
     val client = remember { StremioClient() }
     val catalogPageSource = remember { StremioCatalogPageSource(client) }
     val sourceStore = remember { AddonSourceStore() }
+    val savedTitlesStore = remember { SavedTitlesStore() }
     val searchHistoryStore = remember { SearchHistoryStore() }
     val scope = rememberCoroutineScope()
 
@@ -116,6 +120,9 @@ private fun HikariDesktopApp() {
         mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
     }
     var searchHistoryError by remember { mutableStateOf<String?>(null) }
+    var savedTitles by remember { mutableStateOf(emptyList<AddonTitle>()) }
+    var savedTitlesLoading by remember { mutableStateOf(true) }
+    var savedTitlesError by remember { mutableStateOf<String?>(null) }
     var streamDialogOpen by remember { mutableStateOf(false) }
     var streamDialogTitle by remember { mutableStateOf("") }
     var streams by remember { mutableStateOf(emptyList<AddonStream>()) }
@@ -140,7 +147,40 @@ private fun HikariDesktopApp() {
         }
     }
 
+    fun reloadSavedTitles() {
+        savedTitlesLoading = true
+        savedTitlesError = null
+        try {
+            savedTitles = savedTitlesStore.all()
+        } catch (error: Exception) {
+            savedTitlesError = error.userMessage()
+        } finally {
+            savedTitlesLoading = false
+        }
+    }
+
+    fun updateSavedTitles(operation: () -> List<AddonTitle>) {
+        try {
+            savedTitles = operation()
+            savedTitlesError = null
+        } catch (error: Exception) {
+            savedTitlesError = error.userMessage()
+        }
+    }
+
+    fun toggleSavedTitle(title: AddonTitle) {
+        val isSaved = savedTitles.any { it.savedTitleIdentity() == title.savedTitleIdentity() }
+        updateSavedTitles {
+            if (isSaved) savedTitlesStore.remove(title) else savedTitlesStore.save(title)
+        }
+    }
+
+    fun removeSavedTitle(title: AddonTitle) {
+        updateSavedTitles { savedTitlesStore.remove(title) }
+    }
+
     LaunchedEffect(Unit) {
+        reloadSavedTitles()
         loadSources(sourceStore.all())
     }
 
@@ -391,6 +431,7 @@ private fun HikariDesktopApp() {
     val title = when (page) {
         DesktopPage.HOME -> "Beranda"
         DesktopPage.SEARCH -> "Cari judul"
+        DesktopPage.LIBRARY -> "Pustaka"
         DesktopPage.SOURCES -> "Sumber"
         DesktopPage.CATALOGS -> "Semua katalog"
         DesktopPage.CATALOG -> catalogBrowse.target?.catalogName ?: "Katalog"
@@ -399,6 +440,7 @@ private fun HikariDesktopApp() {
     val subtitle = when (page) {
         DesktopPage.HOME -> "Katalog dari add-on Stremio yang sudah ditambahkan"
         DesktopPage.SEARCH -> "Cari lintas katalog yang menyediakan pencarian"
+        DesktopPage.LIBRARY -> "Judul yang disimpan dari halaman detail"
         DesktopPage.SOURCES -> "Tambah dan kelola sumber katalog Stremio"
         DesktopPage.CATALOGS -> "Katalog dari semua add-on Stremio yang dipasang"
         DesktopPage.CATALOG -> catalogBrowse.target?.sourceName ?: "Semua judul dalam katalog"
@@ -455,6 +497,15 @@ private fun HikariDesktopApp() {
                                 onLoadNextPage = ::loadNextCatalogPage,
                                 onOpenTitle = ::openTitle,
                             )
+                            DesktopPage.LIBRARY -> LibraryScreen(
+                                titles = savedTitles,
+                                loading = savedTitlesLoading,
+                                error = savedTitlesError,
+                                onRetry = ::reloadSavedTitles,
+                                onBrowseHome = { page = DesktopPage.HOME },
+                                onOpenTitle = ::openTitle,
+                                onRemoveTitle = ::removeSavedTitle,
+                            )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,
                                 onQueryChange = {
@@ -492,14 +543,18 @@ private fun HikariDesktopApp() {
                                 },
                             )
                             DesktopPage.DETAIL -> selectedTitle?.let { selected ->
+                                val detailTitle = titleDetail?.title ?: selected
                                 DetailScreen(
-                                    title = titleDetail?.title ?: selected,
+                                    title = detailTitle,
                                     episodes = titleDetail?.episodes.orEmpty(),
                                     loading = detailLoading,
                                     error = detailError,
                                     playbackMessage = playbackMessage,
+                                    isSaved = savedTitles.any { it.savedTitleIdentity() == detailTitle.savedTitleIdentity() },
+                                    libraryError = savedTitlesError,
                                     onBack = { page = previousPage },
                                     onPlay = { requestStreams(selected) },
+                                    onToggleSaved = { toggleSavedTitle(detailTitle) },
                                     onPlayEpisode = { requestStreams(selected, it) },
                                 )
                             } ?: EmptyDetailScreen(onBack = { page = DesktopPage.HOME })
