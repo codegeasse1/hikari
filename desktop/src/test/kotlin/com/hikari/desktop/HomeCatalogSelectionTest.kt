@@ -4,7 +4,9 @@ import com.hikari.desktop.data.AddonCatalog
 import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonResource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HomeCatalogSelectionTest {
@@ -143,6 +145,23 @@ class HomeCatalogSelectionTest {
         assertEquals(first.catalog.type, firstRef.mediaType)
         assertEquals(first.catalog.id, firstRef.catalogId)
         assertNotEquals(firstRef.stableIdentity, secondRef.stableIdentity)
+    }
+
+    @Test
+    fun catalogReferenceMarksOnlyAdvertisedSearchCatalogsAsSearchable() {
+        val searchable = HomeCatalogSelection(
+            addonUrl = "https://catalog.example/manifest.json",
+            addonName = "Catalog",
+            catalog = AddonCatalog("movie", "popular", "Popular", extraNames = setOf("SEARCH")),
+        ).toCatalogReference()
+        val unsupported = HomeCatalogSelection(
+            addonUrl = "https://catalog.example/manifest.json",
+            addonName = "Catalog",
+            catalog = AddonCatalog("movie", "featured", "Featured", extraNames = setOf("genre")),
+        ).toCatalogReference()
+
+        assertTrue(searchable.supportsSearch)
+        assertFalse(unsupported.supportsSearch)
     }
 
     private fun source(

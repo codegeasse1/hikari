@@ -301,23 +301,37 @@ private fun HikariDesktopApp() {
         val target = current.target ?: return
         if (!current.canLoadNextPage()) return
         val requestedPage = current.nextPage
+        val requestedSearchQuery = current.appliedSearchQuery
         catalogBrowse = current.beginPageLoad()
         scope.launch {
             try {
-                val pageResult = catalogPageSource.loadPage(target, page = requestedPage)
+                val pageResult = catalogPageSource.loadPage(
+                    target,
+                    page = requestedPage,
+                    search = requestedSearchQuery,
+                )
                 val latest = catalogBrowse
-                if (latest.acceptsResponse(target, requestedPage)) {
+                if (latest.acceptsResponse(target, requestedPage, requestedSearchQuery)) {
                     catalogBrowse = latest.finishPage(pageResult)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 val latest = catalogBrowse
-                if (latest.acceptsResponse(target, requestedPage)) {
+                if (latest.acceptsResponse(target, requestedPage, requestedSearchQuery)) {
                     catalogBrowse = latest.failPage(error.userMessage())
                 }
             }
         }
+    }
+
+    fun submitCatalogSearch() {
+        val current = catalogBrowse
+        if (current.loading || current.target?.supportsSearch != true) return
+        val searched = current.applySearchText()
+        if (searched == current) return
+        catalogBrowse = searched
+        loadNextCatalogPage()
     }
 
     fun openCatalog(selection: HomeCatalogSelection) {
@@ -558,6 +572,8 @@ private fun HikariDesktopApp() {
                                 state = catalogBrowse,
                                 onBack = { page = catalogReturnPage },
                                 onLoadNextPage = ::loadNextCatalogPage,
+                                onSearchTextChange = { text -> catalogBrowse = catalogBrowse.copy(searchText = text) },
+                                onSearch = ::submitCatalogSearch,
                                 onOpenTitle = ::openTitle,
                             )
                             DesktopPage.LIBRARY -> LibraryScreen(

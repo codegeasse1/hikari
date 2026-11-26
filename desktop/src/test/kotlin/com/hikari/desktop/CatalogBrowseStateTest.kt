@@ -100,6 +100,53 @@ class CatalogBrowseStateTest {
     }
 
     @Test
+    fun applyingSearchTextStartsANewResultSetAtPageOne() {
+        val firstPage = CatalogBrowseState(target = target, hasMore = true)
+            .beginPageLoad()
+            .finishPage(CatalogPageResult(listOf(title("tt1")), hasMore = true))
+
+        val searching = firstPage.copy(searchText = "  one piece  ", error = "Old page failed")
+            .applySearchText()
+
+        assertEquals("one piece", searching.appliedSearchQuery)
+        assertEquals(emptyList<AddonTitle>(), searching.titles)
+        assertEquals(1, searching.nextPage)
+        assertTrue(searching.hasMore)
+        assertFalse(searching.loading)
+        assertEquals(null, searching.error)
+    }
+
+    @Test
+    fun applyingBlankSearchRestoresTheUnfilteredCatalog() {
+        val searched = CatalogBrowseState(target = target, hasMore = true)
+            .copy(searchText = "one piece")
+            .applySearchText()
+            .beginPageLoad()
+            .finishPage(CatalogPageResult(listOf(title("tt1")), hasMore = true))
+
+        val unfiltered = searched.copy(searchText = "  ").applySearchText()
+
+        assertEquals(null, unfiltered.appliedSearchQuery)
+        assertEquals(emptyList<AddonTitle>(), unfiltered.titles)
+        assertEquals(1, unfiltered.nextPage)
+        assertTrue(unfiltered.hasMore)
+    }
+
+    @Test
+    fun responseFromAnOlderSearchQueryIsRejectedAfterAQueryChange() {
+        val oldQuery = CatalogBrowseState(target = target, hasMore = true)
+            .copy(searchText = "old query")
+            .applySearchText()
+            .beginPageLoad()
+        val newQuery = oldQuery.copy(searchText = "new query")
+            .applySearchText()
+            .beginPageLoad()
+
+        assertFalse(newQuery.acceptsResponse(target, requestedPage = 1, requestedSearchQuery = "old query"))
+        assertTrue(newQuery.acceptsResponse(target, requestedPage = 1, requestedSearchQuery = "new query"))
+    }
+
+    @Test
     fun manualLoadActionIsAvailableOnlyWhenAnotherPageCanBeRequested() {
         val initial = CatalogBrowseState(target = target, hasMore = true)
         val firstPage = initial.beginPageLoad()

@@ -19,6 +19,7 @@ internal data class CatalogReference(
     val catalogId: String,
     val mediaType: String,
     val catalogName: String,
+    val supportsSearch: Boolean = false,
 ) {
     val stableIdentity: CatalogIdentity
         get() = CatalogIdentity(provider, sourceId, mediaType, catalogId)
@@ -30,5 +31,5 @@ internal data class CatalogPageResult<T>(
 )
 
 internal interface CatalogPageSource<T> {
-    suspend fun loadPage(target: CatalogReference, page: Int): CatalogPageResult<T>
+    suspend fun loadPage(target: CatalogReference, page: Int, search: String? = null): CatalogPageResult<T>
 }

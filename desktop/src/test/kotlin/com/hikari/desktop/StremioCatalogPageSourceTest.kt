@@ -48,6 +48,42 @@ class StremioCatalogPageSourceTest {
         assertTrue(error is IllegalArgumentException)
     }
 
+    @Test
+    fun catalogSearchPassesTheQueryAndPageOffsetToTheStremioClient() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
+        val source = StremioCatalogPageSource(StremioClient { url ->
+            requestedUrls += url
+            """{"metas":[{"id":"tt1","type":"movie","name":"One Piece"}]}"""
+        })
+
+        val page = source.loadPage(
+            target.copy(supportsSearch = true),
+            page = 2,
+            search = "one piece",
+        )
+
+        assertEquals(
+            listOf("https://catalog.example/catalog/movie/popular/search=one%20piece&skip=100.json"),
+            requestedUrls,
+        )
+        assertEquals("One Piece", page.items.single().title)
+        assertFalse(page.hasMore)
+    }
+
+    @Test
+    fun catalogSearchIsRejectedWhenTheManifestDoesNotAdvertiseIt() = runBlocking {
+        var requested = false
+        val source = StremioCatalogPageSource(StremioClient {
+            requested = true
+            responseWith(0)
+        })
+
+        val error = runCatching { source.loadPage(target, page = 1, search = "one piece") }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertFalse(requested)
+    }
+
     private fun responseWith(count: Int): String {
         val metas = (1..count).joinToString(",") { index ->
             """{"id":"tt$index","type":"movie","name":"Film $index"}"""

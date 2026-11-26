@@ -96,7 +96,13 @@ class StremioClient(
         addonUrl: String,
         catalog: AddonCatalog,
         page: Int = 1,
-    ): List<AddonTitle> = catalogItems(addonUrl, catalog, search = null, page = page)
+        search: String? = null,
+    ): List<AddonTitle> = catalogItems(
+        addonUrl,
+        catalog,
+        search = search?.trim()?.takeIf(String::isNotEmpty),
+        page = page,
+    )
 
     suspend fun search(addonUrl: String, query: String, page: Int = 1): List<AddonTitle> {
         require(query.isNotBlank()) { "Search query must not be blank" }

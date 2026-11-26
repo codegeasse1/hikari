@@ -86,6 +86,7 @@ internal fun HomeCatalogSelection.toCatalogReference(): CatalogReference = Catal
     catalogId = catalog.id,
     mediaType = catalog.type,
     catalogName = catalog.name,
+    supportsSearch = catalog.extraNames.any { it.equals("search", ignoreCase = true) },
 )
 
 internal const val HOME_SHELF_PREVIEW_LIMIT = 8

@@ -909,6 +909,8 @@ internal fun CatalogBrowseScreen(
     state: CatalogBrowseState,
     onBack: () -> Unit,
     onLoadNextPage: () -> Unit,
+    onSearchTextChange: (String) -> Unit,
+    onSearch: () -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
 ) {
     val target = state.target
@@ -923,6 +925,9 @@ internal fun CatalogBrowseScreen(
     }
 
     val gridState = rememberLazyGridState()
+    LaunchedEffect(target, state.appliedSearchQuery) {
+        gridState.scrollToItem(0)
+    }
     LaunchedEffect(gridState, state.titles.size, state.loading, state.hasMore, state.error) {
         if (state.titles.isEmpty() || state.loading || !state.hasMore || state.error != null) {
             return@LaunchedEffect
@@ -951,14 +956,51 @@ internal fun CatalogBrowseScreen(
                 OutlinedButton(onClick = onLoadNextPage) { Text("Muat lebih banyak") }
             }
         }
+        if (target.supportsSearch) {
+            val requestedSearchQuery = state.searchText.trim().ifBlank { null }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.searchText,
+                    onValueChange = onSearchTextChange,
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Cari di katalog") },
+                    singleLine = true,
+                    enabled = !state.loading,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { if (!state.loading) onSearch() }),
+                )
+                Button(
+                    onClick = onSearch,
+                    enabled = !state.loading && requestedSearchQuery != state.appliedSearchQuery,
+                ) {
+                    Text(if (requestedSearchQuery == null && state.appliedSearchQuery != null) "Tampilkan semua" else "Cari")
+                }
+            }
+        } else {
+            Text(
+                "Add-on ini tidak menyatakan dukungan pencarian untuk katalog ini.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         when {
-            state.loading && state.titles.isEmpty() -> ProgressMessage("Memuat judul dari katalog…")
+            state.loading && state.titles.isEmpty() -> ProgressMessage(
+                if (state.appliedSearchQuery == null) "Memuat judul dari katalog…" else "Mencari di katalog…",
+            )
             state.error != null && state.titles.isEmpty() -> MessagePanel(
-                title = "Katalog gagal dimuat",
+                title = if (state.appliedSearchQuery == null) "Katalog gagal dimuat" else "Pencarian katalog gagal",
                 message = state.error,
                 actionLabel = "Coba lagi",
                 onAction = onLoadNextPage,
                 isError = true,
+            )
+            state.titles.isEmpty() && state.appliedSearchQuery != null -> EmptyState(
+                title = "Tidak ada hasil untuk pencarian ini",
+                message = "Coba kata lain, atau kosongkan kolom pencarian dan pilih Tampilkan semua.",
             )
             state.titles.isEmpty() -> EmptyState(
                 title = "Katalog ini belum memiliki judul",
@@ -992,10 +1034,17 @@ internal fun CatalogBrowseScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                            Text("  Memuat judul berikutnya…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                if (state.appliedSearchQuery == null) "  Memuat judul berikutnya…" else "  Memuat hasil berikutnya…",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         state.error != null -> MessagePanel(
-                            title = "Halaman berikutnya gagal dimuat",
+                            title = if (state.appliedSearchQuery == null) {
+                                "Halaman berikutnya gagal dimuat"
+                            } else {
+                                "Halaman hasil pencarian gagal dimuat"
+                            },
                             message = state.error,
                             actionLabel = "Coba lagi",
                             onAction = onLoadNextPage,
@@ -1003,7 +1052,7 @@ internal fun CatalogBrowseScreen(
                         )
                         state.hasMore -> Spacer(Modifier.height(8.dp))
                         else -> Text(
-                            "Sudah mencapai akhir katalog.",
+                            if (state.appliedSearchQuery == null) "Sudah mencapai akhir katalog." else "Sudah mencapai akhir hasil pencarian.",
                             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
