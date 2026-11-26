@@ -4,6 +4,7 @@ import com.hikari.desktop.data.AddonCatalog
 import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonResource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class HomeCatalogSelectionTest {
@@ -102,6 +103,46 @@ class HomeCatalogSelectionTest {
         )
 
         assertEquals(listOf("Popular B"), catalogs.map { it.catalog.name })
+    }
+
+    @Test
+    fun allCatalogsRemainAvailableWhenTheHomeShowsOnlyItsEightShelfPreview() {
+        val sources = (1..11).map { index ->
+            val url = "https://catalog-$index.example/manifest.json"
+            source(
+                url = url,
+                name = "Catalog $index",
+                catalogs = listOf(AddonCatalog("movie", "popular", "Popular $index")),
+            )
+        }
+
+        val inventory = homeCatalogInventory(sources, selectedProviderUrl = null, mediaFilter = HomeMediaFilter.ALL)
+
+        assertEquals(11, inventory.allCatalogs.size)
+        assertEquals(8, inventory.homeShelves.size)
+        assertEquals(
+            listOf("Catalog 9", "Catalog 10", "Catalog 11"),
+            inventory.allCatalogs.drop(inventory.homeShelves.size).map { it.addonName },
+        )
+    }
+
+    @Test
+    fun homeSelectionMapsToAStableProviderNeutralCatalogReference() {
+        val first = HomeCatalogSelection(
+            addonUrl = "https://catalog-a.example/manifest.json",
+            addonName = "Catalog A",
+            catalog = AddonCatalog("movie", "popular", "Popular"),
+        )
+        val second = first.copy(addonUrl = "https://catalog-b.example/manifest.json", addonName = "Catalog B")
+
+        val firstRef = first.toCatalogReference()
+        val secondRef = second.toCatalogReference()
+
+        assertEquals(CatalogProviderKind.STREMIO, firstRef.provider)
+        assertEquals(first.addonUrl, firstRef.sourceId)
+        assertEquals(first.catalog.type, firstRef.mediaType)
+        assertEquals(first.catalog.id, firstRef.catalogId)
+        assertNotEquals(firstRef.stableIdentity, secondRef.stableIdentity)
     }
 
     private fun source(

@@ -57,9 +57,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.hikari.desktop.CatalogBrowseState
+import com.hikari.desktop.CatalogDirectoryContentState
+import com.hikari.desktop.HomeCatalogSelection
 import com.hikari.desktop.HomeMediaFilter
 import com.hikari.desktop.ShelfState
 import com.hikari.desktop.SourceState
+import com.hikari.desktop.catalogDirectoryErrorTitle
+import com.hikari.desktop.catalogDirectoryContentState
 import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
@@ -71,9 +75,13 @@ internal enum class DesktopPage {
     HOME,
     SEARCH,
     SOURCES,
+    CATALOGS,
     CATALOG,
     DETAIL,
 }
+
+internal fun catalogBrowseReturnDestination(origin: DesktopPage): DesktopPage =
+    if (origin == DesktopPage.CATALOGS) DesktopPage.CATALOGS else DesktopPage.HOME
 
 @Composable
 internal fun DesktopSidebar(
@@ -149,12 +157,14 @@ internal fun HomeScreen(
     sources: List<SourceState>,
     selectedProviderUrl: String?,
     selectedMediaFilter: HomeMediaFilter,
+    catalogs: List<HomeCatalogSelection>,
     shelves: List<ShelfState>,
     loading: Boolean,
     onSelectProvider: (String?) -> Unit,
     onSelectMediaFilter: (HomeMediaFilter) -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
-    onOpenCatalog: (ShelfState) -> Unit,
+    onOpenCatalog: (HomeCatalogSelection) -> Unit,
+    onOpenCatalogDirectory: () -> Unit,
     onOpenSources: () -> Unit,
     onRetry: () -> Unit,
 ) {
@@ -219,7 +229,10 @@ internal fun HomeScreen(
                     }
                 }
             }
-            TextButton(onClick = onOpenSources) { Text("Kelola sumber") }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = onOpenCatalogDirectory) { Text("Semua katalog (${catalogs.size})") }
+                TextButton(onClick = onOpenSources) { Text("Kelola sumber") }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -320,11 +333,95 @@ internal fun HomeScreen(
 }
 
 @Composable
+internal fun CatalogDirectoryScreen(
+    catalogs: List<HomeCatalogSelection>,
+    sources: List<SourceState>,
+    loading: Boolean,
+    onBack: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenSources: () -> Unit,
+    onOpenCatalog: (HomeCatalogSelection) -> Unit,
+) {
+    val sourceErrors = sources.filter { it.error != null }
+    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onBack) { Text("Kembali") }
+            if (!loading && catalogs.isNotEmpty()) {
+                Text("${catalogs.size} katalog", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (sourceErrors.isNotEmpty()) {
+            MessagePanel(
+                title = catalogDirectoryErrorTitle(sources.size, sourceErrors.size),
+                message = sourceErrors.first().error.orEmpty(),
+                actionLabel = "Coba lagi",
+                onAction = onRetry,
+                isError = true,
+            )
+        }
+        when (catalogDirectoryContentState(catalogs.size, loading, sourceErrors.isNotEmpty())) {
+            CatalogDirectoryContentState.LOADING -> ProgressMessage("Memuat sumber katalog…")
+            CatalogDirectoryContentState.SOURCE_ERROR -> Unit
+            CatalogDirectoryContentState.EMPTY -> EmptyState(
+                title = if (sources.isEmpty()) "Belum ada sumber katalog" else "Belum ada katalog",
+                message = if (sources.isEmpty()) {
+                    "Tambahkan add-on Stremio untuk mulai menelusuri katalog."
+                } else {
+                    "Sumber yang terpasang belum mendeklarasikan katalog untuk ditelusuri."
+                },
+                actionLabel = "Kelola sumber",
+                onAction = onOpenSources,
+            )
+            CatalogDirectoryContentState.CONTENT -> LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 20.dp),
+            ) {
+                items(catalogs, key = { "${it.addonUrl}:${it.catalog.type}:${it.catalog.id}" }) { selection ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(selection.catalog.name, style = MaterialTheme.typography.titleMedium)
+                                Text(selection.addonName, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    catalogMediaLabel(selection.catalog.type),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            OutlinedButton(onClick = { onOpenCatalog(selection) }) { Text("Buka") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun catalogMediaLabel(type: String): String = when (type.lowercase()) {
+    "movie", "film" -> "Film"
+    "series", "tv" -> "Serial"
+    else -> type
+}
+
+@Composable
 private fun CatalogShelf(
     shelf: ShelfState,
     onOpenTitle: (AddonTitle) -> Unit,
     onRetry: () -> Unit,
-    onOpenCatalog: (ShelfState) -> Unit,
+    onOpenCatalog: (HomeCatalogSelection) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -337,7 +434,11 @@ private fun CatalogShelf(
                 )
             }
             if (shelf.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp))
-            TextButton(onClick = { onOpenCatalog(shelf) }) { Text("Lihat semua") }
+            TextButton(
+                onClick = {
+                    onOpenCatalog(HomeCatalogSelection(shelf.addonUrl, shelf.addonName, shelf.catalog))
+                },
+            ) { Text("Lihat semua") }
         }
         when {
             shelf.loading -> Text(

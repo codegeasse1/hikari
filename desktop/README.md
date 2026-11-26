@@ -4,6 +4,8 @@ This is a separate native desktop MVP. It does not wrap or require the Android A
 
 The first milestone supports Stremio add-on catalogs, searching, title details, and handing direct stream URLs to VLC/MPV or the default browser. Other provider ecosystems and an embedded media player are outside this milestone.
 
+Home shows up to eight catalog shelves as a preview. Open **Semua katalog** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
+
 ## Build and run
 
 Use Gradle 8.11.1 or newer with JDK 17 or newer:
