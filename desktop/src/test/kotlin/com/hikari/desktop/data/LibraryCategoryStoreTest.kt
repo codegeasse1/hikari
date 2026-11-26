@@ -103,6 +103,44 @@ class LibraryCategoryStoreTest {
     }
 
     @Test
+    fun movesCategoriesByRelativePositionAndPersistsTheOrder() {
+        val node = testNode()
+        try {
+            val store = LibraryCategoryStore(node)
+            store.categories()
+            val favorites = store.create("Favorites")
+
+            store.move(LibraryCategory.SERIES, 2)
+            store.move(favorites.id, -2)
+
+            val expected = listOf("Movies", "Action", "Favorites", "Romance", "Series")
+            assertEquals(expected, LibraryCategoryStore(node).categories().map { it.name })
+        } finally {
+            node.removeNode()
+        }
+    }
+
+    @Test
+    fun clampsMovesAtBothEndsAndIgnoresUnknownCategories() {
+        val node = testNode()
+        try {
+            val store = LibraryCategoryStore(node)
+            val before = store.categories()
+
+            store.move(LibraryCategory.MOVIES, -10)
+            assertEquals(before, store.categories())
+
+            store.move(LibraryCategory.ACTION, 10)
+            assertEquals(listOf("Movies", "Series", "Romance", "Action"), store.categories().map { it.name })
+
+            store.move("missing-category", -1)
+            assertEquals(listOf("Movies", "Series", "Romance", "Action"), store.categories().map { it.name })
+        } finally {
+            node.removeNode()
+        }
+    }
+
+    @Test
     fun removingATitleClearsItsCategoryAssignments() {
         val node = testNode()
         try {

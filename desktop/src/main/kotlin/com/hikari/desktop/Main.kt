@@ -574,6 +574,9 @@ private fun HikariDesktopApp() {
                                 onAssignCategories = { title, ids ->
                                     updateLibraryCategory { libraryCategoryStore.assign(title, ids) }
                                 },
+                                onMoveCategory = { id, delta ->
+                                    updateLibraryCategory { libraryCategoryStore.move(id, delta) }
+                                },
                             )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,

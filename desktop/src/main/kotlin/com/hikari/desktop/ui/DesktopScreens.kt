@@ -455,6 +455,7 @@ internal fun LibraryScreen(
     onRenameCategory: (String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
     onAssignCategories: (AddonTitle, Set<String>) -> Unit,
+    onMoveCategory: (String, Int) -> Unit,
 ) {
     var selectedCategoryId by remember { mutableStateOf<String?>(null) }
     var categoryManagerOpen by remember { mutableStateOf(false) }
@@ -582,6 +583,7 @@ internal fun LibraryScreen(
             onCreateCategory = onCreateCategory,
             onRenameCategory = onRenameCategory,
             onDeleteCategory = onDeleteCategory,
+            onMoveCategory = onMoveCategory,
             onDismiss = { categoryManagerOpen = false },
         )
     }
@@ -688,6 +690,7 @@ private fun LibraryCategoryManagerDialog(
     onCreateCategory: (String) -> LibraryCategory,
     onRenameCategory: (String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
+    onMoveCategory: (String, Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var newName by remember { mutableStateOf("") }
@@ -752,6 +755,14 @@ private fun LibraryCategoryManagerDialog(
                                             )
                                         }
                                     }
+                                    TextButton(
+                                        enabled = categories.firstOrNull()?.id != category.id,
+                                        onClick = { onMoveCategory(category.id, -1) },
+                                    ) { Text("Naik") }
+                                    TextButton(
+                                        enabled = categories.lastOrNull()?.id != category.id,
+                                        onClick = { onMoveCategory(category.id, 1) },
+                                    ) { Text("Turun") }
                                     TextButton(
                                         onClick = {
                                             editingId = category.id

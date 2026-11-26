@@ -86,6 +86,22 @@ internal class LibraryCategoryStore(
     }
 
     @Synchronized
+    fun move(id: String, delta: Int) {
+        val current = categories()
+        val fromIndex = current.indexOfFirst { it.id == id }
+        if (fromIndex < 0 || delta == 0) return
+
+        val targetIndex = (fromIndex + delta).coerceIn(0, current.lastIndex)
+        if (targetIndex == fromIndex) return
+
+        val reordered = current.toMutableList().apply {
+            add(targetIndex, removeAt(fromIndex))
+        }
+        reordered.forEachIndexed { index, category -> writeCategory(category, index.toLong()) }
+        categoryNodes.flush()
+    }
+
+    @Synchronized
     fun delete(id: String) {
         categories()
         val nodeName = categoryNodeName(id)
