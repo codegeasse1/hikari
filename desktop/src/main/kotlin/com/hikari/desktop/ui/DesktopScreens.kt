@@ -41,6 +41,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -1030,6 +1031,10 @@ internal fun SearchScreen(
     onOpenTitle: (AddonTitle) -> Unit,
     onOpenSources: () -> Unit,
 ) {
+    var selectedTypeFilter by remember { mutableStateOf(SearchTypeFilter.ALL) }
+    val visibleResults = remember(results, selectedTypeFilter) {
+        filterSearchResults(results, selectedTypeFilter)
+    }
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1077,23 +1082,56 @@ internal fun SearchScreen(
                 isError = true,
             )
             if (results.isNotEmpty()) {
-                Text("Hasil pencarian", style = MaterialTheme.typography.titleLarge)
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 168.dp),
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                    contentPadding = PaddingValues(bottom = 18.dp),
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(
-                        items = results,
-                        key = { "${it.addonUrl}:${it.type}:${it.id}" },
-                    ) { title ->
-                        TitleCard(
-                            title = title,
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = { onOpenTitle(title) },
+                    Text("Hasil pencarian", style = MaterialTheme.typography.titleLarge)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Tipe",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        SearchTypeFilter.values().forEach { filter ->
+                            FilterChip(
+                                selected = selectedTypeFilter == filter,
+                                onClick = { selectedTypeFilter = filter },
+                                label = { Text(filter.label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                ),
+                            )
+                        }
+                    }
+                    if (visibleResults.isEmpty()) {
+                        EmptyState(
+                            title = "Tidak ada ${selectedTypeFilter.label.lowercase()} dalam hasil ini",
+                            message = "Pilih Semua untuk menampilkan jenis hasil lainnya.",
+                        )
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 168.dp),
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(18.dp),
+                            contentPadding = PaddingValues(bottom = 18.dp),
+                        ) {
+                            items(
+                                items = visibleResults,
+                                key = { "${it.addonUrl}:${it.type}:${it.id}" },
+                            ) { title ->
+                                TitleCard(
+                                    title = title,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = { onOpenTitle(title) },
+                                )
+                            }
+                        }
                     }
                 }
             } else if (error == null && query.isNotBlank()) {

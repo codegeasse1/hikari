@@ -7,6 +7,7 @@ Reading this as: a Windows desktop media browser for existing Hikari users, carr
 - Pustaka shows compact local title snapshots as posters, newest first, with direct removal. Category chips narrow the saved grid, assignment stays beside each poster, and category maintenance sits in a separate dialog so it does not crowd browsing. Naik/Turun controls make saved category order explicit and keyboard-operable. Its empty-state action leads back to Home.
 - Content is organized around catalog rows and title posters, matching the media-browsing task instead of a generic dashboard layout.
 - Home keeps a bounded set of shelves and opens the complete catalog directory on demand, so every installed catalog is discoverable without making the primary rail longer.
+- Search results use compact Semua/Film/Serial chips only when results exist; amber marks the active local type filter using the same primary accent as the existing catalog filters.
 - System sans-serif typography keeps long titles and metadata readable at Windows desktop sizes.
 - Motion is limited to hover and selection feedback so it does not compete with artwork or streaming state.
 - The wordmark is rendered as text. No new logo, portraits, or decorative artwork are introduced.
