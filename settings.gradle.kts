@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "hikari"
 include(":app")
+include(":desktop")
