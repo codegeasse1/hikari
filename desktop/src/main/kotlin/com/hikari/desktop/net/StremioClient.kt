@@ -8,9 +8,11 @@ import com.hikari.desktop.data.AddonCatalog
 import com.hikari.desktop.data.AddonDetail
 import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonManifest
+import com.hikari.desktop.data.AddonResource
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
 import com.hikari.desktop.data.StreamKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -48,12 +50,45 @@ class StremioClient(
                 extraNames = extras,
             )
         }.orEmpty()
+        val globalTypes = json.stringList("types").toSet()
+        val globalIdPrefixes = json.array("idPrefixes")?.let { json.stringList("idPrefixes") }
+        val resources = json.array("resources")?.mapNotNull { element ->
+            when {
+                element.isJsonPrimitive && element.asJsonPrimitive.isString -> {
+                    element.asString.takeIf(String::isNotBlank)?.let { resourceName ->
+                        AddonResource(resourceName, globalTypes, globalIdPrefixes)
+                    }
+                }
+                element.isJsonObject -> element.asJsonObject.let { resource ->
+                    val resourceName = resource.string("name")
+                    if (resourceName.isBlank()) {
+                        null
+                    } else {
+                        AddonResource(
+                            name = resourceName,
+                            types = if (resource.array("types") != null) {
+                                resource.stringList("types").toSet()
+                            } else {
+                                globalTypes
+                            },
+                            idPrefixes = if (resource.array("idPrefixes") != null) {
+                                resource.stringList("idPrefixes")
+                            } else {
+                                globalIdPrefixes
+                            },
+                        )
+                    }
+                }
+                else -> null
+            }
+        }.orEmpty()
         val name = json.string("name").ifBlank { URI(normalizedUrl).host ?: "Stremio add-on" }
         return AddonManifest(
             addonUrl = normalizedUrl,
             name = name,
             description = json.stringOrNull("description"),
             catalogs = catalogs,
+            resources = resources,
         )
     }
 
@@ -137,6 +172,34 @@ class StremioClient(
         }.orEmpty().distinctBy { it.url }
     }
 
+    suspend fun streamsForTitle(
+        title: AddonTitle,
+        videoId: String,
+        installedAddons: List<AddonManifest>,
+    ): List<AddonStream> {
+        require(videoId.isNotBlank()) { "videoId must not be blank" }
+        val providerUrls = streamProviderUrls(title, videoId, installedAddons)
+        if (providerUrls.isEmpty()) return emptyList()
+
+        val results = coroutineScope {
+            providerUrls.map { addonUrl ->
+                async {
+                    try {
+                        Result.success(streams(addonUrl, title.type, videoId))
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        Result.failure(error)
+                    }
+                }
+            }.awaitAll()
+        }
+        val streams = results.flatMap { it.getOrNull().orEmpty() }.distinctBy { it.url }
+        if (streams.isNotEmpty()) return streams
+        results.firstOrNull { it.isFailure }?.exceptionOrNull()?.let { throw it }
+        return emptyList()
+    }
+
     private suspend fun catalogItems(
         addonUrl: String,
         catalog: AddonCatalog,
@@ -156,6 +219,25 @@ class StremioClient(
         return json.array("metas")?.mapNotNull { element ->
             element.asObjectOrNull()?.let { titleFromJson(AddonUrls.manifestUrl(addonUrl), it, catalog.type) }
         }.orEmpty()
+    }
+
+    private fun streamProviderUrls(
+        title: AddonTitle,
+        videoId: String,
+        installedAddons: List<AddonManifest>,
+    ): List<String> {
+        val origin = installedAddons.firstOrNull { it.addonUrl == title.addonUrl }
+        val compatibleProviders = installedAddons.filter { manifest ->
+            manifest.resources.any { resource ->
+                resource.name.equals("stream", ignoreCase = true) && resource.supports(title.type, videoId)
+            }
+        }
+        val candidates = buildList {
+            if (origin?.resources?.isEmpty() == true) add(origin.addonUrl)
+            compatibleProviders.forEach { add(it.addonUrl) }
+        }.distinct()
+        if (candidates.isNotEmpty()) return candidates
+        return if (origin == null) listOf(AddonUrls.manifestUrl(title.addonUrl)) else emptyList()
     }
 
     private suspend fun fetchJson(url: String): JsonObject {

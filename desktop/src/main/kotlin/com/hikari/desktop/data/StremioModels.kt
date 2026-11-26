@@ -7,11 +7,22 @@ data class AddonCatalog(
     val extraNames: Set<String> = emptySet(),
 )
 
+data class AddonResource(
+    val name: String,
+    val types: Set<String> = emptySet(),
+    val idPrefixes: List<String>? = null,
+) {
+    fun supports(type: String, id: String): Boolean =
+        (types.isEmpty() || types.any { it.equals(type, ignoreCase = true) }) &&
+            (idPrefixes.isNullOrEmpty() || idPrefixes.any(id::startsWith))
+}
+
 data class AddonManifest(
     val addonUrl: String,
     val name: String,
     val description: String?,
     val catalogs: List<AddonCatalog>,
+    val resources: List<AddonResource> = emptyList(),
 )
 
 data class AddonTitle(

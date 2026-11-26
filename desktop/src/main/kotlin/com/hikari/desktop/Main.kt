@@ -71,6 +71,8 @@ data class SourceState(
 )
 
 data class ShelfState(
+    val addonUrl: String,
+    val addonName: String,
     val catalog: AddonCatalog,
     val titles: List<AddonTitle> = emptyList(),
     val loading: Boolean = false,
@@ -86,8 +88,10 @@ private fun HikariDesktopApp() {
     var page by remember { mutableStateOf(DesktopPage.HOME) }
     var previousPage by remember { mutableStateOf(DesktopPage.HOME) }
     var sourceStates by remember { mutableStateOf(emptyList<SourceState>()) }
-    var selectedAddonUrl by remember { mutableStateOf<String?>(null) }
+    var selectedProviderUrl by remember { mutableStateOf<String?>(null) }
+    var selectedMediaFilter by remember { mutableStateOf(HomeMediaFilter.ALL) }
     var shelves by remember { mutableStateOf(emptyList<ShelfState>()) }
+    var homeCatalogsLoading by remember { mutableStateOf(false) }
     var sourceUrlInput by remember { mutableStateOf("") }
     var addSourceLoading by remember { mutableStateOf(false) }
     var addSourceError by remember { mutableStateOf<String?>(null) }
@@ -117,8 +121,8 @@ private fun HikariDesktopApp() {
                 onFailure = { SourceState(url = url, error = it.userMessage()) },
             )
         }
-        if (selectedAddonUrl !in sourceStates.map { it.url }) {
-            selectedAddonUrl = sourceStates.firstOrNull()?.url
+        if (selectedProviderUrl != null && sourceStates.none { it.url == selectedProviderUrl }) {
+            selectedProviderUrl = null
         }
     }
 
@@ -126,26 +130,51 @@ private fun HikariDesktopApp() {
         loadSources(sourceStore.all())
     }
 
-    val selectedSource = sourceStates.firstOrNull { it.url == selectedAddonUrl }
-    LaunchedEffect(selectedSource?.url, selectedSource?.manifest) {
-        val manifest = selectedSource?.manifest
-        if (manifest == null) {
+    LaunchedEffect(sourceStates, selectedProviderUrl, selectedMediaFilter) {
+        val visibleSources = if (selectedProviderUrl == null) {
+            sourceStates
+        } else {
+            sourceStates.filter { it.url == selectedProviderUrl }
+        }
+        if (visibleSources.any { it.loading }) {
+            homeCatalogsLoading = true
             shelves = emptyList()
             return@LaunchedEffect
         }
-        val catalogs = manifest.catalogs.take(MAX_HOME_CATALOGS)
-        shelves = catalogs.map { ShelfState(it, loading = true) }
-        val loaded = coroutineScope {
-            catalogs.map { catalog ->
-                async { catalog to runCatching { client.catalog(manifest.addonUrl, catalog) } }
-            }.awaitAll()
+        val catalogs = selectHomeCatalogs(sourceStates, selectedProviderUrl, selectedMediaFilter)
+            .take(MAX_HOME_CATALOGS)
+        if (catalogs.isEmpty()) {
+            shelves = emptyList()
+            homeCatalogsLoading = false
+            return@LaunchedEffect
         }
-        shelves = loaded.map { (catalog, result) ->
-            result.fold(
-                onSuccess = { ShelfState(catalog, titles = it) },
-                onFailure = { ShelfState(catalog, error = it.userMessage()) },
+        homeCatalogsLoading = true
+        shelves = catalogs.map { selection ->
+            ShelfState(
+                addonUrl = selection.addonUrl,
+                addonName = selection.addonName,
+                catalog = selection.catalog,
+                loading = true,
             )
         }
+        val loaded = coroutineScope {
+            catalogs.map { selection ->
+                async {
+                    selection to runCatching { client.catalog(selection.addonUrl, selection.catalog) }
+                }
+            }.awaitAll()
+        }
+        shelves = loaded.map { (selection, result) ->
+            result.fold(
+                onSuccess = {
+                    ShelfState(selection.addonUrl, selection.addonName, selection.catalog, titles = it)
+                },
+                onFailure = {
+                    ShelfState(selection.addonUrl, selection.addonName, selection.catalog, error = it.userMessage())
+                },
+            )
+        }
+        homeCatalogsLoading = false
     }
 
     fun reloadSources() {
@@ -168,7 +197,6 @@ private fun HikariDesktopApp() {
                 } else {
                     sourceStates = sourceStates.filterNot { it.url == manifest.addonUrl } +
                         SourceState(manifest.addonUrl, manifest = manifest)
-                    selectedAddonUrl = manifest.addonUrl
                     sourceUrlInput = ""
                     page = DesktopPage.HOME
                 }
@@ -184,7 +212,7 @@ private fun HikariDesktopApp() {
         try {
             sourceStore.remove(url)
             sourceStates = sourceStates.filterNot { it.url == url }
-            if (selectedAddonUrl == url) selectedAddonUrl = sourceStates.firstOrNull()?.url
+            if (selectedProviderUrl == url) selectedProviderUrl = null
         } catch (error: Exception) {
             addSourceError = error.userMessage()
             page = DesktopPage.SOURCES
@@ -225,9 +253,13 @@ private fun HikariDesktopApp() {
         }
         scope.launch {
             try {
-                streams = client.streams(title.addonUrl, title.type, videoId)
+                streams = client.streamsForTitle(
+                    title = title,
+                    videoId = videoId,
+                    installedAddons = sourceStates.mapNotNull { it.manifest },
+                )
                 if (streams.isEmpty()) {
-                    streamError = "Add-on tidak mengembalikan URL HTTP langsung yang didukung. Pemutaran torrent belum tersedia di MVP ini."
+                    streamError = "Tidak ada stream HTTP yang didukung dari add-on yang cocok. Pemutaran torrent belum tersedia di MVP ini."
                 }
             } catch (error: Exception) {
                 streamError = error.userMessage()
@@ -318,9 +350,12 @@ private fun HikariDesktopApp() {
                         when (page) {
                             DesktopPage.HOME -> HomeScreen(
                                 sources = sourceStates,
-                                selectedSourceUrl = selectedAddonUrl,
+                                selectedProviderUrl = selectedProviderUrl,
+                                selectedMediaFilter = selectedMediaFilter,
                                 shelves = shelves,
-                                onSelectSource = { selectedAddonUrl = it },
+                                loading = homeCatalogsLoading,
+                                onSelectProvider = { selectedProviderUrl = it },
+                                onSelectMediaFilter = { selectedMediaFilter = it },
                                 onOpenTitle = ::openTitle,
                                 onOpenSources = { page = DesktopPage.SOURCES },
                                 onRetry = ::reloadSources,
@@ -346,7 +381,7 @@ private fun HikariDesktopApp() {
                                 onRetry = ::reloadSources,
                                 onRemove = ::removeSource,
                                 onUse = {
-                                    selectedAddonUrl = it
+                                    selectedProviderUrl = it
                                     page = DesktopPage.HOME
                                 },
                             )

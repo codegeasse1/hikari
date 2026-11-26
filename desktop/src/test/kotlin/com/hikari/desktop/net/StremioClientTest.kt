@@ -1,6 +1,7 @@
 package com.hikari.desktop.net
 
 import com.hikari.desktop.data.AddonCatalog
+import com.hikari.desktop.data.AddonResource
 import com.hikari.desktop.data.AddonTitle
 import com.hikari.desktop.data.StreamKind
 import kotlinx.coroutines.runBlocking
@@ -98,6 +99,142 @@ class StremioClientTest {
         assertEquals(1, detail.episodes.size)
         assertEquals("show1:1:2", detail.episodes.single().id)
         assertEquals(2, detail.episodes.single().number)
+    }
+
+    @Test
+    fun parsesStringAndObjectResourcesUsingGlobalDefaults() = runBlocking {
+        val client = StremioClient {
+            """
+                {"name":"Stream only","catalogs":[],"types":["movie","series"],
+                 "idPrefixes":["tt"],"resources":[
+                   "stream",
+                   {"name":"catalog","types":["movie"],"idPrefixes":["tmdb:"]},
+                   {"name":"meta"}
+                 ]}
+            """.trimIndent()
+        }
+
+        val manifest = client.loadManifest("stream.example")
+
+        assertEquals(emptyList<AddonCatalog>(), manifest.catalogs)
+        assertEquals(
+            listOf(
+                AddonResource("stream", setOf("movie", "series"), listOf("tt")),
+                AddonResource("catalog", setOf("movie"), listOf("tmdb:")),
+                AddonResource("meta", setOf("movie", "series"), listOf("tt")),
+            ),
+            manifest.resources,
+        )
+    }
+
+    @Test
+    fun routesSeriesEpisodeToCompatibleStreamOnlyAddonAndKeepsManifestQuery() = runBlocking {
+        val manifestResponses = listOf(
+            "https://catalog.example/manifest.json" to """
+                {"name":"Catalog","catalogs":[],"resources":["catalog"],
+                 "types":["series"],"idPrefixes":["tt"]}
+            """.trimIndent(),
+            "https://pengu.example/stremio/abc/manifest.json?key=secret" to """
+                {"name":"PenguPlay","catalogs":[],"resources":["stream"],
+                 "types":["series"],"idPrefixes":["tt"]}
+            """.trimIndent(),
+            "https://movie-only.example/manifest.json" to """
+                {"name":"Movie only","catalogs":[],"resources":[
+                  {"name":"stream","types":["movie"],"idPrefixes":["tt"]}
+                ]}
+            """.trimIndent(),
+            "https://wrong-prefix.example/manifest.json" to """
+                {"name":"Wrong prefix","catalogs":[],"resources":[
+                  {"name":"stream","types":["series"],"idPrefixes":["tmdb:"]}
+                ]}
+            """.trimIndent(),
+        )
+        val responsesByUrl = manifestResponses.toMap()
+        val requestUrls = mutableListOf<String>()
+        val expectedStreamUrl = "https://pengu.example/stremio/abc/stream/series/tt123:1:2.json?key=secret"
+        val client = StremioClient { url ->
+            requestUrls += url
+            responsesByUrl[url] ?: when (url) {
+                expectedStreamUrl -> """{"streams":[{"name":"PenguPlay","url":"https://video.example/episode.mp4"}]}"""
+                else -> error("Unexpected request: $url")
+            }
+        }
+        val manifests = manifestResponses.map { (url, _) -> client.loadManifest(url) }
+        val title = AddonTitle(
+            addonUrl = "https://catalog.example/manifest.json",
+            id = "tt123",
+            type = "series",
+            title = "Series One",
+        )
+
+        val streams = client.streamsForTitle(title, "tt123:1:2", manifests)
+
+        assertEquals(manifestResponses.map { it.first } + expectedStreamUrl, requestUrls)
+        assertEquals("https://video.example/episode.mp4", streams.single().url)
+    }
+
+    @Test
+    fun keepsUsingTheOriginForLegacyManifestsWithoutResources() = runBlocking {
+        val requestUrls = mutableListOf<String>()
+        val manifestUrl = "https://legacy.example/manifest.json"
+        val streamUrl = "https://legacy.example/stream/movie/tt123.json"
+        val client = StremioClient { url ->
+            requestUrls += url
+            when (url) {
+                manifestUrl -> """{"name":"Legacy","catalogs":[{"type":"movie","id":"top"}]}"""
+                streamUrl -> """{"streams":[{"url":"https://video.example/legacy.mp4"}]}"""
+                else -> error("Unexpected request: $url")
+            }
+        }
+        val manifest = client.loadManifest(manifestUrl)
+        val title = AddonTitle(manifestUrl, "tt123", "movie", "Film One")
+
+        val streams = client.streamsForTitle(title, title.id, listOf(manifest))
+
+        assertEquals(listOf(manifestUrl, streamUrl), requestUrls)
+        assertEquals("https://video.example/legacy.mp4", streams.single().url)
+    }
+
+    @Test
+    fun keepsStreamsFromHealthyProvidersWhenAnotherCompatibleAddonFails() = runBlocking {
+        val manifestResponses = listOf(
+            "https://catalog.example/manifest.json" to """
+                {"name":"Catalog","catalogs":[],"resources":["catalog"]}
+            """.trimIndent(),
+            "https://offline.example/manifest.json" to """
+                {"name":"Offline","catalogs":[],"resources":[
+                  {"name":"stream","types":["movie"],"idPrefixes":["tt"]}
+                ]}
+            """.trimIndent(),
+            "https://healthy.example/manifest.json" to """
+                {"name":"Healthy","catalogs":[],"types":["movie"],
+                 "idPrefixes":["tt"],"resources":["stream"]}
+            """.trimIndent(),
+        )
+        val responsesByUrl = manifestResponses.toMap()
+        val failedStreamUrl = "https://offline.example/stream/movie/tt123.json"
+        val healthyStreamUrl = "https://healthy.example/stream/movie/tt123.json"
+        val requestedStreamUrls = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val client = StremioClient { url ->
+            responsesByUrl[url] ?: when (url) {
+                failedStreamUrl -> {
+                    requestedStreamUrls += url
+                    error("Add-on is offline")
+                }
+                healthyStreamUrl -> {
+                    requestedStreamUrls += url
+                    """{"streams":[{"url":"https://video.example/available.mp4"}]}"""
+                }
+                else -> error("Unexpected request: $url")
+            }
+        }
+        val manifests = manifestResponses.map { (url, _) -> client.loadManifest(url) }
+        val title = AddonTitle("https://catalog.example/manifest.json", "tt123", "movie", "Film One")
+
+        val streams = client.streamsForTitle(title, title.id, manifests)
+
+        assertEquals(setOf(failedStreamUrl, healthyStreamUrl), requestedStreamUrls.toSet())
+        assertEquals(listOf("https://video.example/available.mp4"), streams.map { it.url })
     }
 
     @Test

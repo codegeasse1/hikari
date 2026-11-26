@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.hikari.desktop.HomeMediaFilter
 import com.hikari.desktop.ShelfState
 import com.hikari.desktop.SourceState
 import com.hikari.desktop.data.AddonEpisode
@@ -139,9 +140,12 @@ private fun NavigationItem(label: String, selected: Boolean, onClick: () -> Unit
 @Composable
 internal fun HomeScreen(
     sources: List<SourceState>,
-    selectedSourceUrl: String?,
+    selectedProviderUrl: String?,
+    selectedMediaFilter: HomeMediaFilter,
     shelves: List<ShelfState>,
-    onSelectSource: (String) -> Unit,
+    loading: Boolean,
+    onSelectProvider: (String?) -> Unit,
+    onSelectMediaFilter: (HomeMediaFilter) -> Unit,
     onOpenTitle: (AddonTitle) -> Unit,
     onOpenSources: () -> Unit,
     onRetry: () -> Unit,
@@ -156,8 +160,11 @@ internal fun HomeScreen(
         return
     }
 
-    val selected = sources.firstOrNull { it.url == selectedSourceUrl } ?: sources.first()
-    var sourceMenuOpen by remember { mutableStateOf(false) }
+    val selectedProvider = sources.firstOrNull { it.url == selectedProviderUrl }
+    val visibleSources = if (selectedProviderUrl == null) sources else sources.filter { it.url == selectedProviderUrl }
+    val sourceErrors = visibleSources.filter { it.error != null }
+    val visibleManifests = visibleSources.mapNotNull { it.manifest }
+    var providerMenuOpen by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
@@ -166,27 +173,38 @@ internal fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Sumber katalog", style = MaterialTheme.typography.titleMedium)
+                Text("Penyedia", style = MaterialTheme.typography.titleMedium)
                 Box {
-                    OutlinedButton(onClick = { sourceMenuOpen = true }) {
+                    OutlinedButton(onClick = { providerMenuOpen = true }) {
                         Text(
-                            selected.manifest?.name ?: sourceHost(selected.url),
+                            selectedProvider?.manifest?.name ?: if (selectedProviderUrl == null) {
+                                "Semua penyedia"
+                            } else {
+                                selectedProvider?.let { sourceHost(it.url) } ?: "Penyedia tidak tersedia"
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
                     DropdownMenu(
-                        expanded = sourceMenuOpen,
-                        onDismissRequest = { sourceMenuOpen = false },
+                        expanded = providerMenuOpen,
+                        onDismissRequest = { providerMenuOpen = false },
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Semua penyedia") },
+                            onClick = {
+                                onSelectProvider(null)
+                                providerMenuOpen = false
+                            },
+                        )
                         sources.forEach { source ->
                             DropdownMenuItem(
                                 text = {
                                     Text(source.manifest?.name ?: sourceHost(source.url), maxLines = 1)
                                 },
                                 onClick = {
-                                    onSelectSource(source.url)
-                                    sourceMenuOpen = false
+                                    onSelectProvider(source.url)
+                                    providerMenuOpen = false
                                 },
                             )
                         }
@@ -196,47 +214,97 @@ internal fun HomeScreen(
             TextButton(onClick = onOpenSources) { Text("Kelola sumber") }
         }
 
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HomeMediaFilter.values().forEach { filter ->
+                if (selectedMediaFilter == filter) {
+                    Button(onClick = { onSelectMediaFilter(filter) }) { Text(filter.label) }
+                } else {
+                    OutlinedButton(onClick = { onSelectMediaFilter(filter) }) { Text(filter.label) }
+                }
+            }
+        }
+
         when {
-            selected.loading -> ProgressMessage("Memeriksa sumber katalog…")
-            selected.error != null -> MessagePanel(
+            loading -> ProgressMessage("Memuat katalog dari penyedia yang dipilih…")
+            selectedProvider?.error != null -> MessagePanel(
                 title = "Sumber tidak dapat dimuat",
-                message = selected.error,
+                message = selectedProvider.error,
                 actionLabel = "Coba lagi",
                 onAction = onRetry,
                 isError = true,
             )
-            selected.manifest == null -> MessagePanel(
-                title = "Manifest belum tersedia",
-                message = "Periksa koneksi atau buka pengelolaan sumber untuk memperbaiki URL.",
-                actionLabel = "Coba lagi",
-                onAction = onRetry,
-                isError = true,
-            )
-            shelves.isEmpty() -> EmptyState(
-                title = "Belum ada katalog",
-                message = "Add-on ini belum menyediakan katalog yang bisa ditampilkan.",
-                actionLabel = "Kelola sumber",
-                onAction = onOpenSources,
-            )
+            shelves.isEmpty() -> {
+                val selectedManifest = selectedProvider?.manifest
+                val selectedStreamOnly = selectedManifest?.catalogs?.isEmpty() == true &&
+                    selectedManifest.resources.any { it.name.equals("stream", ignoreCase = true) }
+                val allStreamOnly = visibleManifests.isNotEmpty() && visibleManifests.all { manifest ->
+                    manifest.catalogs.isEmpty() &&
+                        manifest.resources.any { it.name.equals("stream", ignoreCase = true) }
+                }
+                val hasCatalogs = visibleManifests.any { it.catalogs.isNotEmpty() }
+                if (visibleManifests.isEmpty() && sourceErrors.isNotEmpty()) {
+                    MessagePanel(
+                        title = "Sumber tidak dapat dimuat",
+                        message = sourceErrors.first().error.orEmpty(),
+                        actionLabel = "Coba lagi",
+                        onAction = onRetry,
+                        isError = true,
+                    )
+                    return@Column
+                }
+                EmptyState(
+                    title = when {
+                        selectedStreamOnly || allStreamOnly -> "Katalog tidak tersedia"
+                        hasCatalogs && selectedMediaFilter != HomeMediaFilter.ALL ->
+                            "Belum ada katalog ${selectedMediaFilter.label.lowercase()}"
+                        else -> "Belum ada katalog"
+                    },
+                    message = when {
+                        selectedStreamOnly ->
+                            "Add-on ini menyediakan stream, bukan katalog. Tambahkan add-on katalog untuk menemukan judul. Saat memutar judul, Hikari akan mencoba stream dari add-on yang cocok."
+                        allStreamOnly ->
+                            "Add-on terpasang menyediakan stream, bukan katalog. Tambahkan add-on katalog untuk menemukan judul. Saat memutar judul, Hikari akan mencoba stream dari penyedia yang cocok."
+                        hasCatalogs && selectedMediaFilter != HomeMediaFilter.ALL ->
+                            "Tidak ada katalog ${selectedMediaFilter.label.lowercase()} dari penyedia yang dipilih. Coba Semua atau ubah penyedia."
+                        else ->
+                            "Add-on terpasang belum menyediakan katalog. Tambahkan add-on katalog untuk menelusuri judul."
+                    },
+                    actionLabel = "Kelola sumber",
+                    onAction = onOpenSources,
+                )
+            }
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(26.dp),
             ) {
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Katalog", style = MaterialTheme.typography.headlineSmall)
-                        Text(
-                            "Judul yang disediakan oleh ${selected.manifest.name}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Katalog", style = MaterialTheme.typography.headlineSmall)
+                            Text(
+                                if (selectedProvider == null) {
+                                    "Judul dari semua add-on katalog yang terpasang"
+                                } else {
+                                    "Judul dari ${selectedProvider.manifest?.name ?: sourceHost(selectedProvider.url)}"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                }
-                items(
-                    items = shelves,
-                    key = { "${selected.url}:${it.catalog.type}:${it.catalog.id}" },
-                ) { shelf ->
-                    CatalogShelf(shelf, onOpenTitle, onRetry)
+                    if (sourceErrors.isNotEmpty()) {
+                        item {
+                            MessagePanel(
+                                title = "Sebagian penyedia tidak dapat dimuat",
+                                message = sourceErrors.first().error.orEmpty(),
+                                isError = true,
+                            )
+                        }
+                    }
+                    items(
+                        items = shelves,
+                        key = { "${it.addonUrl}:${it.catalog.type}:${it.catalog.id}" },
+                    ) { shelf ->
+                        CatalogShelf(shelf, onOpenTitle, onRetry)
                 }
             }
         }
@@ -251,7 +319,14 @@ private fun CatalogShelf(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(shelf.catalog.name, style = MaterialTheme.typography.titleLarge)
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(shelf.catalog.name, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    shelf.addonName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (shelf.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp))
         }
         when {
