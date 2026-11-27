@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-desktop:
@@ -99,3 +99,26 @@ jobs:
             desktop/build/compose/binaries/main/exe/*.exe
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish Windows installers to continuous release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path "desktop/build/compose/binaries/main" -Recurse -File -Include "*.msi", "*.exe" | Select-Object -ExpandProperty FullName)
+          if ($files.Count -eq 0) {
+            Write-Host "::warning::No MSI/EXE found, skipped."
+            exit 0
+          }
+          gh release view continuous --repo "$env:GITHUB_REPOSITORY" 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create continuous @files --repo "$env:GITHUB_REPOSITORY" --title "Continuous build" --notes "Auto-built from main: Android test APKs + Windows installers (Hikari MSI/EXE)." 2>$null
+          }
+          foreach ($i in 1..3) {
+            gh release upload continuous @files --repo "$env:GITHUB_REPOSITORY" --clobber
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "continuous upload attempt $i failed, retrying in 5s..."
+            Start-Sleep -Seconds 5
+          }
