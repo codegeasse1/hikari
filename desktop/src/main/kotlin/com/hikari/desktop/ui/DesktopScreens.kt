@@ -46,6 +46,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -1081,15 +1082,21 @@ internal fun SearchScreen(
     onOpenTitle: (AddonTitle) -> Unit,
     onOpenSources: () -> Unit,
     searchSources: List<SearchSourceOption>,
-    selectedSearchSourceUrl: String?,
-    onSearchSourceSelected: (String?) -> Unit,
+    selectedSearchSourceUrls: Set<String>,
+    onSearchSourcesSelected: (Set<String>) -> Unit,
 ) {
     var searchFilters by remember { mutableStateOf(SearchFilters()) }
     val visibleResults = remember(results, searchFilters) {
         filterSearchResults(results, searchFilters)
     }
     var sourceMenuOpen by remember { mutableStateOf(false) }
-    val selectedSource = searchSources.firstOrNull { it.url == selectedSearchSourceUrl }
+    var draftSelectedSearchSourceUrls by remember { mutableStateOf(emptySet<String>()) }
+    val selectedSources = searchSources.filter { it.url in selectedSearchSourceUrls }
+    val sourceScopeLabel = when {
+        selectedSearchSourceUrls.isEmpty() || selectedSources.isEmpty() -> "Semua sumber"
+        selectedSources.size == 1 -> selectedSources.single().name
+        else -> "${selectedSources.size} sumber"
+    }
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1123,11 +1130,14 @@ internal fun SearchScreen(
                 )
                 Box {
                     OutlinedButton(
-                        onClick = { sourceMenuOpen = true },
+                        onClick = {
+                            draftSelectedSearchSourceUrls = selectedSearchSourceUrls
+                            sourceMenuOpen = true
+                        },
                         enabled = !loading,
                     ) {
                         Text(
-                            selectedSource?.name ?: "Semua sumber",
+                            sourceScopeLabel,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -1137,23 +1147,40 @@ internal fun SearchScreen(
                         onDismissRequest = { sourceMenuOpen = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Semua sumber") },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(selected = draftSelectedSearchSourceUrls.isEmpty(), onClick = null)
+                                    Text("Semua sumber")
+                                }
+                            },
                             onClick = {
-                                onSearchSourceSelected(null)
-                                sourceMenuOpen = false
+                                draftSelectedSearchSourceUrls = emptySet()
                             },
                         )
                         searchSources.forEach { source ->
                             DropdownMenuItem(
                                 text = {
-                                    Text(source.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Checkbox(checked = source.url in draftSelectedSearchSourceUrls, onCheckedChange = null)
+                                        Text(source.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
                                 },
                                 onClick = {
-                                    onSearchSourceSelected(source.url)
-                                    sourceMenuOpen = false
+                                    draftSelectedSearchSourceUrls = toggleSearchSourceSelection(
+                                        draftSelectedSearchSourceUrls,
+                                        source.url,
+                                    )
                                 },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Terapkan") },
+                            onClick = {
+                                onSearchSourcesSelected(draftSelectedSearchSourceUrls)
+                                sourceMenuOpen = false
+                            },
+                            enabled = draftSelectedSearchSourceUrls != selectedSearchSourceUrls,
+                        )
                     }
                 }
             }

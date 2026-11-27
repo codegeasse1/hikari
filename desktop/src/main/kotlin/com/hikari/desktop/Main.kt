@@ -123,7 +123,7 @@ private fun HikariDesktopApp() {
     var searchLoading by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
     var searchPartialFailure by remember { mutableStateOf(false) }
-    var selectedSearchSourceUrl by remember { mutableStateOf<String?>(null) }
+    var selectedSearchSourceUrls by remember { mutableStateOf(emptySet<String>()) }
     var searchHistory by remember {
         mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
     }
@@ -156,9 +156,7 @@ private fun HikariDesktopApp() {
         if (selectedProviderUrl != null && sourceStates.none { it.url == selectedProviderUrl }) {
             selectedProviderUrl = null
         }
-        if (selectedSearchSourceUrl != null && sourceStates.none { it.url == selectedSearchSourceUrl }) {
-            selectedSearchSourceUrl = null
-        }
+        selectedSearchSourceUrls = selectedSearchSourceUrls.intersect(sourceStates.map { it.url }.toSet())
     }
 
     fun reloadSavedTitles() {
@@ -378,7 +376,7 @@ private fun HikariDesktopApp() {
             sourceStore.remove(url)
             sourceStates = sourceStates.filterNot { it.url == url }
             if (selectedProviderUrl == url) selectedProviderUrl = null
-            if (selectedSearchSourceUrl == url) selectedSearchSourceUrl = null
+            selectedSearchSourceUrls = selectedSearchSourceUrls - url
         } catch (error: Exception) {
             addSourceError = error.userMessage()
             page = DesktopPage.SOURCES
@@ -477,7 +475,7 @@ private fun HikariDesktopApp() {
             searchPartialFailure = false
             return
         }
-        val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrl)
+        val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrls)
         if (urls.isEmpty()) {
             searchError = "Tambahkan sumber Stremio sebelum mencari."
             searchPartialFailure = false
@@ -635,10 +633,10 @@ private fun HikariDesktopApp() {
                                         name = source.manifest?.name ?: source.url,
                                     )
                                 },
-                                selectedSearchSourceUrl = selectedSearchSourceUrl,
-                                onSearchSourceSelected = { sourceUrl ->
-                                    if (selectedSearchSourceUrl != sourceUrl) {
-                                        selectedSearchSourceUrl = sourceUrl
+                                selectedSearchSourceUrls = selectedSearchSourceUrls,
+                                onSearchSourcesSelected = { sourceUrls ->
+                                    if (selectedSearchSourceUrls != sourceUrls) {
+                                        selectedSearchSourceUrls = sourceUrls
                                         if (searchQuery.isNotBlank()) search(searchQuery)
                                     }
                                 },

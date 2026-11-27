@@ -7,10 +7,19 @@ internal data class SearchSourceOption(
 
 internal fun selectSearchSourceUrls(
     sourceUrls: List<String>,
-    selectedSourceUrl: String?,
+    selectedSourceUrls: Set<String>,
 ): List<String> {
-    if (selectedSourceUrl == null || selectedSourceUrl !in sourceUrls) {
-        return sourceUrls
-    }
-    return listOf(selectedSourceUrl)
+    if (selectedSourceUrls.isEmpty()) return sourceUrls
+
+    val selected = sourceUrls.filter { it in selectedSourceUrls }
+    return selected.ifEmpty { sourceUrls }
+}
+
+internal fun toggleSearchSourceSelection(
+    selectedSourceUrls: Set<String>,
+    sourceUrl: String,
+): Set<String> = if (sourceUrl in selectedSourceUrls) {
+    selectedSourceUrls - sourceUrl
+} else {
+    selectedSourceUrls + sourceUrl
 }
