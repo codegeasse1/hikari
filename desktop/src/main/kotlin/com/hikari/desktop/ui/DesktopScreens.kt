@@ -83,13 +83,19 @@ import com.hikari.desktop.data.SavedTitleIdentity
 import com.hikari.desktop.data.filterSavedTitlesByCategory
 import com.hikari.desktop.data.savedTitleIdentity
 import com.hikari.desktop.data.StreamKind
+import com.hikari.desktop.data.WatchHistoryEntry
 import kotlinx.coroutines.flow.collectLatest
 import java.net.URI
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 internal enum class DesktopPage {
     HOME,
     SEARCH,
     LIBRARY,
+    HISTORY,
     SOURCES,
     CATALOGS,
     CATALOG,
@@ -102,6 +108,7 @@ internal val desktopNavigationDestinations = listOf(
     DesktopNavigationDestination(DesktopPage.HOME, "Beranda"),
     DesktopNavigationDestination(DesktopPage.SEARCH, "Cari"),
     DesktopNavigationDestination(DesktopPage.LIBRARY, "Pustaka"),
+    DesktopNavigationDestination(DesktopPage.HISTORY, "Riwayat"),
     DesktopNavigationDestination(DesktopPage.SOURCES, "Sumber"),
 )
 
@@ -590,6 +597,147 @@ internal fun LibraryScreen(
         )
     }
 }
+
+@Composable
+internal fun WatchHistoryScreen(
+    entries: List<WatchHistoryEntry>,
+    loading: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
+    onBrowseHome: () -> Unit,
+    onOpenTitle: (AddonTitle) -> Unit,
+    onPlayAgain: (WatchHistoryEntry) -> Unit,
+    onRemove: (WatchHistoryEntry) -> Unit,
+    onClear: () -> Unit,
+) {
+    var confirmClear by remember { mutableStateOf(false) }
+
+    when {
+        loading -> ProgressMessage("Memuat riwayat…")
+        error != null -> MessagePanel(
+            title = "Riwayat tidak dapat dimuat",
+            message = error,
+            actionLabel = "Coba lagi",
+            onAction = onRetry,
+            isError = true,
+        )
+        entries.isEmpty() -> EmptyState(
+            title = "Riwayat masih kosong",
+            message = "Judul dan episode yang berhasil dibuka akan muncul di sini. Hikari tidak dapat membaca progres dari pemutar eksternal.",
+            actionLabel = "Jelajahi beranda",
+            onAction = onBrowseHome,
+        )
+        else -> Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("${entries.size} peluncuran", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { confirmClear = true }) { Text("Hapus semua") }
+            }
+            Text(
+                "Hanya waktu peluncuran berhasil yang dicatat; progres pemutaran di aplikasi eksternal tidak tersedia.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 20.dp),
+            ) {
+                items(entries, key = WatchHistoryEntry::uniqueKey) { entry ->
+                    WatchHistoryRow(
+                        entry = entry,
+                        onOpenTitle = { onOpenTitle(entry.title) },
+                        onPlayAgain = { onPlayAgain(entry) },
+                        onRemove = { onRemove(entry) },
+                    )
+                }
+            }
+        }
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Hapus semua riwayat?") },
+            text = { Text("Semua catatan peluncuran di perangkat ini akan dihapus.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onClear()
+                        confirmClear = false
+                    },
+                ) { Text("Hapus semua") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Batal") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun WatchHistoryRow(
+    entry: WatchHistoryEntry,
+    onOpenTitle: () -> Unit,
+    onPlayAgain: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkPoster(
+                url = posterArtworkUrl(entry.title.posterUrl, entry.title.backgroundUrl),
+                title = entry.title.title,
+                modifier = Modifier.width(72.dp).height(104.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Text(
+                    entry.title.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    entry.episode?.let { "S${it.season} · E${it.number} · ${it.title}" }
+                        ?: typeLabel(entry.title.type),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Berhasil dibuka ${historyTimestampLabel(entry.launchedAtMillis)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onPlayAgain) { Text("Putar lagi") }
+                    TextButton(onClick = onOpenTitle) { Text("Buka detail") }
+                    TextButton(onClick = onRemove) { Text("Hapus") }
+                }
+            }
+        }
+    }
+}
+
+private fun historyTimestampLabel(timestampMillis: Long): String = runCatching {
+    Instant.ofEpochMilli(timestampMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.forLanguageTag("id-ID")))
+}.getOrDefault("waktu tidak diketahui")
 
 @Composable
 private fun LibraryCategoryAssignmentDialog(

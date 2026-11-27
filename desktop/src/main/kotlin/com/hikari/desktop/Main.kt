@@ -39,9 +39,12 @@ import com.hikari.desktop.data.SavedTitlesStore
 import com.hikari.desktop.data.SearchHistoryStore
 import com.hikari.desktop.data.StreamKind
 import com.hikari.desktop.data.savedTitleIdentity
+import com.hikari.desktop.data.WatchHistoryEntry
+import com.hikari.desktop.data.WatchHistoryStore
 import com.hikari.desktop.net.AddonClientException
 import com.hikari.desktop.net.StremioClient
 import com.hikari.desktop.playback.StreamLauncher
+import com.hikari.desktop.playback.launchAndRecordHistory
 import com.hikari.desktop.ui.DesktopPage
 import com.hikari.desktop.ui.DesktopSidebar
 import com.hikari.desktop.ui.DetailScreen
@@ -50,6 +53,7 @@ import com.hikari.desktop.ui.CatalogDirectoryScreen
 import com.hikari.desktop.ui.catalogBrowseReturnDestination
 import com.hikari.desktop.ui.HomeScreen
 import com.hikari.desktop.ui.LibraryScreen
+import com.hikari.desktop.ui.WatchHistoryScreen
 import com.hikari.desktop.ui.SearchScreen
 import com.hikari.desktop.ui.SearchSourceOption
 import com.hikari.desktop.ui.selectSearchSourceUrls
@@ -100,6 +104,7 @@ private fun HikariDesktopApp() {
     val savedTitlesStore = remember { SavedTitlesStore() }
     val libraryCategoryStore = remember { LibraryCategoryStore() }
     val searchHistoryStore = remember { SearchHistoryStore() }
+    val watchHistoryStore = remember { WatchHistoryStore() }
     val scope = rememberCoroutineScope()
 
     var page by remember { mutableStateOf(DesktopPage.HOME) }
@@ -128,6 +133,9 @@ private fun HikariDesktopApp() {
         mutableStateOf(runCatching { searchHistoryStore.all() }.getOrDefault(emptyList()))
     }
     var searchHistoryError by remember { mutableStateOf<String?>(null) }
+    var watchHistory by remember { mutableStateOf(emptyList<WatchHistoryEntry>()) }
+    var watchHistoryLoading by remember { mutableStateOf(true) }
+    var watchHistoryError by remember { mutableStateOf<String?>(null) }
     var savedTitles by remember { mutableStateOf(emptyList<AddonTitle>()) }
     var savedTitlesLoading by remember { mutableStateOf(true) }
     var savedTitlesError by remember { mutableStateOf<String?>(null) }
@@ -136,6 +144,8 @@ private fun HikariDesktopApp() {
     var libraryCategoryError by remember { mutableStateOf<String?>(null) }
     var streamDialogOpen by remember { mutableStateOf(false) }
     var streamDialogTitle by remember { mutableStateOf("") }
+    var streamDialogTitleEntry by remember { mutableStateOf<AddonTitle?>(null) }
+    var streamDialogEpisodeEntry by remember { mutableStateOf<AddonEpisode?>(null) }
     var streams by remember { mutableStateOf(emptyList<AddonStream>()) }
     var streamLoading by remember { mutableStateOf(false) }
     var streamError by remember { mutableStateOf<String?>(null) }
@@ -168,6 +178,36 @@ private fun HikariDesktopApp() {
             savedTitlesError = error.userMessage()
         } finally {
             savedTitlesLoading = false
+        }
+    }
+
+    fun reloadWatchHistory() {
+        watchHistoryLoading = true
+        watchHistoryError = null
+        try {
+            watchHistory = watchHistoryStore.all()
+        } catch (error: Exception) {
+            watchHistoryError = error.userMessage()
+        } finally {
+            watchHistoryLoading = false
+        }
+    }
+
+    fun removeWatchHistoryEntry(entry: WatchHistoryEntry) {
+        try {
+            watchHistory = watchHistoryStore.remove(entry)
+            watchHistoryError = null
+        } catch (error: Exception) {
+            watchHistoryError = error.userMessage()
+        }
+    }
+
+    fun clearWatchHistory() {
+        try {
+            watchHistory = watchHistoryStore.clear()
+            watchHistoryError = null
+        } catch (error: Exception) {
+            watchHistoryError = error.userMessage()
         }
     }
 
@@ -241,6 +281,7 @@ private fun HikariDesktopApp() {
 
     LaunchedEffect(Unit) {
         reloadSavedTitles()
+        reloadWatchHistory()
         reloadLibraryCategoryState()
         loadSources(sourceStore.all())
     }
@@ -405,6 +446,8 @@ private fun HikariDesktopApp() {
 
     fun requestStreams(title: AddonTitle, episode: AddonEpisode? = null) {
         streamDialogTitle = if (episode == null) title.title else "${title.title} · ${episode.title}"
+        streamDialogTitleEntry = title
+        streamDialogEpisodeEntry = episode
         streams = emptyList()
         streamError = null
         streamLoading = true
@@ -436,13 +479,30 @@ private fun HikariDesktopApp() {
     fun openStream(stream: AddonStream) {
         scope.launch {
             try {
-                val result = withContext(Dispatchers.IO) { StreamLauncher.open(stream) }
-                playbackMessage = if (result == "browser") {
+                val titleEntry = streamDialogTitleEntry
+                if (titleEntry == null) {
+                    streamError = "Judul tidak tersedia untuk menyimpan riwayat."
+                    return@launch
+                }
+                val outcome = launchAndRecordHistory(
+                    store = watchHistoryStore,
+                    title = titleEntry,
+                    episode = streamDialogEpisodeEntry,
+                ) {
+                    withContext(Dispatchers.IO) { StreamLauncher.open(stream) }
+                }
+                outcome.entries?.let { watchHistory = it }
+                watchHistoryError = outcome.historyError?.userMessage()
+                playbackMessage = if (outcome.destination == "browser") {
                     "Tautan dibuka di browser."
                 } else {
-                    "Tautan dikirim ke $result."
+                    "Tautan dikirim ke ${outcome.destination}."
                 }
                 streamDialogOpen = false
+                streamDialogTitleEntry = null
+                streamDialogEpisodeEntry = null
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 streamError = error.userMessage()
             }
@@ -512,6 +572,7 @@ private fun HikariDesktopApp() {
         DesktopPage.HOME -> "Beranda"
         DesktopPage.SEARCH -> "Cari judul"
         DesktopPage.LIBRARY -> "Pustaka"
+        DesktopPage.HISTORY -> "Riwayat"
         DesktopPage.SOURCES -> "Sumber"
         DesktopPage.CATALOGS -> "Semua katalog"
         DesktopPage.CATALOG -> catalogBrowse.target?.catalogName ?: "Katalog"
@@ -521,6 +582,7 @@ private fun HikariDesktopApp() {
         DesktopPage.HOME -> "Katalog dari add-on Stremio yang sudah ditambahkan"
         DesktopPage.SEARCH -> "Cari lintas katalog yang menyediakan pencarian"
         DesktopPage.LIBRARY -> "Judul yang disimpan dari halaman detail"
+        DesktopPage.HISTORY -> "Judul dan episode yang berhasil diluncurkan"
         DesktopPage.SOURCES -> "Tambah dan kelola sumber katalog Stremio"
         DesktopPage.CATALOGS -> "Katalog dari semua add-on Stremio yang dipasang"
         DesktopPage.CATALOG -> catalogBrowse.target?.sourceName ?: "Semua judul dalam katalog"
@@ -604,6 +666,17 @@ private fun HikariDesktopApp() {
                                     updateLibraryCategory { libraryCategoryStore.move(id, delta) }
                                 },
                             )
+                            DesktopPage.HISTORY -> WatchHistoryScreen(
+                                entries = watchHistory,
+                                loading = watchHistoryLoading,
+                                error = watchHistoryError,
+                                onRetry = ::reloadWatchHistory,
+                                onBrowseHome = { page = DesktopPage.HOME },
+                                onOpenTitle = ::openTitle,
+                                onPlayAgain = { entry -> requestStreams(entry.title, entry.episode) },
+                                onRemove = ::removeWatchHistoryEntry,
+                                onClear = ::clearWatchHistory,
+                            )
                             DesktopPage.SEARCH -> SearchScreen(
                                 query = searchQuery,
                                 onQueryChange = {
@@ -685,7 +758,11 @@ private fun HikariDesktopApp() {
             loading = streamLoading,
             error = streamError,
             onChoose = ::openStream,
-            onDismiss = { streamDialogOpen = false },
+            onDismiss = {
+                streamDialogOpen = false
+                streamDialogTitleEntry = null
+                streamDialogEpisodeEntry = null
+            },
         )
     }
 }
