@@ -3,6 +3,7 @@
 This is a separate native desktop MVP. It does not wrap or require the Android APK, and it does not change the Android `:app` module.
 
 The first milestone supports Stremio add-on catalogs, searching, title details, and handing direct stream URLs to VLC/MPV or the default browser. Other provider ecosystems and an embedded media player are outside this milestone.
+Series details show one season at a time when an add-on returns multiple seasons. The selector defaults to the first real season; one-season series keep their full episode list visible.
 
 Home shows up to eight catalog shelves as a preview. Open **Semua katalog** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
 

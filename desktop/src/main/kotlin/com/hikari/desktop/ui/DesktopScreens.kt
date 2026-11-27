@@ -75,6 +75,7 @@ import com.hikari.desktop.ShelfState
 import com.hikari.desktop.SourceState
 import com.hikari.desktop.catalogDirectoryErrorTitle
 import com.hikari.desktop.catalogDirectoryContentState
+import com.hikari.desktop.detailEpisodeState
 import com.hikari.desktop.data.AddonEpisode
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
@@ -1733,6 +1734,12 @@ internal fun DetailScreen(
     onToggleSaved: () -> Unit,
     onPlayEpisode: (AddonEpisode) -> Unit,
 ) {
+    var selectedSeason by remember(title.addonUrl, title.id) { mutableStateOf<Int?>(null) }
+    var seasonMenuOpen by remember(title.addonUrl, title.id) { mutableStateOf(false) }
+    val episodeState = remember(episodes, selectedSeason) {
+        detailEpisodeState(episodes, selectedSeason)
+    }
+    val seasonLabel = { season: Int -> if (season > 0) "Musim $season" else "Spesial" }
     Row(
         modifier = Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -1802,8 +1809,37 @@ internal fun DetailScreen(
                 }
             }
             if (episodes.isNotEmpty()) {
-                item { Text("Episode", style = MaterialTheme.typography.titleLarge) }
-                items(items = episodes, key = { it.id }) { episode ->
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Episode", style = MaterialTheme.typography.titleLarge)
+                        if (episodeState.showsSeasonSelector) {
+                            Box {
+                                OutlinedButton(onClick = { seasonMenuOpen = true }) {
+                                    Text(episodeState.activeSeason?.let(seasonLabel) ?: "Pilih musim")
+                                }
+                                DropdownMenu(
+                                    expanded = seasonMenuOpen,
+                                    onDismissRequest = { seasonMenuOpen = false },
+                                ) {
+                                    episodeState.seasons.forEach { season ->
+                                        DropdownMenuItem(
+                                            text = { Text(seasonLabel(season)) },
+                                            onClick = {
+                                                selectedSeason = season
+                                                seasonMenuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                items(items = episodeState.visibleEpisodes, key = { it.id }) { episode ->
                     EpisodeRow(episode = episode, onPlay = { onPlayEpisode(episode) })
                 }
             }
