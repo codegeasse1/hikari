@@ -59,8 +59,7 @@ class PipelineUnitTest {
     }
 
     @Test
-    fun companyLogoFor_exactThenTruncatedThenMiss() {
-        val map = mapOf(
+    fun companyLogoFor_exactThenTruncatedThenMiss() {        val map = mapOf(
             "nighttrainmedia" to "https://img/ntm.png",
             "internationalmediafunds" to "https://img/imf.png",
         )
@@ -204,5 +203,23 @@ class PipelineUnitTest {
             )
         )
         assertEquals("jpg", MangaOffline.extForContentType(null, "https://x/y", null))
+    }
+
+    @Test
+    fun sequelBaseTitle_stripsSequelNumberButKeepsRealNumbers() {
+        // The tracker/calendar case: a season-2 title must reduce to the
+        // season-1 name TMDB actually lists.
+        assertEquals("Beyond Time's Gaze", TmdbMeta.sequelBaseTitle("Beyond Time's Gaze 2"))
+        assertEquals("Beyond Time's Gaze", TmdbMeta.sequelBaseTitle("Beyond Time's Gaze II"))
+        assertEquals("Guangyin Zhi Wai", TmdbMeta.sequelBaseTitle("Guangyin Zhi Wai 2"))
+        assertEquals("Naruto Shippuden", TmdbMeta.sequelBaseTitle("Naruto Shippuden Part 2"))
+        // Real numbers are not sequel markers: no space, too short to be a
+        // name, or out of the 2..30 sequel band.
+        assertEquals(null, TmdbMeta.sequelBaseTitle("86"))
+        assertEquals(null, TmdbMeta.sequelBaseTitle("2012"))
+        assertEquals(null, TmdbMeta.sequelBaseTitle("Steins;Gate 0"))
+        assertEquals(null, TmdbMeta.sequelBaseTitle("One Piece"))
+        assertEquals(null, TmdbMeta.sequelBaseTitle("Classroom of the Elite"))
+        assertEquals(null, TmdbMeta.sequelBaseTitle("Mob Psycho 100"))
     }
 }

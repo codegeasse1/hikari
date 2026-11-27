@@ -2157,22 +2157,26 @@ fun DetailScreen(
     val orderedEps = remember(shownEps, epsNewestFirst) {
         if (epsNewestFirst) shownEps.asReversed() else shownEps
     }
+    val app = context.applicationContext as HikariApp
+    val rangeStyle by remember { app.store.episodeRangeStyleFlow() }.collectAsState(initial = 0)
     val epPageSize = 30
+    // Horizontal phone style pages by 50 like the reference app; everything
+    // else (vertical phone, all TV) keeps 30.
+    val rangeBlock = if (rangeStyle == 1 && !isTvLayout) 50 else epPageSize
     var rangeStart by remember(activeSeason, epsNewestFirst) { mutableStateOf(0) }
-    val ranges = remember(orderedEps) {
-        if (orderedEps.size <= epPageSize) emptyList()
-        else (0 until orderedEps.size step epPageSize).toList()
+    val ranges = remember(orderedEps, rangeBlock) {
+        if (orderedEps.size <= rangeBlock) emptyList()
+        else (0 until orderedEps.size step rangeBlock).toList()
     }
     val safeStart = if (ranges.isEmpty()) 0 else rangeStart.coerceIn(0, ranges.last())
-    val pageEps = remember(orderedEps, safeStart) {
-        orderedEps.drop(safeStart).take(epPageSize)
+    val pageEps = remember(orderedEps, safeStart, rangeBlock) {
+        orderedEps.drop(safeStart).take(rangeBlock)
     }
 
     LaunchedEffect(providerId, mediaId) {
         vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
-    val app = context.applicationContext as HikariApp
     val playWaitFlow = remember { app.store.playWaitServersFlow() }
     val playWaitServers by playWaitFlow.collectAsState(initial = false)
     val playMinFlow = remember { app.store.playMinServersFlow() }
@@ -4626,13 +4630,48 @@ fun DetailScreen(
                                     }
                                 }
                                 if (ranges.isNotEmpty()) {
+                                    if (rangeStyle == 1 && !isTvLayout) {
+                                        // Reference-style horizontal range chips (phone only):
+                                        // dark boxes, the active block red.
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + rangeBlock).coerceAtMost(shownEps.size)
+                                                val selected = start == safeStart
+                                                Box(
+                                                    Modifier
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(
+                                                            if (selected) Color(0xFFD32F2F)
+                                                            else MaterialTheme.colorScheme.surfaceVariant
+                                                        )
+                                                        .clickable { rangeStart = start }
+                                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Text(
+                                                        "${start + 1}–$end",
+                                                        maxLines = 1,
+                                                        color = if (selected) Color.White
+                                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
                                     Box {
                                         OutlinedButton(
                                             onClick = { rangeExpanded = true },
                                             contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp),
                                             modifier = Modifier.tvPress(previewPass = true, onClick = { rangeExpanded = true })
                                         ) {
-                                            val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
+                                            val end = (safeStart + rangeBlock).coerceAtMost(shownEps.size)
                                             Text("${safeStart + 1}–$end", maxLines = 1)
                                         }
                                         DropdownMenu(
@@ -4640,7 +4679,7 @@ fun DetailScreen(
                                             onDismissRequest = { rangeExpanded = false }
                                         ) {
                                             ranges.forEach { start ->
-                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                val end = (start + rangeBlock).coerceAtMost(shownEps.size)
                                                 DropdownMenuItem(
                                                     modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
                                                     text = { Text("${start + 1}–$end") },
@@ -4651,6 +4690,7 @@ fun DetailScreen(
                                                 )
                                             }
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -5755,13 +5795,46 @@ fun DetailScreen(
                                 // Episode page picker — only needed once a single
                                 // season exceeds 30 episodes (e.g. 600-ep donghua).
                                 if (ranges.isNotEmpty()) {
+                                    if (rangeStyle == 1 && !isTvLayout) {
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + rangeBlock).coerceAtMost(shownEps.size)
+                                                val selected = start == safeStart
+                                                Box(
+                                                    Modifier
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(
+                                                            if (selected) Color(0xFFD32F2F)
+                                                            else MaterialTheme.colorScheme.surfaceVariant
+                                                        )
+                                                        .clickable { rangeStart = start }
+                                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Text(
+                                                        "${start + 1}–$end",
+                                                        maxLines = 1,
+                                                        color = if (selected) Color.White
+                                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
                                     Box {
                                         OutlinedButton(
                                             onClick = { rangeExpanded = true },
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                                             modifier = Modifier.tvPress(previewPass = true, onClick = { rangeExpanded = true })
                                         ) {
-                                            val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
+                                            val end = (safeStart + rangeBlock).coerceAtMost(shownEps.size)
                                             Text("${safeStart + 1}–$end", maxLines = 1)
                                         }
                                         DropdownMenu(
@@ -5769,7 +5842,7 @@ fun DetailScreen(
                                             onDismissRequest = { rangeExpanded = false }
                                         ) {
                                             ranges.forEach { start ->
-                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                val end = (start + rangeBlock).coerceAtMost(shownEps.size)
                                                 DropdownMenuItem(
                                                     modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
                                                     text = { Text("${start + 1}–$end") },
@@ -5780,6 +5853,7 @@ fun DetailScreen(
                                                 )
                                             }
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -6123,12 +6197,20 @@ fun DetailScreen(
 
    if (scopeAskShow) {
         val originName = providers.firstOrNull { it.config.id == livePid }?.config?.name?.ifBlank { null } ?: livePid
+        // Trackers (Simkl, AniList…) carry no servers, so offering "this
+        // extension only" for them is a dead option that can only ever
+        // return nothing.
+        val originIsTracker = livePid.lowercase() in setOf(
+            "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt",
+        )
         ChoiceDialog(
             title = if (scopeAskPending?.third == true) tr("Where should download search?") else tr("Where should playback search?"),
-            items = listOf(
-                com.hikari.app.ui.components.ChoiceItem(key = "origin", label = tr("This extension only"), supporting = originName),
-                com.hikari.app.ui.components.ChoiceItem(key = "selected", label = tr("My selected servers"), supporting = tr("Your Server search choices")),
-            ),
+            items = buildList {
+                if (!originIsTracker) {
+                    add(com.hikari.app.ui.components.ChoiceItem(key = "origin", label = tr("This extension only"), supporting = originName))
+                }
+                add(com.hikari.app.ui.components.ChoiceItem(key = "selected", label = tr("My selected servers"), supporting = tr("Your Server search choices")))
+            },
             selectedKey = null,
             onPick = { key ->
                 if (key == "origin") {

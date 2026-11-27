@@ -378,6 +378,33 @@ object TmdbMeta {
         return out.filter { it.length >= 2 }
     }
 
+    private val SEQUEL_TAIL = Regex("(?i)\\s+(?:part\\s+)?(\\d{1,2}|[IVX]{1,4})$")
+
+    /**
+     * The show without its trailing sequel number ("Beyond Time's Gaze 2" →
+     * "Beyond Time's Gaze"), or null when there is none. TMDB often lists
+     * only season 1 while trackers name season 2 outright — the base title
+     * is what resolves. Guarded so real numbers stay: needs whitespace
+     * before the number, 5+ chars left, number 2..30 (roman II..XXX).
+     */
+    fun sequelBaseTitle(raw: String): String? {
+        val t = raw.trim()
+        val m = SEQUEL_TAIL.find(t) ?: return null
+        val num = m.groupValues[1].trim().uppercase()
+        val n = num.toIntOrNull() ?: mapOf(
+            "II" to 2, "III" to 3, "IV" to 4, "V" to 5, "VI" to 6,
+            "VII" to 7, "VIII" to 8, "IX" to 9, "X" to 10, "XI" to 11,
+            "XII" to 12, "XIII" to 13, "XIV" to 14, "XV" to 15, "XX" to 20,
+            "XXX" to 30,
+        )[num]
+        if (n == null || n < 2 || n > 30) return null
+        val base = t.substring(0, m.range.first).trim()
+            .trimEnd('-', '–', '—', ':', '：', '|', '.', ',', '_').trim()
+        if (base.length < 5) return null
+        if (base.length <= num.length + 1) return null
+        return base
+    }
+
     private suspend fun imdbArtwork(item: MediaItem): Pair<String?, String?>? {
         val title = item.title.trim()
         if (title.isBlank()) return null

@@ -456,7 +456,7 @@ private fun HeapSnapshotCard(onChanged: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                tr("Captures the app's full memory heap (hundreds of MB) next to the logs — send it when the app runs out of memory or slows down. The app freezes for a few seconds while it writes."),
+                tr("Captures the app's full memory heap"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

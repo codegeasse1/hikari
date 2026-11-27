@@ -2337,7 +2337,10 @@ internal fun ProviderPickerSheet(
                     }
                 }
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 160.dp),
+                    // Phones always list one provider per row; the adaptive
+                    // grid is the TV look (wide screens fit 2+ columns).
+                    columns = if (com.hikari.app.tv.TvMode.isTv) GridCells.Adaptive(minSize = 160.dp)
+                    else GridCells.Fixed(1),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     // Bottom clearance for the floating pills below: the last

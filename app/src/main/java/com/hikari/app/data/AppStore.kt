@@ -294,6 +294,10 @@ class AppStore(private val ctx: Context) {
          *  Episode UI). The detail header button cycles the same three and
          *  writes back here, so the choice sticks across titles. */
         val EPISODE_VIEW_MODE = intPreferencesKey("episodeViewMode")
+        /** Phone episode range picker: 0 = today's pill + sheet, 1 =
+         *  reference-style horizontal range chips (50 per block). TV keeps its
+         *  own chips row untouched. Settings → App Layout → Episodes. */
+        val EPISODE_RANGE_STYLE = intPreferencesKey("episodeRangeStyle")
         /** Show the episode description under the episode title (ON by
          *  default; Settings → TV). Off shows titles only, on phone and TV. */
         val EPISODE_DESCRIPTION = booleanPreferencesKey("episodeDescription")
@@ -3426,6 +3430,17 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setEpisodeViewMode(mode: Int) {
         write("EPISODE_VIEW_MODE") { it[K.EPISODE_VIEW_MODE] = mode.coerceIn(-1, 2) }
+    }
+
+    fun episodeRangeStyleFlow(): Flow<Int> =
+        store.data.map { (it[K.EPISODE_RANGE_STYLE] ?: 0).coerceIn(0, 1) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun episodeRangeStyle(): Int = episodeRangeStyleFlow().first()
+
+    suspend fun setEpisodeRangeStyle(mode: Int) {
+        write("EPISODE_RANGE_STYLE") { it[K.EPISODE_RANGE_STYLE] = mode.coerceIn(0, 1) }
     }
 
     /** Whether episode rows print the description under the title (ON by

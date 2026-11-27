@@ -172,7 +172,24 @@ object TmdbResolver {
     private suspend fun searchByTitleExactAnime(item: MediaItem): Resolved? {
         val title = item.searchTitle
         if (title.isBlank()) return null
-        val variants = TmdbMeta.queryVariants(title).take(4)
+        // Trackers name sequel seasons outright ("... Gaze 2") while TMDB
+        // often lists only season 1: retrying the base title is what finds
+        // the franchise row the Nuvio providers can then query.
+        val base = TmdbMeta.sequelBaseTitle(title)
+        val direct = searchExactAnimeVariants(item, title, TmdbMeta.queryVariants(title).take(4), relaxYear = false)
+        if (direct != null) return direct
+        if (base != null && base != title) {
+            return searchExactAnimeVariants(item, base, TmdbMeta.queryVariants(base).take(4), relaxYear = true)
+        }
+        return null
+    }
+
+    private suspend fun searchExactAnimeVariants(
+        item: MediaItem,
+        title: String,
+        variants: List<String>,
+        relaxYear: Boolean,
+    ): Resolved? {
         if (variants.isEmpty()) return null
         val sequelRow = TmdbMeta.seasonHint(title) != null
         var best: Resolved? = null
@@ -185,15 +202,15 @@ object TmdbResolver {
                     val o = arr.optJSONObject(i) ?: continue
                     val oid = o.optString("id").trim()
                     if (oid.isBlank() || oid == "null") continue
-                    var base = 0
+                    var baseScore = 0
                     for (n in listOf(o.optString("title"), o.optString("name"), o.optString("original_title"), o.optString("original_name"))) {
                         if (n.isBlank() || n == "null") continue
-                        for (vv in variants) base = maxOf(base, TmdbMeta.titleScore(vv, n))
+                        for (vv in variants) baseScore = maxOf(baseScore, TmdbMeta.titleScore(vv, n))
                     }
-                    if (base < 60) continue
-                    val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
-                    val y = raw.take(4).toIntOrNull()
-                    if (!sequelRow && item.year != null && item.year > 0) {
+                    if (baseScore < 60) continue
+                    if (!relaxYear && !sequelRow && item.year != null && item.year > 0) {
+                        val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
+                        val y = raw.take(4).toIntOrNull()
                         if (y == null || kotlin.math.abs(y - item.year) > 1) continue
                     }
                     val lang = o.optString("original_language").lowercase()
@@ -211,7 +228,7 @@ object TmdbResolver {
                         ja = variants.any { vv -> originals.any { nn -> TmdbMeta.normalizeTitle(nn) == TmdbMeta.normalizeTitle(vv) && vv.isNotBlank() } }
                     }
                     if (!ja) continue
-                    val score = base * 100 + o.optDouble("popularity", 0.0).toInt().coerceAtMost(99)
+                    val score = baseScore * 100 + o.optDouble("popularity", 0.0).toInt().coerceAtMost(99)
                     if (score > bestScore) { bestScore = score; best = Resolved(oid, kind) }
                 }
                 if (bestScore >= 6000) return best
@@ -264,7 +281,8 @@ object TmdbResolver {
         // language) still has to be looked up by the name TMDB indexes it under.
         val title = item.searchTitle
         if (title.isBlank()) return null
-        val variants = item.allTitles.flatMap { TmdbMeta.queryVariants(it) }.distinct()
+        val titles = (item.allTitles + item.allTitles.mapNotNull { TmdbMeta.sequelBaseTitle(it) }).distinct()
+        val variants = titles.flatMap { TmdbMeta.queryVariants(it) }.distinct()
         if (variants.isEmpty()) return null
         val kinds = when (item.type) {
             MediaType.MOVIE -> listOf("movie")

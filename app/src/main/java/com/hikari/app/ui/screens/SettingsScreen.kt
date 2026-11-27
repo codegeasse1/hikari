@@ -1057,6 +1057,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.LAYOUT_EPISODES -> {
                     item { SettingsCard(top = 2.dp) { EpisodeViewModeCard(app) } }
+                    item { SettingsCard { EpisodeRangeStyleCard(app) } }
                     item { SettingsCard { TvEpisodeSizeCard(app) } }
                     item { SettingsCard { EpisodeDescriptionCard(app) } }
                 }
@@ -3932,6 +3933,54 @@ private fun EpisodeViewModeCard(app: HikariApp) {
             supporting = tr("Frosted-glass cards for list, grid and big episodes"),
             checked = glass,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setEpisodeGlass(on) } } },
+        )
+    }
+}
+
+/**
+ * Phone episode range picker: today's pill + dropdown sheet, or the
+ * reference-style horizontal range chips (50 per block). TV keeps its own
+ * chips row either way.
+ */
+@Composable
+private fun EpisodeRangeStyleCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.episodeRangeStyleFlow() }
+    val mode by flow.collectAsState(initial = 0)
+    val options = listOf(
+        0 to tr("Vertical (pill + list)"),
+        1 to tr("Horizontal chips (50 per block)"),
+    )
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Tv, tr("Episode range style"))
+        options.forEach { (value, label) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        scope.launch { runCatching { app.store.setEpisodeRangeStyle(value) } }
+                    }
+                    .padding(vertical = 6.dp),
+            ) {
+                RadioButton(
+                    selected = mode == value,
+                    onClick = {
+                        scope.launch { runCatching { app.store.setEpisodeRangeStyle(value) } }
+                    },
+                )
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Text(
+            tr("Phone only. TV keeps its own range chips."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

@@ -1,4 +1,12 @@
 
+## 0.12.163
+
+- Select Provider shows one provider per row on phones now, no more squeezed two-per-row on wide phones
+- Tracker and calendar titles resolve through season names too, so Nuvio servers show up for season 2 titles like Beyond Time's Gaze 2
+- The dead This extension only option no longer shows for tracker titles that have no servers
+- Heap snapshot description shortened to one line
+- Episode ranges get a horizontal chips style in Settings with 50 per block, phone only
+
 ## 0.12.162
 
 - Fixed slow metadata loading, detail pages open much faster now
