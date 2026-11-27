@@ -44,6 +44,7 @@ import com.hikari.desktop.data.WatchHistoryStore
 import com.hikari.desktop.net.AddonClientException
 import com.hikari.desktop.net.StremioClient
 import com.hikari.desktop.playback.StreamLauncher
+import com.hikari.desktop.playback.defaultVideoIdForPlayback
 import com.hikari.desktop.playback.launchAndRecordHistory
 import com.hikari.desktop.ui.DesktopPage
 import com.hikari.desktop.ui.DesktopSidebar
@@ -444,7 +445,11 @@ private fun HikariDesktopApp() {
         }
     }
 
-    fun requestStreams(title: AddonTitle, episode: AddonEpisode? = null) {
+    fun requestStreams(
+        title: AddonTitle,
+        episode: AddonEpisode? = null,
+        availableEpisodes: List<AddonEpisode> = emptyList(),
+    ) {
         streamDialogTitle = if (episode == null) title.title else "${title.title} · ${episode.title}"
         streamDialogTitleEntry = title
         streamDialogEpisodeEntry = episode
@@ -452,11 +457,9 @@ private fun HikariDesktopApp() {
         streamError = null
         streamLoading = true
         streamDialogOpen = true
-        val movie = title.type.equals("movie", ignoreCase = true) || title.type.equals("film", ignoreCase = true)
         val videoId = when {
             episode != null -> episode.id
-            movie -> title.id
-            else -> "${title.id}:1:1"
+            else -> defaultVideoIdForPlayback(title, availableEpisodes)
         }
         scope.launch {
             try {
@@ -730,16 +733,17 @@ private fun HikariDesktopApp() {
                             )
                             DesktopPage.DETAIL -> selectedTitle?.let { selected ->
                                 val detailTitle = titleDetail?.title ?: selected
+                                val detailEpisodes = titleDetail?.episodes.orEmpty()
                                 DetailScreen(
                                     title = detailTitle,
-                                    episodes = titleDetail?.episodes.orEmpty(),
+                                    episodes = detailEpisodes,
                                     loading = detailLoading,
                                     error = detailError,
                                     playbackMessage = playbackMessage,
                                     isSaved = savedTitles.any { it.savedTitleIdentity() == detailTitle.savedTitleIdentity() },
                                     libraryError = savedTitlesError,
                                     onBack = { page = previousPage },
-                                    onPlay = { requestStreams(selected) },
+                                    onPlay = { requestStreams(selected, availableEpisodes = detailEpisodes) },
                                     onToggleSaved = { toggleSavedTitle(detailTitle) },
                                     onPlayEpisode = { requestStreams(selected, it) },
                                 )
