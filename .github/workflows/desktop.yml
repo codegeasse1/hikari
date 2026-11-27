@@ -1,0 +1,101 @@
+name: Windows desktop
+
+on:
+  push:
+    branches: [ main, desktop/windows11-mvp ]
+    paths:
+      - 'desktop/**'
+      - 'settings.gradle.kts'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'settings.gradle.kts'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+          cache-disabled: true
+
+      - name: Run desktop tests
+        run: |
+          gradle :desktop:test --no-daemon
+
+      - name: Build Windows installers
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: gradle :desktop:packageMsi :desktop:packageExe --no-daemon
+
+      - name: Verify the runtime and smoke-test the launcher
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $buildRoot = "desktop/build/compose/binaries/main"
+          $msi = Get-ChildItem -Path $buildRoot -Recurse -File -Filter "*.msi" | Select-Object -First 1
+          if (-not $msi) {
+            throw "Windows MSI was not found under $buildRoot."
+          }
+
+          $extractRoot = Join-Path $env:RUNNER_TEMP "hikari-msi-extracted"
+          $extractLog = Join-Path $env:RUNNER_TEMP "hikari-msi-extract.log"
+          $extractArgs = @(
+            "/a",
+            "`"$($msi.FullName)`"",
+            "/qn",
+            "TARGETDIR=`"$extractRoot`"",
+            "/l*vx",
+            "`"$extractLog`""
+          )
+          $extractProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList $extractArgs -PassThru -Wait
+          if ($extractProcess.ExitCode -ne 0) {
+            Get-Content -Path $extractLog -Tail 80 | Write-Host
+            throw "MSI administrative extraction failed with exit code $($extractProcess.ExitCode)."
+          }
+
+          $ucrtFiles = @(Get-ChildItem -Path $extractRoot -Recurse -File | Where-Object {
+            $_.Name -ieq "ucrtbase.dll" -or $_.Name -like "api-ms-win-crt-*.dll"
+          })
+          if ($ucrtFiles.Count -gt 0) {
+            $ucrtFiles | ForEach-Object { Write-Host $_.FullName }
+            throw "App-local UCRT DLLs are still present in the packaged runtime."
+          }
+
+          $launcher = Get-ChildItem -Path $extractRoot -Recurse -File -Filter "Hikari.exe" | Select-Object -First 1
+          if (-not $launcher) {
+            throw "Hikari.exe was not found in the extracted MSI."
+          }
+
+          $process = Start-Process -FilePath $launcher.FullName -WorkingDirectory $launcher.DirectoryName -PassThru
+          Start-Sleep -Seconds 10
+          $process.Refresh()
+          if ($process.HasExited) {
+            throw "Hikari exited during startup with code $($process.ExitCode)."
+          }
+          Stop-Process -Id $process.Id -Force
+          Write-Host "The extracted MSI has no app-local UCRT DLLs, and Hikari remained running during the smoke test."
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: hikari-windows-${{ github.sha }}
+          path: |
+            desktop/build/compose/binaries/main/msi/*.msi
+            desktop/build/compose/binaries/main/exe/*.exe
+          if-no-files-found: error
+          retention-days: 30
