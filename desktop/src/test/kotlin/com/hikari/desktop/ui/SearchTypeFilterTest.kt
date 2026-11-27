@@ -55,6 +55,47 @@ class SearchTypeFilterTest {
     }
 
     @Test
+    fun `upcoming releases are included by default`() {
+        val upcoming = title(id = "upcoming", type = "movie", year = 2027)
+
+        assertEquals(
+            listOf(upcoming),
+            filterSearchResults(listOf(upcoming), SearchFilters(), currentYear = 2026),
+        )
+    }
+
+    @Test
+    fun `disabling upcoming hides only known years after the current year`() {
+        val upcoming = title(id = "upcoming", type = "movie", year = 2027)
+        val currentYearTitle = title(id = "current", type = "movie", year = 2026)
+        val unknownYearTitle = title(id = "unknown", type = "movie")
+
+        assertEquals(
+            listOf(currentYearTitle, unknownYearTitle),
+            filterSearchResults(
+                listOf(upcoming, currentYearTitle, unknownYearTitle),
+                SearchFilters(includeUpcoming = false),
+                currentYear = 2026,
+            ),
+        )
+    }
+
+    @Test
+    fun `upcoming filter reads a year from releaseInfo when year is absent`() {
+        val upcoming = title(id = "upcoming", type = "movie").copy(releaseInfo = "2030-04-10")
+
+        assertEquals(
+            emptyList<AddonTitle>(),
+            filterSearchResults(listOf(upcoming), SearchFilters(includeUpcoming = false), currentYear = 2026),
+        )
+    }
+
+    @Test
+    fun `excluding upcoming releases counts as an active filter`() {
+        assertEquals(true, SearchFilters(includeUpcoming = false).isActive)
+    }
+
+    @Test
     fun `filter choices come from result metadata and are sorted without duplicates`() {
         val titles = listOf(
             title(id = "first", type = "movie", year = 2024, genres = listOf("Drama", "Comedy")),

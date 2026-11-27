@@ -2,6 +2,7 @@ package com.hikari.desktop.ui
 
 import com.hikari.desktop.data.AddonTitle
 import java.net.URI
+import java.time.Year
 
 internal enum class SearchTypeFilter(val label: String) {
     ALL("Semua"),
@@ -15,9 +16,11 @@ internal data class SearchFilters(
     val genres: Set<String> = emptySet(),
     val years: Set<Int> = emptySet(),
     val minimumRating: Double? = null,
+    val includeUpcoming: Boolean = true,
 ) {
     val isActive: Boolean
-        get() = type != SearchTypeFilter.ALL || genres.isNotEmpty() || years.isNotEmpty() || minimumRating != null
+        get() = type != SearchTypeFilter.ALL || genres.isNotEmpty() || years.isNotEmpty() ||
+            minimumRating != null || !includeUpcoming
 }
 
 internal enum class SearchResultsPresentation {
@@ -44,6 +47,7 @@ internal fun searchResultsPresentation(
 internal fun filterSearchResults(
     results: List<AddonTitle>,
     filters: SearchFilters,
+    currentYear: Int = Year.now().value,
 ): List<AddonTitle> {
     if (!filters.isActive) return results
 
@@ -62,8 +66,10 @@ internal fun filterSearchResults(
         }
         val matchesRating = filters.minimumRating == null || title.rating == null ||
             title.rating >= filters.minimumRating
+        val titleYear = title.yearForFiltering()
+        val matchesUpcoming = filters.includeUpcoming || titleYear == null || titleYear <= currentYear
 
-        matchesType && matchesYear && matchesGenre && matchesRating
+        matchesType && matchesYear && matchesGenre && matchesRating && matchesUpcoming
     }
 }
 

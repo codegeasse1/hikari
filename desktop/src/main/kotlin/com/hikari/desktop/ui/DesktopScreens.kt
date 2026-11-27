@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -1478,6 +1479,23 @@ private fun SearchResultFilters(
             if (filters.isActive) {
                 TextButton(onClick = { onFiltersChange(SearchFilters()) }) { Text("Reset filter") }
             }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Sertakan rilisan mendatang",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Switch(
+                checked = filters.includeUpcoming,
+                onCheckedChange = { onFiltersChange(filters.copy(includeUpcoming = it)) },
+                modifier = Modifier.semantics { contentDescription = "Sertakan rilisan mendatang" },
+            )
         }
     }
 }
