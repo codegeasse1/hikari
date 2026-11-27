@@ -3305,16 +3305,24 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             try {
               try {
                 clearStatus()
+                // Progress text recomposes the header: refresh it at most
+                // twice a second (plus first/last) instead of per row, so a
+                // 1000-row burst cannot stutter the list it is reporting on.
+                var lastMsgAt = 0L
                 for ((i, p) in pending.withIndex()) {
                     if (installCancelled) break
                     // Let the UI thread and the GC breathe between rows: a
                     // 96-row burst with no suspension point is the jank the
                     // old code produced even before the refresh storm.
                     kotlinx.coroutines.yield()
-                    _busyMsg.value = I18n.t("Installing %s (%s/%s)…")
-                        .replaceFirst("%s", p.name)
-                        .replaceFirst("%s", (i + 1).toString())
-                        .replaceFirst("%s", pending.size.toString())
+                    val now = System.currentTimeMillis()
+                    if (i == 0 || i == pending.size - 1 || now - lastMsgAt >= 500L) {
+                        lastMsgAt = now
+                        _busyMsg.value = I18n.t("Installing %s (%s/%s)…")
+                            .replaceFirst("%s", p.name)
+                            .replaceFirst("%s", (i + 1).toString())
+                            .replaceFirst("%s", pending.size.toString())
+                    }
                     val r = runCatching {
                         // 60s per row inside a burst: a single install may
                         // wait 5 minutes on a slow host, but a burst must not
@@ -3378,12 +3386,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 var ok = 0
                 val failed = mutableListOf<String>()
+                var lastRepairMsgAt = 0L
                 for ((i, p) in missing.withIndex()) {
                     if (installCancelled) break
-                    _busyMsg.value = I18n.t("Repairing %s (%s/%s)…")
-                        .replaceFirst("%s", p.config.name)
-                        .replaceFirst("%s", (i + 1).toString())
-                        .replaceFirst("%s", missing.size.toString())
+                    val nowRepair = System.currentTimeMillis()
+                    if (i == 0 || i == missing.size - 1 || nowRepair - lastRepairMsgAt >= 500L) {
+                        lastRepairMsgAt = nowRepair
+                        _busyMsg.value = I18n.t("Repairing %s (%s/%s)…")
+                            .replaceFirst("%s", p.config.name)
+                            .replaceFirst("%s", (i + 1).toString())
+                            .replaceFirst("%s", missing.size.toString())
+                    }
                     val src = providerSourceUrl(p)
                     val plugin = src?.let { matchRepoPlugin(it) }
                     val r = if (plugin == null) null
@@ -5342,6 +5355,9 @@ private fun RepoBrowserView(
     // LazyListScope (and the search-items helper) cannot call TvMode itself.
     val tvBrowser = com.hikari.app.tv.TvMode.current()
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    // Installed-provider match keys, built once per provider-set change and
+    // shared with every row below (see [providerKeySets]).
+    val providerKeys = remember(providers) { providerKeySets(providers) }
     LaunchedEffect(query) {
         if (query.isNotBlank()) onEnsureReposLoaded()
     }
@@ -5604,6 +5620,7 @@ private fun RepoBrowserView(
                 reinstallFor = reinstallFor,
                 onRepairAllMissing = onRepairAllMissing,
                 tv = tvBrowser,
+                providerKeys = providerKeys,
             )
             return@LazyColumn
         }
@@ -6158,6 +6175,9 @@ private fun LazyListScope.extensionsSearchItems(
     /** The reference 2-per-row grid instead of phone rows. Passed in (rather
      *  than read here) because a LazyListScope cannot call TvMode itself. */
     tv: Boolean = false,
+    /** Precomputed installed-provider match keys (see [providerKeySets]):
+     *  a LazyListScope has no composition of its own to remember them in. */
+    providerKeys: List<Pair<ContentProvider, Set<String>>> = emptyList(),
 ) {
     val q = query.trim()
     val installedMatches = providers.filter { it.config.name.contains(q, ignoreCase = true) }
@@ -6251,6 +6271,7 @@ private fun LazyListScope.extensionsSearchItems(
                                     onUpdate = { onUpdatePlugin(p, repo.kind) },
                                     onOpenSettings = onOpenSettings,
                                     cs3SettingsIds = cs3SettingsIds,
+                                    providerKeys = providerKeys,
                                 )
                             }
                         }
@@ -6260,7 +6281,7 @@ private fun LazyListScope.extensionsSearchItems(
             }
         } else {
         item { SectionHeader("Repos · ${pluginMatches.size}") }
-        items(pluginMatches, key = { "plug-" + it.first.url + "|" + it.second.url }) { match ->
+        items(pluginMatches, key = { "plug-" + it.first.url + "|" + it.second.url }, contentType = { "plug" }) { match ->
             val repo = match.first
             val p = match.second
             Column(
@@ -6284,33 +6305,25 @@ private fun LazyListScope.extensionsSearchItems(
                     m.second.url != p.url && !isDartOnlyPlugin(m.second) &&
                         m.second.name.equals(p.name, ignoreCase = true)
                 } else null
+                // One provider lookup per row (was four full scans): the
+                // status, buttons and settings target all share it.
+                val target = installedProviderFor(p, providers, providerKeys)
+                val tkey = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                val tstat = testStatus[tkey]
                 PluginRow(
                     p = p,
                     installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                     onInstall = { onInstallPlugin(p, repo.kind) },
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
-                    testText = run {
-                        val target = installedProviderFor(p, providers)
-                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                        testStatus[key]?.text
-                    },
-                    testOk = run {
-                        val target = installedProviderFor(p, providers)
-                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                        testStatus[key]?.ok == true
-                    },
-                    testing = run {
-                        val target = installedProviderFor(p, providers)
-                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                        testStatus[key]?.testing == true
-                    },
+                    testText = tstat?.text,
+                    testOk = tstat?.ok == true,
+                    testing = tstat?.testing == true,
                     onTest = {
-                        val target = installedProviderFor(p, providers)
                         if (target != null) onTestInstalled(target.config.id)
                         else onTestDownload(p)
                     },
-                    onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
-                        ?.let { target -> { onOpenSettings(target) } },
+                    onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds, providerKeys)
+                        ?.let { t -> { onOpenSettings(t) } },
                     updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
                     onUpdate = { onUpdatePlugin(p, repo.kind) },
                     kind = repo.kind,
@@ -6488,6 +6501,9 @@ private fun RepoPluginsView(
     }
 
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    // Installed-provider match keys, built once per provider-set change and
+    // shared with the header counts and every row below (see [providerKeySets]).
+    val providerKeys = remember(providers) { providerKeySets(providers) }
     val tvRepoPage = com.hikari.app.tv.TvMode.current()
     var filter by rememberSaveable { mutableStateOf("") }
     // Which of the two kinds to show, when this repo holds both. "" = all.
@@ -6671,18 +6687,30 @@ private fun RepoPluginsView(
                 bottom = LocalTaskbarInset.current + 24.dp,
             )
         ) {
-            val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) && !isDartOnlyPlugin(it) }
-            val installedHere = plugins.count { SourceUrls.anyKeyIn(it.url, installedUrls) }
-            val testingHere = plugins.count { p ->
-                val target = installedProviderFor(p, providers)
-                val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                testStatus[key]?.testing == true
+            // Counted once per data change, not per recomposition: three full
+            // scans with a provider lookup each used to re-run on every frame
+            // while scrolling big repos.
+            val headerCounts = remember(plugins, installedUrls, providerKeys, testStatus) {
+                var u = 0
+                var i = 0
+                var t = 0
+                var o = 0
+                for (p in plugins) {
+                    val installed = SourceUrls.anyKeyIn(p.url, installedUrls)
+                    if (!installed && !isDartOnlyPlugin(p)) u++
+                    if (installed) i++
+                    val target = installedProviderFor(p, providers, providerKeys)
+                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                    val st = testStatus[key]
+                    if (st?.testing == true) t++
+                    if (st?.ok == true) o++
+                }
+                intArrayOf(u, i, t, o)
             }
-            val okHere = plugins.count { p ->
-                val target = installedProviderFor(p, providers)
-                val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                testStatus[key]?.ok == true
-            }
+            val uninstalled = headerCounts[0]
+            val installedHere = headerCounts[1]
+            val testingHere = headerCounts[2]
+            val okHere = headerCounts[3]
             if (plugins.isNotEmpty() && filter.isBlank() && kindFilter.isBlank()) {
                 item {
                     OutlinedButton(
@@ -6814,6 +6842,7 @@ private fun RepoPluginsView(
                                             onUpdate = { onUpdate(first.plugin) },
                                             onOpenSettings = onOpenSettings,
                                             cs3SettingsIds = cs3SettingsIds,
+                                            providerKeys = providerKeys,
                                         )
                                     }
                                     if (second != null) {
@@ -6829,6 +6858,7 @@ private fun RepoPluginsView(
                                                 onUpdate = { onUpdate(second.plugin) },
                                                 onOpenSettings = onOpenSettings,
                                                 cs3SettingsIds = cs3SettingsIds,
+                                                providerKeys = providerKeys,
                                             )
                                         }
                                     } else {
@@ -6839,38 +6869,34 @@ private fun RepoPluginsView(
                             tvIndex += if (second != null) 2 else 1
                         }
                     } else {
-                        items(entries.distinctBy { it.key }, key = { it.key }) { entry ->
+                        // Deduplicated once per list change (was re-run on every
+                        // recomposition); content types keep headers and rows in
+                        // separate recomposition scopes while scrolling.
+                        val distinctEntries = remember(entries) { entries.distinctBy { it.key } }
+                        items(distinctEntries, key = { it.key }, contentType = { if (it is RepoListEntry.Head) "head" else "plug" }) { entry ->
                     when (entry) {
                         is RepoListEntry.Head -> RepoGroupHeader(entry.title, entry.count)
                         is RepoListEntry.Row -> {
                             val p = entry.plugin
+                            // One provider lookup per row (was four full scans):
+                            // the status, buttons and settings target share it.
+                            val target = installedProviderFor(p, providers, providerKeys)
+                            val tkey = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                            val tstat = testStatus[tkey]
                             PluginRow(
                                 p = p,
                                 installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                                 onInstall = { onInstall(p) },
                                 onUninstall = { onUninstall(p) },
-                                testText = run {
-                                    val target = installedProviderFor(p, providers)
-                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                                    testStatus[key]?.text
-                                },
-                                testOk = run {
-                                    val target = installedProviderFor(p, providers)
-                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                                    testStatus[key]?.ok == true
-                                },
-                                testing = run {
-                                    val target = installedProviderFor(p, providers)
-                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                                    testStatus[key]?.testing == true
-                                },
+                                testText = tstat?.text,
+                                testOk = tstat?.ok == true,
+                                testing = tstat?.testing == true,
                                 onTest = {
-                                    val target = installedProviderFor(p, providers)
                                     if (target != null) onTestInstalled(target.config.id)
                                     else onTestDownload(p)
                                 },
-                                onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
-                                    ?.let { target -> { onOpenSettings(target) } },
+                                onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds, providerKeys)
+                                    ?.let { t -> { onOpenSettings(t) } },
                                 updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
                                 onUpdate = { onUpdate(p) },
                                 kind = repo.kind,
@@ -7654,6 +7680,7 @@ private fun TvPluginCardEntry(
     onOpenSettings: (ContentProvider) -> Unit,
     cs3SettingsIds: Set<String>,
     modifier: Modifier = Modifier,
+    providerKeys: List<Pair<ContentProvider, Set<String>>> = emptyList(),
 ) {
     var icon by remember(p.url) {
         mutableStateOf(
@@ -7674,7 +7701,7 @@ private fun TvPluginCardEntry(
     }
     val installed = SourceUrls.anyKeyIn(p.url, installedUrls)
     val updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls)
-    val settingsTarget = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
+    val settingsTarget = repoPluginSettingsTarget(p, providers, cs3SettingsIds, providerKeys)
     com.hikari.app.tv.Cs3PluginCard(
         name = p.name,
         version = p.version.toString(),
@@ -7786,7 +7813,9 @@ private fun PluginRow(
         Spacer(Modifier.width(12.dp))
         // The real country flag in front of the name (the reference provider
         // list's flags) — the text meta below keeps the "🇮🇳 Hindi" label too.
-        val flagCode = langCodeOf(p)
+        // Hoisted per row: rebuilt only when this plugin (or repo) changes,
+        // not on every recomposition while scrolling past.
+        val flagCode = remember(p.url) { langCodeOf(p) }
         if (flagCode != null) {
             FlagIcon(code = flagCode, size = 24.dp)
             Spacer(Modifier.width(10.dp))
@@ -7798,14 +7827,16 @@ private fun PluginRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val meta = listOfNotNull(
-                langFlagOf(p),
-                repoName.ifBlank { null },
-                p.description.ifBlank { null },
-                p.authors.joinToString(", ").ifBlank { null },
-                if (p.version > 0) "v${p.version}" else null,
-                p.tvTypes.joinToString(", ").ifBlank { null },
-            ).joinToString(" · ")
+            val meta = remember(p, repoName) {
+                listOfNotNull(
+                    langFlagOf(p),
+                    repoName.ifBlank { null },
+                    p.description.ifBlank { null },
+                    p.authors.joinToString(", ").ifBlank { null },
+                    if (p.version > 0) "v${p.version}" else null,
+                    p.tvTypes.joinToString(", ").ifBlank { null },
+                ).joinToString(" · ")
+            }
             Text(
                 meta,
                 style = MaterialTheme.typography.labelSmall,
@@ -7968,7 +7999,29 @@ private fun PluginRow(
  * The installed provider behind a repo listing, matched the way install
  * state is (URL spellings, not literals) — the Test button's target.
  */
-private fun installedProviderFor(plugin: Cs3RepoPlugin, providers: List<ContentProvider>): ContentProvider? {
+/** One O(m) pass over the installed providers, keyed once per provider-set
+ *  change (see the `remember(providers)` call sites): repo rows then do
+ *  set lookups per plugin instead of re-splitting every provider URL on
+ *  every recomposition. That n×m string storm is what made 1000-extension
+ *  repos jitter on scroll. Semantics match the inline scan it replaces:
+ *  the first provider in list order whose keys touch the plugin's keys
+ *  still wins (empty key sets never match, like the old extra-null skip). */
+private fun providerKeySets(providers: List<ContentProvider>): List<Pair<ContentProvider, Set<String>>> =
+    providers.map { p -> p to providerMatchKeySet(p) }
+
+private fun providerMatchKeySet(p: ContentProvider): Set<String> {
+    val extra = p.config.extra ?: return emptySet()
+    val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+    return SourceUrls.matchKeys(source).toSet()
+}
+
+private fun installedProviderFor(
+    plugin: Cs3RepoPlugin,
+    providers: List<ContentProvider>,
+    /** Precomputed [providerKeySets]: when null the sets are built inline
+     *  (same cost as the old code — only call sites that skip it pay it). */
+    pre: List<Pair<ContentProvider, Set<String>>>? = null,
+): ContentProvider? {
     // Fork-video rows carry no source file: match by their `forkvideo://` URL
     // or provider id.
     if (com.hikari.app.kotatsu.fork.ForkVideoProvider.isForkVideoPluginUrl(plugin.url)) {
@@ -7997,11 +8050,8 @@ private fun installedProviderFor(plugin: Cs3RepoPlugin, providers: List<ContentP
         }
     }
     val wanted = SourceUrls.matchKeys(plugin.url)
-    return providers.firstOrNull { p ->
-        val extra = p.config.extra ?: return@firstOrNull false
-        val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-        SourceUrls.matchKeys(source).any { it in wanted }
-    }
+    val keyed = pre ?: providers.map { it to providerMatchKeySet(it) }
+    return keyed.firstOrNull { (_, ks) -> ks.any { it in wanted } }?.first
 }
 
 private fun providerSource(p: ContentProvider): String? {
@@ -8028,6 +8078,7 @@ private fun repoPluginSettingsTarget(
     plugin: Cs3RepoPlugin,
     providers: List<ContentProvider>,
     cs3SettingsIds: Set<String>,
+    pre: List<Pair<ContentProvider, Set<String>>>? = null,
 ): ContentProvider? {
     if (com.hikari.app.kotatsu.fork.ForkVideoProvider.isForkVideoPluginUrl(plugin.url)) {
         val oe = com.hikari.app.kotatsu.fork.ForkVideoProvider.ownerEnumOfPluginUrl(plugin.url)
@@ -8055,12 +8106,10 @@ private fun repoPluginSettingsTarget(
         }?.takeIf { hasSettingsScreen(it, cs3SettingsIds) }
     }
     val wanted = SourceUrls.matchKeys(plugin.url)
-    return providers.firstOrNull { p ->
-        val extra = p.config.extra ?: return@firstOrNull false
-        val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-        if (SourceUrls.matchKeys(source).none { it in wanted }) return@firstOrNull false
-        hasSettingsScreen(p, cs3SettingsIds)
-    }
+    val keyed = pre ?: providers.map { it to providerMatchKeySet(it) }
+    return keyed.firstOrNull { (p, ks) ->
+        ks.any { it in wanted } && hasSettingsScreen(p, cs3SettingsIds)
+    }?.first
 }
 
 /** True when the row's status would be a missing-file line (see [pluginStatus]). */

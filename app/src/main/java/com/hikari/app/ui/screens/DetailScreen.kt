@@ -903,11 +903,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _similar.value = emptyList()
             _relatedFromPlugin.value = false
             _recommended.value = emptyList()
-            // Memory choke point: a detail open is the heaviest transient in
-            // the app (origin /meta + TMDB + shelves + episode art). When the
-            // heap is nearly full, drop the re-fetchable image caches first
-            // (see HikariApp.relieveHeapPressure) — a no-op without pressure.
-            runCatching { HikariApp.instance.relieveHeapPressure("detail") }
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
                 "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
@@ -947,44 +942,57 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 originalTitle = originalName.orEmpty(),
             )
             _meta.value = base
-            // Stale-while-revalidate: paint last visit's shelves instantly
-            // (see DetailSnapshotCache — episodes publish first from the
-            // repository's own episode cache and are NOT snapshotted here).
-            // The fast + upgrade passes below overwrite every section as
-            // fresher data lands. Key is type-agnostic on purpose: a row that
-            // arrives as MOVIE but resolves to SERIES (the Bleach case) must
-            // hit the same entry on reopen.
-            runCatching {
-                val snapFamily = manager.byId(base.providerId)?.config?.type
-                val snapAddonsKey = manager.providers.value
-                    .filterIsInstance<com.hikari.app.providers.StremioAddon>()
-                    .joinToString("|") { it.config.id + ":" + it.config.enabled }
-                val snapFp = com.hikari.app.data.MetaSources.fingerprint(base, snapFamily, snapAddonsKey)
-                com.hikari.app.data.DetailSnapshotCache.get(
-                    "${base.providerId}|${base.id}", snapFp,
-                )?.let { snap ->
-                    _extras.value = snap.extras
-                    _related.value = snap.related
-                    _similar.value = snap.similar
-                    _recommended.value = snap.recommended
-                    _addonLogo.value = snap.addonLogo
+            // First paint happens right below (_loading = false): the base is
+            // already on screen from the nav args, so everything after this
+            // point must not cost frame one. The heap nudge and the snapshot
+            // read both ride the IO pool (the snapshot only fills sections
+            // the live passes have not painted yet — stale never overwrites
+            // fresh). Key is type-agnostic on purpose: a row that arrives as
+            // MOVIE but resolves to SERIES (the Bleach case) must hit the
+            // same entry on reopen.
+            _loading.value = false
+            val snapGen = shelvesGeneration
+            launch(Dispatchers.IO) {
+                // A detail open is the heaviest transient in the app (origin
+                // /meta + TMDB + shelves + episode art). When the heap is
+                // nearly full, drop the re-fetchable image caches first
+                // (see HikariApp.relieveHeapPressure) — a no-op without
+                // pressure. Off the critical path: under pressure this can
+                // block on a GC, which used to stall the first frame.
+                runCatching { HikariApp.instance.relieveHeapPressure("detail") }
+                runCatching {
+                    val snapFamily = manager.byId(base.providerId)?.config?.type
+                    val snapAddonsKey = manager.providers.value
+                        .filterIsInstance<com.hikari.app.providers.StremioAddon>()
+                        .joinToString("|") { it.config.id + ":" + it.config.enabled }
+                    val snapFp = com.hikari.app.data.MetaSources.fingerprint(base, snapFamily, snapAddonsKey)
+                    com.hikari.app.data.DetailSnapshotCache.get(
+                        "${base.providerId}|${base.id}", snapFp,
+                    )?.let { snap ->
+                        // A newer generation, or shelves the live pass already
+                        // settled, means fresh data won the race: never paint
+                        // stale over it.
+                        if (snapGen == shelvesGeneration && !_shelvesSettled.value) {
+                            _extras.value = snap.extras
+                            _related.value = snap.related
+                            _similar.value = snap.similar
+                            _recommended.value = snap.recommended
+                            _addonLogo.value = snap.addonLogo
+                        }
+                    }
                 }
             }
-            _loading.value = false
             // TMDB shelves from the nav args RIGHT NOW (title/poster are all
             // TMDB needs to resolve): waiting for the origin's /meta first is
             // what held the logo, title, ratings and overview back for seconds
-            // on every open. The upgrade pass below rebuilds them from the full
-            // meta when it lands; the generation tickets keep the newer pass
-            // winning no matter which finishes last.
-            val sgFast = newShelvesGeneration()
-            // The full (docs-carrying) pass runs IMMEDIATELY from the nav
-            // args instead of waiting on the origin's /meta: that wait held
-            // every shelf for seconds on slow sources. The origin meta below
-            // only triggers a correction pass when it actually changes the
-            // title's identity (type/year/ids) — see shelvesIdentityChanged.
+            // on every open. One full pass runs immediately; the origin meta
+            // below only triggers a correction pass when it actually changes
+            // the title's identity (type/year/ids) — see
+            // shelvesIdentityChanged. A second immediate pass used to re-fetch
+            // everything the first one did (double enrichment traffic plus a
+            // full repaint); that is what made the page visibly assemble in
+            // stages.
             val fullShelvesJob: Job? = if (!com.hikari.app.data.IptvMark.of(base)) {
-                launch { loadShelves(base, sgFast, fastPass = true) }
                 launch { loadShelves(base, newShelvesGeneration()) }
             } else {
                 // IPTV channels get no shelves passes at all: settle now so
@@ -1012,11 +1020,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // Cast/Trailers, and above all no Related/Similar row, which for a
             // channel name ("Sony TV HD") returned a shelf of unrelated films.
             // See [com.hikari.app.data.IptvMark].
-            // (Fast shelves pass lives above, right after _loading=false.)
+            // (Single immediate shelves pass lives above, right after _loading=false.)
             // Upgrade pass once the origin's /meta lands: same shelves rebuilt
-            // from the full item (year/genres/ids), winning over the fast pass
-            // via the newer ticket. (IPTV guard lives on the fast pass too;
-            // channels get no shelves either way.)
+            // from the full item (year/genres/ids), winning over the immediate
+            // pass via the newer ticket. (IPTV guard lives on the immediate
+            // pass too; channels get no shelves either way.)
             launch {
                 val fullMeta = metaDeferred.await()
                 if (gen == episodeGeneration && !com.hikari.app.data.IptvMark.of(fullMeta)) {
@@ -1362,9 +1370,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // longer blank a row. A newly installed metadata addon feeds
             // every row with no per-row wiring.
             val docs = if (externalOn && !fastPass) {
+                // Bounded: a slow metadata addon must not hold the whole shelf
+                // pass — without docs the resolve below still runs, exactly
+                // like a pass with no addon legs.
                 runCatching {
-                    com.hikari.app.data.MetaSources.allDocs(item, metaAddons)
-                }.getOrDefault(emptyList())
+                    withTimeoutOrNull(5_000L) {
+                        com.hikari.app.data.MetaSources.allDocs(item, metaAddons)
+                    }
+                }.getOrDefault(null) ?: emptyList()
             } else emptyList()
             val resolved = if (tmdbOk) runCatching {
                 com.hikari.app.data.MetaSources.resolveForShelves(item, docs)
@@ -2160,9 +2173,9 @@ fun DetailScreen(
     val app = context.applicationContext as HikariApp
     val rangeStyle by remember { app.store.episodeRangeStyleFlow() }.collectAsState(initial = 0)
     val epPageSize = 30
-    // Horizontal phone style pages by 50 like the reference app; everything
-    // else (vertical phone, all TV) keeps 30.
-    val rangeBlock = if (rangeStyle == 1 && !isTvLayout) 50 else epPageSize
+    // Every range block is 30 episodes: horizontal chips, the dropdown and
+    // TV all page the same way, so blocks stay comparable across styles.
+    val rangeBlock = epPageSize
     var rangeStart by remember(activeSeason, epsNewestFirst) { mutableStateOf(0) }
     val ranges = remember(orderedEps, rangeBlock) {
         if (orderedEps.size <= rangeBlock) emptyList()
@@ -4633,9 +4646,10 @@ fun DetailScreen(
                                     if (rangeStyle == 1 && !isTvLayout) {
                                         // Reference-style horizontal range chips (phone only):
                                         // dark boxes, the active block red.
+                                        // Weight, not full width (see the phone header).
                                         Row(
                                             Modifier
-                                                .fillMaxWidth()
+                                                .weight(1f)
                                                 .horizontalScroll(rememberScrollState()),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         ) {
@@ -5712,6 +5726,8 @@ fun DetailScreen(
                                 tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
                             if (episodesLoading) {
@@ -5796,9 +5812,14 @@ fun DetailScreen(
                                 // season exceeds 30 episodes (e.g. 600-ep donghua).
                                 if (ranges.isNotEmpty()) {
                                     if (rangeStyle == 1 && !isTvLayout) {
+                                        // Weight, not full width: a fillMaxWidth strip inside
+                                        // this outer Row steals the whole row and squeezes
+                                        // the "Episodes (N)" title to zero width (the title
+                                        // then wraps ~13 invisible lines tall — the black
+                                        // gap above and below the chips).
                                         Row(
                                             Modifier
-                                                .fillMaxWidth()
+                                                .weight(1f)
                                                 .horizontalScroll(rememberScrollState()),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         ) {

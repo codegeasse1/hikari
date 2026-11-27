@@ -1,4 +1,10 @@
 
+## 0.12.164
+
+- Extension lists scroll smooth now, even repos with a thousand extensions — the per-row provider match is done once instead of on every scroll frame
+- Detail pages open faster: first paint no longer waits on the heap check or the snapshot read, and shelves load in one pass instead of two
+- Episode range chips fixed so they no longer leave black gaps above and below, title shows again; horizontal blocks are 30 episodes now like everywhere else
+
 ## 0.12.163
 
 - Select Provider shows one provider per row on phones now, no more squeezed two-per-row on wide phones
