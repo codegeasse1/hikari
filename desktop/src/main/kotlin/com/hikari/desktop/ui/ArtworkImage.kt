@@ -28,9 +28,20 @@ import java.util.Locale
 import javax.imageio.ImageIO
 import javax.imageio.ImageReader
 
+private val HOST_LIKE_ARTWORK_URL = Regex("^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z]{2,}(/.*)?$")
+
+internal fun posterArtworkUrl(posterUrl: String?, backgroundUrl: String?): String? =
+    posterUrl?.trim()?.takeIf(String::isNotEmpty)
+        ?: backgroundUrl?.trim()?.takeIf(String::isNotEmpty)
+
 internal fun safeArtworkUri(rawUrl: String?): URI? {
     val value = rawUrl?.trim()?.takeIf(String::isNotEmpty) ?: return null
-    val uri = runCatching { URI(value) }.getOrNull() ?: return null
+    val normalizedValue = when {
+        value.startsWith("//") -> "https:$value"
+        HOST_LIKE_ARTWORK_URL.matches(value) -> "https://$value"
+        else -> value
+    }
+    val uri = runCatching { URI(normalizedValue) }.getOrNull() ?: return null
     val scheme = uri.scheme?.lowercase(Locale.ROOT)
     val host = uri.host?.lowercase(Locale.ROOT)?.trimEnd('.')
     if (scheme !in setOf("http", "https") || host.isNullOrBlank() || uri.rawUserInfo != null) return null

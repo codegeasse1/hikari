@@ -16,6 +16,25 @@ class ArtworkImageTest {
     }
 
     @Test
+    fun normalizesProtocolRelativeAndSchemeLessArtworkUrls() {
+        assertEquals(
+            URI("https://images.example/poster.jpg"),
+            safeArtworkUri("//images.example/poster.jpg"),
+        )
+        assertEquals(
+            URI("https://images.example/poster.jpg"),
+            safeArtworkUri(" images.example/poster.jpg "),
+        )
+    }
+
+    @Test
+    fun fallsBackToBackdropOnlyWhenPosterIsBlank() {
+        assertEquals("poster.jpg", posterArtworkUrl("poster.jpg", "backdrop.jpg"))
+        assertEquals("backdrop.jpg", posterArtworkUrl(" ", "backdrop.jpg"))
+        assertNull(posterArtworkUrl(null, " "))
+    }
+
+    @Test
     fun rejectsNonHttpAndMalformedArtworkUrls() {
         assertNull(safeArtworkUri("file:///tmp/poster.png"))
         assertNull(safeArtworkUri("data:image/png;base64,abc"))

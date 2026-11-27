@@ -1563,7 +1563,7 @@ internal fun DetailScreen(
         horizontalArrangement = Arrangement.spacedBy(28.dp),
     ) {
         ArtworkPoster(
-            url = title.posterUrl,
+            url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
             title = title.title,
             modifier = Modifier.width(252.dp).aspectRatio(0.68f),
         )
@@ -1663,7 +1663,7 @@ private fun TitleCard(title: AddonTitle, modifier: Modifier = Modifier, onClick:
     ) {
         Column {
             ArtworkPoster(
-                url = title.posterUrl,
+                url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
                 title = title.title,
                 modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
             )
