@@ -32,6 +32,7 @@ import com.hikari.desktop.data.AddonManifest
 import com.hikari.desktop.data.AddonSourceStore
 import com.hikari.desktop.data.AddonStream
 import com.hikari.desktop.data.AddonTitle
+import com.hikari.desktop.data.HomeProviderSelectionStore
 import com.hikari.desktop.data.LibraryCategory
 import com.hikari.desktop.data.LibraryCategoryStore
 import com.hikari.desktop.data.SavedTitleIdentity
@@ -102,6 +103,7 @@ private fun HikariDesktopApp() {
     val client = remember { StremioClient() }
     val catalogPageSource = remember { StremioCatalogPageSource(client) }
     val sourceStore = remember { AddonSourceStore() }
+    val homeProviderSelectionStore = remember { HomeProviderSelectionStore() }
     val savedTitlesStore = remember { SavedTitlesStore() }
     val libraryCategoryStore = remember { LibraryCategoryStore() }
     val searchHistoryStore = remember { SearchHistoryStore() }
@@ -112,7 +114,9 @@ private fun HikariDesktopApp() {
     var catalogReturnPage by remember { mutableStateOf(DesktopPage.HOME) }
     var previousPage by remember { mutableStateOf(DesktopPage.HOME) }
     var sourceStates by remember { mutableStateOf(emptyList<SourceState>()) }
-    var selectedProviderUrl by remember { mutableStateOf<String?>(null) }
+    var selectedProviderUrl by remember {
+        mutableStateOf(runCatching { homeProviderSelectionStore.selectedUrl() }.getOrNull())
+    }
     var selectedMediaFilter by remember { mutableStateOf(HomeMediaFilter.ALL) }
     var shelves by remember { mutableStateOf(emptyList<ShelfState>()) }
     var catalogBrowse by remember { mutableStateOf(CatalogBrowseState()) }
@@ -164,9 +168,9 @@ private fun HikariDesktopApp() {
                 onFailure = { SourceState(url = url, error = it.userMessage()) },
             )
         }
-        if (selectedProviderUrl != null && sourceStates.none { it.url == selectedProviderUrl }) {
-            selectedProviderUrl = null
-        }
+        selectedProviderUrl = runCatching {
+            homeProviderSelectionStore.reconcileInstalledSources(sourceStates.map { it.url })
+        }.getOrNull()
         selectedSearchSourceUrls = selectedSearchSourceUrls.intersect(sourceStates.map { it.url }.toSet())
     }
 
@@ -337,6 +341,11 @@ private fun HikariDesktopApp() {
         scope.launch { loadSources(sourceStore.all()) }
     }
 
+    fun selectHomeProvider(addonUrl: String?) {
+        homeProviderSelectionStore.setSelectedUrl(addonUrl)
+        selectedProviderUrl = addonUrl
+    }
+
     fun loadNextCatalogPage() {
         val current = catalogBrowse
         val target = current.target ?: return
@@ -417,7 +426,7 @@ private fun HikariDesktopApp() {
         try {
             sourceStore.remove(url)
             sourceStates = sourceStates.filterNot { it.url == url }
-            if (selectedProviderUrl == url) selectedProviderUrl = null
+            if (selectedProviderUrl == url) selectHomeProvider(null)
             selectedSearchSourceUrls = selectedSearchSourceUrls - url
         } catch (error: Exception) {
             addSourceError = error.userMessage()
@@ -619,7 +628,7 @@ private fun HikariDesktopApp() {
                                 catalogs = catalogInventory.allCatalogs,
                                 shelves = shelves,
                                 loading = homeCatalogsLoading,
-                                onSelectProvider = { selectedProviderUrl = it },
+                                onSelectProvider = ::selectHomeProvider,
                                 onSelectMediaFilter = { selectedMediaFilter = it },
                                 onOpenTitle = ::openTitle,
                                 onOpenCatalog = ::openCatalog,
@@ -727,7 +736,7 @@ private fun HikariDesktopApp() {
                                 onRetry = ::reloadSources,
                                 onRemove = ::removeSource,
                                 onUse = {
-                                    selectedProviderUrl = it
+                                    selectHomeProvider(it)
                                     page = DesktopPage.HOME
                                 },
                             )
