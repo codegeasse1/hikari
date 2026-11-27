@@ -30,6 +30,20 @@ class StremioClientTest {
     }
 
     @Test
+    fun loadsStremioDeepLinkFromItsNormalizedManifestUrl() = runBlocking {
+        var requestedUrl: String? = null
+        val client = StremioClient { url ->
+            requestedUrl = url
+            """{"name":"Imported add-on"}"""
+        }
+
+        val manifest = client.loadManifest("stremio://addons.example/stremio/abc?install=1")
+
+        assertEquals("https://addons.example/stremio/abc/manifest.json", requestedUrl)
+        assertEquals("https://addons.example/stremio/abc/manifest.json", manifest.addonUrl)
+    }
+
+    @Test
     fun mapsCatalogMetaFieldsIntoDesktopTitles() = runBlocking {
         val client = StremioClient {
             """

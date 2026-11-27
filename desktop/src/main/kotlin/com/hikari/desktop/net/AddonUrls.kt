@@ -1,13 +1,14 @@
 package com.hikari.desktop.net
 
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 
 object AddonUrls {
     fun manifestUrl(addonUrl: String): String {
-        val uri = parseAddonUri(addonUrl)
+        val uri = parseAddonUri(normalizeStremioLink(addonUrl))
         val currentPath = uri.rawPath.orEmpty()
         val manifestPath = if (currentPath.endsWith("/manifest.json", ignoreCase = true)) {
             currentPath
@@ -90,6 +91,25 @@ object AddonUrls {
         return uri
     }
 
+    private fun normalizeStremioLink(input: String): String {
+        val trimmed = input.trim()
+        if (!trimmed.startsWith(STREMIO_SCHEME, ignoreCase = true)) return trimmed
+
+        var rest = trimmed.substring(STREMIO_SCHEME.length)
+        rest = runCatching { URLDecoder.decode(rest, StandardCharsets.UTF_8) }.getOrDefault(rest)
+        if (!rest.startsWith("http://", ignoreCase = true) && !rest.startsWith("https://", ignoreCase = true)) {
+            require(!SCHEME_WITH_AUTHORITY.containsMatchIn(rest)) {
+                "Stremio link must contain an HTTP or HTTPS add-on URL"
+            }
+            rest = "https://$rest"
+        }
+        rest = rest.substringBefore('?')
+        if (!rest.trimEnd('/').endsWith("/manifest.json", ignoreCase = true)) {
+            rest = rest.trimEnd('/') + "/manifest.json"
+        }
+        return rest
+    }
+
     private fun origin(uri: URI): String =
         "${uri.scheme.lowercase(Locale.ROOT)}://${uri.rawAuthority}"
 
@@ -99,5 +119,6 @@ object AddonUrls {
     private fun encodePathSegment(value: String): String =
         encodeValue(value).replace("%3A", ":")
 
+    private const val STREMIO_SCHEME = "stremio://"
     private val SCHEME_WITH_AUTHORITY = Regex("^[A-Za-z][A-Za-z0-9+.-]*://")
 }

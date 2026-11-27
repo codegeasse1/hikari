@@ -21,6 +21,45 @@ class AddonUrlsTest {
     }
 
     @Test
+    fun normalizesBareStremioAddonLinkToHttpsManifest() {
+        assertEquals(
+            "https://addons.example/stremio/abc/manifest.json",
+            AddonUrls.manifestUrl("stremio://addons.example/stremio/abc"),
+        )
+    }
+
+    @Test
+    fun decodesStremioInstallLinkAndDropsItsQuery() {
+        assertEquals(
+            "https://addons.example/stremio/abc/manifest.json",
+            AddonUrls.manifestUrl(
+                "stremio://https%3A%2F%2Faddons.example%2Fstremio%2Fabc%2Fmanifest.json%3Fkey%3Dsecret",
+            ),
+        )
+    }
+
+    @Test
+    fun decodesStremioPathAndAcceptsCaseInsensitiveWrapperScheme() {
+        assertEquals(
+            "https://addons.example/stremio/abc/manifest.json",
+            AddonUrls.manifestUrl("StReMiO://addons.example/stremio%2Fabc%2Fmanifest.json?install=1"),
+        )
+    }
+
+    @Test
+    fun preservesExplicitHttpSchemeInStremioLink() {
+        assertEquals(
+            "http://addons.example/manifest.json",
+            AddonUrls.manifestUrl("stremio://http%3A%2F%2Faddons.example%2Fmanifest.json"),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsStremioLinksWithUnsupportedEmbeddedSchemes() {
+        AddonUrls.manifestUrl("stremio://file%3A%2F%2Faddons.example%2Fmanifest.json")
+    }
+
+    @Test
     fun keepsManifestPathAndAddonConfigurationQuery() {
         assertEquals(
             "https://addons.example/stremio/abc/manifest.json?key=secret",
