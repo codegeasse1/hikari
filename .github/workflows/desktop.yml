@@ -39,11 +39,11 @@ jobs:
           gradle :desktop:test --no-daemon
 
       - name: Build Windows installers
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: gradle :desktop:packageMsi :desktop:packageExe --no-daemon
 
       - name: Verify the runtime and smoke-test the launcher
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           $buildRoot = "desktop/build/compose/binaries/main"
@@ -91,7 +91,7 @@ jobs:
           Write-Host "The extracted MSI has no app-local UCRT DLLs, and Hikari remained running during the smoke test."
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           name: hikari-windows-${{ github.sha }}
           path: |
