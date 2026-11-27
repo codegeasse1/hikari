@@ -6674,6 +6674,32 @@ private fun RepoPluginsView(
                 ) { kindFilter = if (kindFilter == "anime") "" else "anime" }
             }
         }
+        val distinctEntries: List<RepoListEntry> = remember(entries) { entries.distinctBy { it.key } }
+        // Counted once per data change, not per recomposition: three full
+        // scans with a provider lookup each used to re-run on every frame
+        // while scrolling big repos. Hoisted above LazyColumn: LazyListScope
+        // is not a @Composable context, so remember {} cannot live inside it.
+        val headerCounts = remember(plugins, installedUrls, providerKeys, testStatus) {
+            var u = 0
+            var i = 0
+            var t = 0
+            var o = 0
+            for (p in plugins) {
+                val installed = SourceUrls.anyKeyIn(p.url, installedUrls)
+                if (!installed && !isDartOnlyPlugin(p)) u++
+                if (installed) i++
+                val target = installedProviderFor(p, providers, providerKeys)
+                val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                val st = testStatus[key]
+                if (st?.testing == true) t++
+                if (st?.ok == true) o++
+            }
+            intArrayOf(u, i, t, o)
+        }
+        val uninstalled = headerCounts[0]
+        val installedHere = headerCounts[1]
+        val testingHere = headerCounts[2]
+        val okHere = headerCounts[3]
         LazyColumn(
             // Repo browser position held per filter (see ScrollKeeper).
             state = com.hikari.app.ui.components.keptListState("extRepos:$kindFilter"),
@@ -6687,30 +6713,6 @@ private fun RepoPluginsView(
                 bottom = LocalTaskbarInset.current + 24.dp,
             )
         ) {
-            // Counted once per data change, not per recomposition: three full
-            // scans with a provider lookup each used to re-run on every frame
-            // while scrolling big repos.
-            val headerCounts = remember(plugins, installedUrls, providerKeys, testStatus) {
-                var u = 0
-                var i = 0
-                var t = 0
-                var o = 0
-                for (p in plugins) {
-                    val installed = SourceUrls.anyKeyIn(p.url, installedUrls)
-                    if (!installed && !isDartOnlyPlugin(p)) u++
-                    if (installed) i++
-                    val target = installedProviderFor(p, providers, providerKeys)
-                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
-                    val st = testStatus[key]
-                    if (st?.testing == true) t++
-                    if (st?.ok == true) o++
-                }
-                intArrayOf(u, i, t, o)
-            }
-            val uninstalled = headerCounts[0]
-            val installedHere = headerCounts[1]
-            val testingHere = headerCounts[2]
-            val okHere = headerCounts[3]
             if (plugins.isNotEmpty() && filter.isBlank() && kindFilter.isBlank()) {
                 item {
                     OutlinedButton(
@@ -6811,7 +6813,7 @@ private fun RepoPluginsView(
                         // TV: the reference 2-per-row plugin grid. Group
                         // headers stay full-width; consecutive plugin entries
                         // pair into one grid line (never across a header).
-                        val tvEntries = entries.distinctBy { it.key }
+                        val tvEntries = distinctEntries
                         var tvIndex = 0
                         while (tvIndex < tvEntries.size) {
                             val head = tvEntries[tvIndex] as? RepoListEntry.Head
@@ -6869,10 +6871,6 @@ private fun RepoPluginsView(
                             tvIndex += if (second != null) 2 else 1
                         }
                     } else {
-                        // Deduplicated once per list change (was re-run on every
-                        // recomposition); content types keep headers and rows in
-                        // separate recomposition scopes while scrolling.
-                        val distinctEntries = remember(entries) { entries.distinctBy { it.key } }
                         items(distinctEntries, key = { it.key }, contentType = { if (it is RepoListEntry.Head) "head" else "plug" }) { entry ->
                     when (entry) {
                         is RepoListEntry.Head -> RepoGroupHeader(entry.title, entry.count)
