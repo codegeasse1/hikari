@@ -42,8 +42,25 @@ import com.hikari.desktop.data.StreamKind
 import com.hikari.desktop.data.savedTitleIdentity
 import com.hikari.desktop.data.WatchHistoryEntry
 import com.hikari.desktop.data.WatchHistoryStore
+import com.hikari.desktop.engine.AnymexEngine
+import com.hikari.desktop.engine.EngineKind
+import com.hikari.desktop.engine.EngineMedia
+import com.hikari.desktop.engine.EngineMediaKind
+import com.hikari.desktop.engine.EngineProvider
+import com.hikari.desktop.engine.EngineStream
+import com.hikari.desktop.engine.EngineSubtitle
+import com.hikari.desktop.engine.EngineHttp
+import com.hikari.desktop.engine.NuvioEngine
+import com.hikari.desktop.engine.ProviderRegistry
+import com.hikari.desktop.engine.StremioEngineAdapter
+import com.hikari.desktop.engine.engineAddonUrl
+import com.hikari.desktop.engine.isInternalPlayerUrl
+import com.hikari.desktop.engine.parseEngineRef
+import com.hikari.desktop.engine.toAddonStream
+import com.hikari.desktop.engine.toAddonTitle
 import com.hikari.desktop.net.AddonClientException
 import com.hikari.desktop.net.StremioClient
+import com.hikari.desktop.playback.JavaFxPlayerEngine
 import com.hikari.desktop.playback.StreamLauncher
 import com.hikari.desktop.playback.defaultVideoIdForPlayback
 import com.hikari.desktop.playback.launchAndRecordHistory
@@ -52,7 +69,13 @@ import com.hikari.desktop.ui.DesktopSidebar
 import com.hikari.desktop.ui.DetailScreen
 import com.hikari.desktop.ui.CatalogBrowseScreen
 import com.hikari.desktop.ui.CatalogDirectoryScreen
+import com.hikari.desktop.ui.EngineRepo
+import com.hikari.desktop.ui.EngineRepoEntry
+import com.hikari.desktop.ui.ExtensionsScreen
+import com.hikari.desktop.ui.JavaFxVideoSurface
+import com.hikari.desktop.ui.PlayerScreen
 import com.hikari.desktop.ui.catalogBrowseReturnDestination
+import com.hikari.desktop.ui.guessEngineKind
 import com.hikari.desktop.ui.HomeScreen
 import com.hikari.desktop.ui.LibraryScreen
 import com.hikari.desktop.ui.WatchHistoryScreen
@@ -87,6 +110,12 @@ data class SourceState(
     val manifest: AddonManifest? = null,
     val loading: Boolean = false,
     val error: String? = null,
+)
+
+data class EnginePlayerRequest(
+    val title: String,
+    val streams: List<EngineStream>,
+    val initial: EngineStream,
 )
 
 data class ShelfState(
@@ -155,6 +184,24 @@ private fun HikariDesktopApp() {
     var streamLoading by remember { mutableStateOf(false) }
     var streamError by remember { mutableStateOf<String?>(null) }
     var playbackMessage by remember { mutableStateOf<String?>(null) }
+    val engineRegistry = remember { ProviderRegistry() }
+    val playerEngine = remember { JavaFxPlayerEngine(scope) }
+    var engineProviders by remember { mutableStateOf(emptyList<EngineProvider>()) }
+    var engineShelves by remember { mutableStateOf(emptyList<ShelfState>()) }
+    var engineShelvesLoading by remember { mutableStateOf(false) }
+    var engineStreamOptions by remember { mutableStateOf(emptyList<EngineStream>()) }
+    var engineTmdbKeyInput by remember { mutableStateOf(engineRegistry.tmdbKey()) }
+    var engineAddUrl by remember { mutableStateOf("") }
+    var engineAddKind by remember { mutableStateOf(EngineKind.STREMIO) }
+    var engineAdding by remember { mutableStateOf(false) }
+    var engineAddError by remember { mutableStateOf<String?>(null) }
+    var engineRepoKind by remember { mutableStateOf(EngineKind.NUVIO) }
+    var engineRepoName by remember { mutableStateOf("") }
+    var engineRepoEntries by remember { mutableStateOf(emptyList<EngineRepoEntry>()) }
+    var engineReposLoading by remember { mutableStateOf(false) }
+    var engineRepoError by remember { mutableStateOf<String?>(null) }
+    var playerRequest by remember { mutableStateOf<EnginePlayerRequest?>(null) }
+    var playerSubtitles by remember { mutableStateOf(emptyList<EngineSubtitle>()) }
     val catalogInventory = homeCatalogInventory(sourceStates, selectedProviderUrl, selectedMediaFilter)
 
     suspend fun loadSources(urls: List<String>) {
@@ -289,6 +336,8 @@ private fun HikariDesktopApp() {
         reloadWatchHistory()
         reloadLibraryCategoryState()
         loadSources(sourceStore.all())
+        reloadEngineProviders()
+        refreshEngineShelves()
     }
 
     LaunchedEffect(sourceStates, selectedProviderUrl, selectedMediaFilter) {
@@ -434,6 +483,145 @@ private fun HikariDesktopApp() {
         }
     }
 
+    // ---- Extension engines (Stremio + JS + IPTV) ----
+
+    fun reloadEngineProviders() {
+        engineProviders = engineRegistry.all()
+        engineTmdbKeyInput = engineRegistry.tmdbKey()
+    }
+
+    fun refreshEngineShelves() {
+        scope.launch(Dispatchers.IO) {
+            val providers = engineRegistry.enabled()
+            if (providers.isEmpty()) {
+                engineShelves = emptyList()
+                engineShelvesLoading = false
+                return@launch
+            }
+            engineShelvesLoading = true
+            try {
+                val fresh = engineRegistry.homeShelves()
+                engineShelves = fresh.map { shelf ->
+                    ShelfState(
+                        addonUrl = engineAddonUrl(shelf.provider),
+                        addonName = shelf.provider.name,
+                        catalog = AddonCatalog(type = "*", id = shelf.catalog.id, name = shelf.catalog.title),
+                        titles = shelf.items.map { it.toAddonTitle(shelf.provider) },
+                    )
+                }
+            } finally {
+                engineShelvesLoading = false
+            }
+        }
+    }
+
+    fun installEngineProvider(kind: EngineKind, raw: String, nameOverride: String? = null) {
+        val url = raw.trim()
+        if (url.isEmpty()) {
+            engineAddError = "Enter an extension URL or file path first."
+            return
+        }
+        engineAdding = true
+        engineAddError = null
+        scope.launch(Dispatchers.IO) {
+            try {
+                val provider = buildEngineProvider(engineRegistry, kind, url, nameOverride)
+                engineRegistry.upsert(provider)
+                withContext(Dispatchers.Main) {
+                    reloadEngineProviders()
+                    engineAddUrl = ""
+                    refreshEngineShelves()
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    engineAddError = (error.message ?: "could not add this extension").take(300)
+                }
+            } finally {
+                withContext(Dispatchers.Main) { engineAdding = false }
+            }
+        }
+    }
+
+    fun installEngineRepoFile(kind: EngineKind, entry: EngineRepoEntry) {
+        installEngineProvider(kind, entry.url, entry.name)
+    }
+
+    fun validateEngineProvider(id: String) {
+        scope.launch(Dispatchers.IO) {
+            val provider = engineRegistry.all().firstOrNull { it.id == id } ?: return@launch
+            val engine = engineRegistry.engineFor(provider.kind) ?: return@launch
+            val problem = runCatching { engine.validate(provider) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                engineRegistry.setNote(id, problem)
+                reloadEngineProviders()
+            }
+        }
+    }
+
+    fun loadEngineRepo(kind: EngineKind, repoUrl: String, repoName: String) {
+        engineReposLoading = true
+        engineRepoError = null
+        engineRepoName = repoName
+        engineRepoEntries = emptyList()
+        scope.launch(Dispatchers.IO) {
+            try {
+                val entries = fetchEngineRepoEntries(repoUrl)
+                withContext(Dispatchers.Main) {
+                    engineRepoEntries = entries
+                    if (entries.isEmpty()) engineRepoError = "No installable files in this repository."
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    engineRepoError = (error.message ?: "could not load this repository").take(300)
+                }
+            } finally {
+                withContext(Dispatchers.Main) { engineReposLoading = false }
+            }
+        }
+    }
+
+    fun engineMediaOf(provider: EngineProvider, title: AddonTitle): EngineMedia =
+        EngineMedia(
+            providerId = provider.id,
+            id = title.id,
+            title = title.title,
+            kind = if (title.type.equals("movie", ignoreCase = true)) EngineMediaKind.MOVIE else EngineMediaKind.SERIES,
+            posterUrl = title.posterUrl,
+            backdropUrl = title.backgroundUrl,
+            overview = title.description,
+            year = title.year,
+            rating = title.rating,
+            genres = title.genres,
+        )
+
+    fun loadEngineDetail(providerId: String, title: AddonTitle) {
+        detailLoading = true
+        detailError = null
+        titleDetail = null
+        scope.launch {
+            try {
+                val provider = engineRegistry.all().firstOrNull { it.id == providerId && it.enabled }
+                    ?: throw IllegalStateException("This extension is not installed or is disabled.")
+                val engine = engineRegistry.engineFor(provider.kind)
+                    ?: throw IllegalStateException("This extension's engine is unavailable.")
+                val media = withContext(Dispatchers.IO) { engine.meta(provider, engineMediaOf(provider, title)) }
+                val episodes = withContext(Dispatchers.IO) {
+                    if (media.kind == EngineMediaKind.SERIES) engine.episodes(provider, media) else emptyList()
+                }
+                titleDetail = AddonDetail(
+                    media.toAddonTitle(provider),
+                    episodes.map { it.toAddonEpisode() },
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                detailError = error.userMessage()
+            } finally {
+                detailLoading = false
+            }
+        }
+    }
+
     fun openTitle(title: AddonTitle) {
         previousPage = if (page == DesktopPage.DETAIL) previousPage else page
         selectedTitle = title
@@ -442,6 +630,11 @@ private fun HikariDesktopApp() {
         detailLoading = true
         playbackMessage = null
         page = DesktopPage.DETAIL
+        val engineRef = parseEngineRef(title.addonUrl)
+        if (engineRef != null) {
+            loadEngineDetail(engineRef.second, title)
+            return
+        }
         scope.launch {
             try {
                 titleDetail = client.detail(title)
@@ -477,8 +670,31 @@ private fun HikariDesktopApp() {
                     videoId = videoId,
                     installedAddons = sourceStates.mapNotNull { it.manifest },
                 )
+                val engineStreams = runCatching {
+                    val media = EngineMedia(
+                        providerId = "",
+                        id = videoId,
+                        title = title.title,
+                        kind = if (title.type.equals("movie", ignoreCase = true)) {
+                            EngineMediaKind.MOVIE
+                        } else {
+                            EngineMediaKind.SERIES
+                        },
+                        posterUrl = title.posterUrl,
+                        year = title.year,
+                    )
+                    val engineEpisode = episode?.let {
+                        com.hikari.desktop.engine.EngineEpisode("", media.id, it.id, it.season, it.number, it.title)
+                    }
+                    engineRegistry.streamsFor(media, engineEpisode)
+                }.getOrDefault(emptyList())
+                engineStreamOptions = engineStreams.flatMap { it.second }.distinctBy { it.url }
+                val converted = engineStreams.flatMap { (provider, list) ->
+                    list.map { it.toAddonStream() }
+                }
+                streams = (streams + converted).distinctBy { it.url }
                 if (streams.isEmpty()) {
-                    streamError = "No supported HTTP streams from matching add-ons. Torrent playback isn't in this build yet."
+                    streamError = "No supported HTTP streams from matching add-ons or extensions."
                 }
             } catch (error: Exception) {
                 streamError = error.userMessage()
@@ -494,6 +710,39 @@ private fun HikariDesktopApp() {
                 val titleEntry = streamDialogTitleEntry
                 if (titleEntry == null) {
                     streamError = "Title unavailable, history wasn't saved."
+                    return@launch
+                }
+                // Files the internal player can render open in-app; the rest
+                // keeps the previous external-launch behavior.
+                if (isInternalPlayerUrl(stream.url)) {
+                    val engineStream = engineStreamOptions.firstOrNull { it.url == stream.url }
+                        ?: EngineStream("external", stream.name, stream.url)
+                    val playable = (
+                        listOf(engineStream) +
+                            engineStreamOptions.filter { it.url != stream.url && isInternalPlayerUrl(it.url) }
+                        ).distinctBy { it.url }
+                    val subtitles = engineStream.subtitles
+                    val outcome = launchAndRecordHistory(
+                        store = watchHistoryStore,
+                        title = titleEntry,
+                        episode = streamDialogEpisodeEntry,
+                    ) {
+                        withContext(Dispatchers.Main) {
+                            playerSubtitles = subtitles
+                            playerRequest = EnginePlayerRequest(
+                                title = streamDialogTitle,
+                                streams = playable,
+                                initial = engineStream,
+                            )
+                        }
+                        "Hikari player"
+                    }
+                    outcome.entries?.let { watchHistory = it }
+                    watchHistoryError = outcome.historyError?.userMessage()
+                    playbackMessage = "Playing in Hikari player."
+                    streamDialogOpen = false
+                    streamDialogTitleEntry = null
+                    streamDialogEpisodeEntry = null
                     return@launch
                 }
                 val outcome = launchAndRecordHistory(
@@ -548,8 +797,8 @@ private fun HikariDesktopApp() {
             return
         }
         val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrls)
-        if (urls.isEmpty()) {
-            searchError = "Add Stremio sources before searching."
+        if (urls.isEmpty() && engineRegistry.enabled().isEmpty()) {
+            searchError = "Add Stremio sources or extensions before searching."
             searchPartialFailure = false
             return
         }
@@ -564,12 +813,18 @@ private fun HikariDesktopApp() {
                 val batches = coroutineScope {
                     urls.map { url -> async { runCatching { client.search(url, query) } } }.awaitAll()
                 }
-                searchResults = batches.mapNotNull { it.getOrNull() }
+                val stremioHits = batches.mapNotNull { it.getOrNull() }
                     .flatten()
                     .distinctBy { "${it.addonUrl}:${it.type}:${it.id}" }
-                if (batches.all { it.isFailure }) {
+                val engineHits = runCatching { engineRegistry.searchAll(query) }.getOrDefault(emptyList())
+                val engineTitles = engineHits.flatMap { (provider, items) ->
+                    items.map { it.toAddonTitle(provider) }
+                }
+                searchResults = (stremioHits + engineTitles)
+                    .distinctBy { "${it.addonUrl}:${it.type}:${it.id}" }
+                if (batches.all { it.isFailure } && engineHits.isEmpty()) {
                     searchError = batches.firstOrNull()?.exceptionOrNull()?.userMessage()
-                        ?: "Search failed on this source."
+                        ?: "Search failed on every source."
                 } else if (batches.any { it.isFailure }) {
                     searchError = "Some sources didn't respond; showing the results that arrived."
                     searchPartialFailure = true
@@ -586,6 +841,7 @@ private fun HikariDesktopApp() {
         DesktopPage.LIBRARY -> "Library"
         DesktopPage.HISTORY -> "History"
         DesktopPage.SOURCES -> "Sources"
+        DesktopPage.EXTENSIONS -> "Extensions"
         DesktopPage.CATALOGS -> "All catalogs"
         DesktopPage.CATALOG -> catalogBrowse.target?.catalogName ?: "Catalog"
         DesktopPage.DETAIL -> "Details"
@@ -596,6 +852,7 @@ private fun HikariDesktopApp() {
         DesktopPage.LIBRARY -> "Titles you saved from detail pages"
         DesktopPage.HISTORY -> "Titles and episodes you launched"
         DesktopPage.SOURCES -> "Add and manage Stremio catalog sources"
+        DesktopPage.EXTENSIONS -> "Stremio, JS and IPTV extensions in one place"
         DesktopPage.CATALOGS -> "Catalogs from every installed Stremio add-on"
         DesktopPage.CATALOG -> catalogBrowse.target?.sourceName ?: "Every title in the catalog"
         DesktopPage.DETAIL -> "Title info and playback options"
@@ -626,12 +883,16 @@ private fun HikariDesktopApp() {
                                 selectedProviderUrl = selectedProviderUrl,
                                 selectedMediaFilter = selectedMediaFilter,
                                 catalogs = catalogInventory.allCatalogs,
-                                shelves = shelves,
-                                loading = homeCatalogsLoading,
+                                shelves = shelves + engineShelves,
+                                loading = homeCatalogsLoading || engineShelvesLoading,
                                 onSelectProvider = ::selectHomeProvider,
                                 onSelectMediaFilter = { selectedMediaFilter = it },
                                 onOpenTitle = ::openTitle,
-                                onOpenCatalog = ::openCatalog,
+                                onOpenCatalog = {
+                                    // Engine shelves open titles directly; only
+                                    // Stremio shelves have a browsable catalog.
+                                    if (!it.addonUrl.startsWith("engine:")) openCatalog(it)
+                                },
                                 onOpenCatalogDirectory = { page = DesktopPage.CATALOGS },
                                 onOpenSources = { page = DesktopPage.SOURCES },
                                 onRetry = ::reloadSources,
@@ -740,6 +1001,51 @@ private fun HikariDesktopApp() {
                                     page = DesktopPage.HOME
                                 },
                             )
+                            DesktopPage.EXTENSIONS -> ExtensionsScreen(
+                                providers = engineProviders,
+                                tmdbKey = engineTmdbKeyInput,
+                                onTmdbKeyChange = { engineTmdbKeyInput = it },
+                                onSaveTmdbKey = {
+                                    engineRegistry.setTmdbKey(engineTmdbKeyInput)
+                                    engineTmdbKeyInput = engineRegistry.tmdbKey()
+                                },
+                                addUrl = engineAddUrl,
+                                onAddUrlChange = {
+                                    engineAddUrl = it
+                                    engineAddKind = guessEngineKind(it)
+                                    engineAddError = null
+                                },
+                                addKind = engineAddKind,
+                                onAddKindChange = { engineAddKind = it },
+                                adding = engineAdding,
+                                addError = engineAddError,
+                                onAddProvider = { installEngineProvider(engineAddKind, engineAddUrl) },
+                                repoKind = engineRepoKind,
+                                onRepoKindChange = {
+                                    engineRepoKind = it
+                                    engineRepoEntries = emptyList()
+                                    engineRepoError = null
+                                    engineRepoName = ""
+                                },
+                                repoOptions = repoOptionsFor(engineRepoKind),
+                                repoEntries = engineRepoEntries,
+                                repoName = engineRepoName,
+                                reposLoading = engineReposLoading,
+                                repoError = engineRepoError,
+                                onLoadRepo = { url, name -> loadEngineRepo(engineRepoKind, url, name) },
+                                onInstallRepoEntry = { installEngineRepoFile(engineRepoKind, it) },
+                                onToggleEnabled = { id, enabled ->
+                                    engineRegistry.setEnabled(id, enabled)
+                                    reloadEngineProviders()
+                                    refreshEngineShelves()
+                                },
+                                onRemove = { id ->
+                                    engineRegistry.remove(id)
+                                    reloadEngineProviders()
+                                    refreshEngineShelves()
+                                },
+                                onValidate = ::validateEngineProvider,
+                            )
                             DesktopPage.DETAIL -> selectedTitle?.let { selected ->
                                 val detailTitle = titleDetail?.title ?: selected
                                 val detailEpisodes = titleDetail?.episodes.orEmpty()
@@ -778,6 +1084,38 @@ private fun HikariDesktopApp() {
             },
         )
     }
+
+    val request = playerRequest
+    if (request != null) {
+        Window(
+            onCloseRequest = {
+                playerRequest = null
+                playerEngine.close()
+            },
+            title = "Hikari Player",
+            state = rememberWindowState(width = 1100.dp, height = 700.dp),
+        ) {
+            HikariDesktopTheme {
+                PlayerScreen(
+                    title = request.title,
+                    streams = request.streams,
+                    initial = request.initial,
+                    subtitles = playerSubtitles,
+                    engine = playerEngine,
+                    videoSurface = { JavaFxVideoSurface(playerEngine) },
+                    onClose = {
+                        playerRequest = null
+                        playerEngine.close()
+                    },
+                    onOpenExternal = { external ->
+                        playerRequest = null
+                        playerEngine.close()
+                        openStream(AddonStream(external.name, external.url, StreamKind.BROWSER))
+                    },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -811,3 +1149,148 @@ private fun Throwable.userMessage(): String = when (this) {
 }
 
 private const val MAX_HOME_CATALOGS = 8
+
+// ---- Extension installer helpers (top-level for testability) ----
+
+internal fun sanitizeEngineKey(raw: String): String {
+    val base = raw.substringAfterLast('/').substringAfterLast('\\').substringBefore('?').trim()
+    val clean = base.ifBlank { raw.take(48) }
+    return clean.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80).trim('_').ifBlank { "ext" }
+}
+
+internal fun engineFileFor(kind: EngineKind, id: String, ext: String): java.io.File {
+    val safe = id.replace(Regex("[^A-Za-z0-9_.-]"), "_") + ext
+    return NuvioEngine.homeDir().resolve("engines/${kind.prefix}").apply { mkdirs() }.resolve(safe)
+}
+
+internal suspend fun buildEngineProvider(
+    registry: ProviderRegistry,
+    kind: EngineKind,
+    raw: String,
+    nameOverride: String? = null,
+): EngineProvider {
+    val url = raw.trim()
+    if (url.isEmpty()) error("Enter an extension URL or file path first.")
+    if (kind == EngineKind.STREMIO) {
+        val host = runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: url.take(48)
+        val provider = EngineProvider(
+            id = "${kind.prefix}|${sanitizeEngineKey(host)}",
+            kind = kind,
+            name = nameOverride?.takeIf { it.isNotBlank() } ?: host,
+            source = url,
+        )
+        val adapter = registry.engineFor(EngineKind.STREMIO) as? StremioEngineAdapter
+            ?: error("Stremio engine is unavailable.")
+        adapter.validate(provider)?.let { error(it) }
+        return provider
+    }
+    if (kind == EngineKind.IPTV) {
+        val parts = url.split("|")
+        if (parts.size == 3) {
+            val host = parts[0].trim().trimEnd('/')
+            if (host.isBlank() || parts[1].isBlank()) error("Use host|user|pass for Xtream logins.")
+            return EngineProvider(
+                id = "${kind.prefix}|${sanitizeEngineKey(host)}",
+                kind = kind,
+                name = nameOverride?.takeIf { it.isNotBlank() } ?: host,
+                source = "$host|${parts[1].trim()}|${parts[2]}",
+            )
+        }
+        val text = if (url.startsWith("http", true)) {
+            EngineHttp.fetchText(url, 8 * 1024 * 1024) ?: error("Could not download that playlist.")
+        } else {
+            val local = java.io.File(url)
+            if (!local.exists()) error("File not found: $url")
+            local.readText()
+        }
+        if (!text.contains("#EXTINF", true) && !text.contains("http", true)) {
+            error("That file is not an M3U playlist.")
+        }
+        val file = engineFileFor(kind, "${kind.prefix}|${sanitizeEngineKey(url)}", ".m3u")
+        file.writeText(text)
+        return EngineProvider(
+            id = "${kind.prefix}|${sanitizeEngineKey(url)}",
+            kind = kind,
+            name = nameOverride?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension,
+            source = file.absolutePath,
+        )
+    }
+    // JS families: fetch or copy the provider script, then validate in V8.
+    val text = if (url.startsWith("http", true)) {
+        EngineHttp.fetchText(url, 5 * 1024 * 1024) ?: error("Could not download that script.")
+    } else {
+        val local = java.io.File(url)
+        if (!local.exists()) error("File not found: $url")
+        local.readText()
+    }
+    if (text.isBlank()) error("That script is empty.")
+    val id = "${kind.prefix}|${sanitizeEngineKey(url)}"
+    val file = engineFileFor(kind, id, ".js")
+    file.writeText(text)
+    val provider = EngineProvider(
+        id = id,
+        kind = kind,
+        name = nameOverride?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension,
+        source = file.absolutePath,
+    )
+    val engine = registry.engineFor(kind) ?: error("${kind.title} engine is unavailable.")
+    val problem = engine.validate(provider)
+    if (problem != null) {
+        runCatching { file.delete() }
+        error(problem)
+    }
+    return provider
+}
+
+internal fun fetchEngineRepoEntries(repoUrl: String): List<EngineRepoEntry> {
+    val text = EngineHttp.fetchText(repoUrl, 4 * 1024 * 1024) ?: error("Could not download repository index.")
+    val root = runCatching {
+        com.google.gson.Gson().fromJson(text, com.google.gson.JsonElement::class.java)
+    }.getOrNull() ?: error("Not a repository index.")
+    val base = repoUrl.substringBeforeLast('/')
+    val out = LinkedHashMap<String, String>()
+    fun addEntry(name: String?, url: String?) {
+        if (url.isNullOrBlank()) return
+        val absolute = if (url.startsWith("http", true)) url else "$base/${url.trimStart('/')}"
+        val label = name?.takeIf { it.isNotBlank() }
+            ?: absolute.substringAfterLast('/').substringBefore('?').ifBlank { absolute }
+        if (absolute.startsWith("http", true)) out[label] = absolute
+    }
+    fun objName(o: com.google.gson.JsonObject): String? =
+        listOf("name", "file", "displayName", "title", "fileName", "pluginName")
+            .firstNotNullOfOrNull { k ->
+                o.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+            }
+    fun objUrl(o: com.google.gson.JsonObject): String? =
+        listOf("url", "downloadUrl", "file", "path", "href", "download_url", "fileUrl")
+            .firstNotNullOfOrNull { k ->
+                o.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+            }
+    if (root.isJsonObject) {
+        val o = root.asJsonObject
+        for (key in listOf("files", "plugins", "providers", "extensions", "items", "list", "entries", "modules")) {
+            val arr = o.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
+            for (el in arr) {
+                if (!el.isJsonObject) continue
+                addEntry(objName(el.asJsonObject), objUrl(el.asJsonObject))
+            }
+        }
+        if (out.isEmpty()) {
+            // Plain {name: url} maps.
+            for ((k, v) in o.entrySet()) {
+                if (!v.isJsonPrimitive) continue
+                val value = v.asString
+                if (value.startsWith("http", true) || value.endsWith(".js")) {
+                    addEntry(k, value)
+                }
+            }
+        }
+    }
+    return out.map { (name, url) -> EngineRepoEntry(name, url) }.take(500)
+}
+
+internal fun repoOptionsFor(kind: EngineKind): List<EngineRepo> = when (kind) {
+    EngineKind.NUVIO -> NuvioEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third) }
+    EngineKind.ANYMEX -> AnymexEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third) }
+    else -> emptyList()
+}

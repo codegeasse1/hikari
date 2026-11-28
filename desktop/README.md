@@ -1,19 +1,18 @@
 # Hikari for Windows
 
-This is a separate native desktop MVP. It does not wrap or require the Android APK, and it does not change the Android `:app` module.
+A native desktop media browser for existing Hikari users. It does not wrap or require the Android APK, and it does not change the Android `:app` module.
 
-The first milestone supports Stremio add-on catalogs, searching, title details, and handing direct stream URLs to VLC/MPV or the default browser. Other provider ecosystems and an embedded media player are outside this milestone.
-Series details show one season at a time when an add-on returns multiple seasons. The selector defaults to the first real season; one-season series keep their full episode list visible.
+## What it does
 
-Home shows up to eight catalog shelves as a preview. Open **All catalogs** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
+- **Internal player**: direct-play streams (progressive + HLS) open in an in-app Hikari Player window (JavaFX media + Swing surface, subtitles, speed, quality switching). DASH and embed pages still open externally as before.
+- **All portable extension ecosystems**: Stremio add-ons plus the JS families — Nuvio, Anymex/Mangayomi, Sora, SkyStream, Zangetsu, Vega — all executed locally in V8 (Javet) with the same fetch/crypto/prefs plumbing as Android, plus M3U playlists and Xtream Codes portals (IPTV).
+- **Extensions screen**: TMDB key override, add-by-URL-or-file for every family, curated repository browsers (Nuvio + Anymex), enable/disable, validation, delete.
+- **Full app wiring**: engine catalogs feed Home shelves, engine search merges into Search, engine titles open the same detail page (TMDB meta/episodes where the family supports it), and playable engine streams merge into the stream picker.
+- Desktop keeps its own catalog browsing, Search, Library, History, and Watch-history behavior from the MVP.
 
-Catalog browsing also supports a scoped query when that catalog's manifest explicitly advertises the `search` extra. A new query restarts at page one, and later pages keep the query with Stremio's skip offset. Catalogs without that declaration do not show the in-catalog search control. This is another incremental parity slice, not full APK parity.
+## Hard boundary
 
-Search keeps the 20 most recent submitted queries locally. A query can be run again from its chip, removed by itself, or cleared with the rest of the history. Loaded results can be filtered locally by media type (All, Movies, Series, Anime), genre, year, and minimum rating. Unrated titles remain visible when a rating threshold is active. Filter choices use metadata returned by the installed add-ons, so they only cover loaded search results. Search can target all installed add-ons, one add-on, or a selected group; changing the scope runs the current query against that selection. The source picker supports multi-select, but not Android's full provider-filter UI. TMDB-backed discovery and its broader filters are not ported. Desktop is not at full APK parity.
-
-Desktop Library stores compact title snapshots in this Windows account's local preferences, newest first. It includes the four Android default categories, custom category creation, rename and delete, multi-category assignment, category filtering, and persistent ordering with keyboard-operable **Move up** and **Move down** actions.
-
-Desktop History stores up to 200 compact local entries after Hikari successfully launches a stream URL in an external app. Entries identify the title or episode, record launch time, and offer detail reopening, requesting streams again, per-entry removal, or clearing the list. This records successful launch only; playback progress in external players is unavailable. Trackers, manga, and continue-watching remain missing, so desktop is not at full APK parity.
+CS3 `.cs3` plugins and Aniyomi `.apk` extensions are Android dex binaries loaded through `dalvik.system.PathClassLoader` — the desktop JVM cannot execute them, so they are not portable. Everything else ports. The manga/novel reader UI is not part of this port (engines expose video catalogs; no reader screen exists on desktop yet).
 
 ## Build and run
 
@@ -27,3 +26,11 @@ gradle :desktop:packageExe
 ```
 
 The MSI and EXE installers must be generated on a Windows runner. CI builds both from `windows-latest` and uploads them as workflow artifacts and publishes them to the continuous release; no Android build or release is changed by that workflow.
+
+The JS harness assets (`nuvio/*`, `anymex/*`, `sora/*`, `skystream/*`, `vega/*`) download at build time from this repo's `app/src/main/assets` into resources — no manual copying needed.
+
+## Notes
+
+- The app starts without touching JavaFX or V8; both initialize lazily (player opens, extension runs). Startup, unit tests, and the installer smoke test never load native libraries.
+- Extension catalogs/details use TMDB. Hikari ships with built-in keys (same rotation as Android); paste a personal key on the Extensions screen if they ever run dry.
+- Installed providers live under `~/.hikari-desktop/engines/` (scripts, prefs, IPTV cache).

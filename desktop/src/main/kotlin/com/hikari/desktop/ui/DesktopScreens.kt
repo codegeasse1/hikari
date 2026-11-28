@@ -101,6 +101,7 @@ internal enum class DesktopPage {
     LIBRARY,
     HISTORY,
     SOURCES,
+    EXTENSIONS,
     CATALOGS,
     CATALOG,
     DETAIL,
@@ -114,6 +115,7 @@ internal val desktopNavigationDestinations = listOf(
     DesktopNavigationDestination(DesktopPage.LIBRARY, "Library"),
     DesktopNavigationDestination(DesktopPage.HISTORY, "History"),
     DesktopNavigationDestination(DesktopPage.SOURCES, "Sources"),
+    DesktopNavigationDestination(DesktopPage.EXTENSIONS, "Extensions"),
 )
 
 internal fun catalogBrowseReturnDestination(origin: DesktopPage): DesktopPage =
