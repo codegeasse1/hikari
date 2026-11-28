@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -196,6 +198,7 @@ private fun NavigationItem(label: String, selected: Boolean, onClick: () -> Unit
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun HomeScreen(
     sources: List<SourceState>,
@@ -211,6 +214,13 @@ internal fun HomeScreen(
     onOpenCatalogDirectory: () -> Unit,
     onOpenSources: () -> Unit,
     onRetry: () -> Unit,
+    multiFeedEnabled: Boolean = false,
+    onToggleMultiFeed: (Boolean) -> Unit = {},
+    activeFeedUrls: List<String> = emptyList(),
+    onMoveFeed: (Int, Int) -> Unit = { _, _ -> },
+    onRemoveFeed: (String) -> Unit = {},
+    onAddFeed: (String) -> Unit = {},
+    onToggleSaveTitle: (AddonTitle) -> Unit = {},
 ) {
     if (sources.isEmpty()) {
         EmptyState(
@@ -223,10 +233,22 @@ internal fun HomeScreen(
     }
 
     val selectedProvider = sources.firstOrNull { it.url == selectedProviderUrl }
-    val visibleSources = if (selectedProviderUrl == null) sources else sources.filter { it.url == selectedProviderUrl }
+    val effectiveSources = if (multiFeedEnabled && activeFeedUrls.isNotEmpty()) {
+        sources.filter { it.url in activeFeedUrls }.ifEmpty { sources }
+    } else if (selectedProviderUrl == null) {
+        sources
+    } else {
+        sources.filter { it.url == selectedProviderUrl }
+    }
+    val visibleSources = effectiveSources
     val sourceErrors = visibleSources.filter { it.error != null }
     val visibleManifests = visibleSources.mapNotNull { it.manifest }
-    var providerMenuOpen by remember { mutableStateOf(false) }
+    var providerDialogOpen by remember { mutableStateOf(false) }
+    val providerLabel = selectedProvider?.manifest?.name ?: if (selectedProviderUrl == null) {
+        if (multiFeedEnabled) "Multi feed (${activeFeedUrls.size})" else "All providers"
+    } else {
+        selectedProvider?.let { sourceHost(it.url) } ?: "Provider unavailable"
+    }
 
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
@@ -234,59 +256,40 @@ internal fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Provider", style = MaterialTheme.typography.titleMedium)
-                Box {
-                    OutlinedButton(onClick = { providerMenuOpen = true }) {
-                        Text(
-                            selectedProvider?.manifest?.name ?: if (selectedProviderUrl == null) {
-                                "All providers"
-                            } else {
-                                selectedProvider?.let { sourceHost(it.url) } ?: "Provider unavailable"
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = providerMenuOpen,
-                        onDismissRequest = { providerMenuOpen = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("All providers") },
-                            onClick = {
-                                onSelectProvider(null)
-                                providerMenuOpen = false
-                            },
-                        )
-                        sources.forEach { source ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(source.manifest?.name ?: sourceHost(source.url), maxLines = 1)
-                                },
-                                onClick = {
-                                    onSelectProvider(source.url)
-                                    providerMenuOpen = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = java.time.LocalTime.now().hour.let { h -> if (h < 12) "Good morning" else if (h < 18) "Good afternoon" else "Good evening" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onOpenCatalogDirectory) { Text("All catalogs (${catalogs.size})") }
-                TextButton(onClick = onOpenSources) { Text("Manage sources") }
+                OutlinedButton(onClick = { providerDialogOpen = true }) {
+                    Text(providerLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HomeMediaFilter.values().forEach { filter ->
-                if (selectedMediaFilter == filter) {
-                    Button(onClick = { onSelectMediaFilter(filter) }) { Text(filter.label) }
-                } else {
-                    OutlinedButton(onClick = { onSelectMediaFilter(filter) }) { Text(filter.label) }
-                }
-            }
+        TopPillNav(
+            selected = selectedMediaFilter,
+            onSelect = onSelectMediaFilter,
+        )
+
+        if (providerDialogOpen) {
+            ProviderFeedDialog(
+                sources = sources,
+                selectedProviderUrl = selectedProviderUrl,
+                multiFeedEnabled = multiFeedEnabled,
+                activeFeedUrls = activeFeedUrls.ifEmpty { sources.map { it.url } },
+                onSelectSingle = {
+                    onSelectProvider(it)
+                    providerDialogOpen = false
+                },
+                onToggleMulti = onToggleMultiFeed,
+                onMoveFeed = onMoveFeed,
+                onRemoveFeed = onRemoveFeed,
+                onAddFeed = onAddFeed,
+                onClose = { providerDialogOpen = false },
+            )
         }
 
         when {
@@ -343,17 +346,48 @@ internal fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(26.dp),
             ) {
                     item {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Catalogs", style = MaterialTheme.typography.headlineSmall)
-                            Text(
-                                if (selectedProvider == null) {
-                                    "Titles from all installed catalog add-ons"
-                                } else {
-                                    "Titles from ${selectedProvider.manifest?.name ?: sourceHost(selectedProvider.url)}"
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        val heroTitle = shelves.firstNotNullOfOrNull { shelf ->
+                            shelf.titles.firstOrNull()?.let { shelf to it }
+                        }
+                        if (heroTitle != null) {
+                            HomeHero(
+                                title = heroTitle.second,
+                                providerName = sources.firstOrNull { it.url == heroTitle.first.addonUrl }?.manifest?.name,
+                                dotCount = shelves.size.coerceAtMost(6),
+                                onDiscover = { onOpenCatalogDirectory() },
+                                onPlay = { onOpenTitle(heroTitle.second) },
+                                onSave = { onToggleSaveTitle(heroTitle.second) },
+                                onOpenProvider = { providerDialogOpen = true },
                             )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Home", style = MaterialTheme.typography.headlineMedium)
+                                Text(
+                                    "Catalogs from your installed add-ons",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        val rail = shelves.firstOrNull()?.titles?.take(10).orEmpty()
+                        if (rail.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("Continue Watching", style = MaterialTheme.typography.titleMedium)
+                                    TextButton(onClick = onOpenCatalogDirectory) { Text("View All") }
+                                }
+                                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    items(rail, key = { it.addonUrl + it.id }) { title ->
+                                        TitleCard(title = title, modifier = Modifier.width(150.dp), onClick = { onOpenTitle(title) })
+                                    }
+                                }
+                            }
                         }
                     }
                     if (sourceErrors.isNotEmpty()) {
@@ -370,6 +404,227 @@ internal fun HomeScreen(
                         key = { "${it.addonUrl}:${it.catalog.type}:${it.catalog.id}" },
                     ) { shelf ->
                         CatalogShelf(shelf, onOpenTitle, onRetry, onOpenCatalog)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopPillNav(
+    selected: HomeMediaFilter,
+    onSelect: (HomeMediaFilter) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        TopPill("For You", active = selected == HomeMediaFilter.ALL, onClick = { onSelect(HomeMediaFilter.ALL) })
+        TopPill("Movies", active = selected == HomeMediaFilter.MOVIES, onClick = { onSelect(HomeMediaFilter.MOVIES) })
+        TopPill("Series", active = selected == HomeMediaFilter.SERIES, onClick = { onSelect(HomeMediaFilter.SERIES) })
+        TopPill("Live", active = false, onClick = { onSelect(HomeMediaFilter.ALL) })
+    }
+}
+
+@Composable
+private fun TopPill(label: String, active: Boolean, onClick: () -> Unit) {
+    if (active) {
+        Button(onClick = onClick) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick) { Text(label) }
+    }
+}
+
+@Composable
+private fun HomeHero(
+    title: AddonTitle,
+    providerName: String?,
+    dotCount: Int,
+    onDiscover: () -> Unit,
+    onPlay: () -> Unit,
+    onSave: () -> Unit,
+    onOpenProvider: () -> Unit,
+) {
+    Card(shape = RoundedCornerShape(18.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().height(340.dp)) {
+            ArtworkBackdrop(
+                url = backdropArtworkUrl(title.backgroundUrl, title.posterUrl),
+                title = title.title,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Surface(
+                color = androidx.compose.ui.graphics.Color(0x990B0E1A),
+                modifier = Modifier.fillMaxSize(),
+            ) {}
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Bottom,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        providerName ?: typeLabel(title.type),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    OutlinedButton(onClick = onOpenProvider) {
+                        Text(providerName ?: "Select provider")
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(title.title, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    buildString {
+                        append(typeLabel(title.type))
+                        if (title.genres.isNotEmpty()) append(" · ").append(title.genres.take(3).joinToString(" & "))
+                        append(" · 16+")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    title.rating?.let { RatingChip("TMDB ${it}") }
+                    title.releaseInfo?.let { RatingChip(it) }
+                }
+                title.description?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+                Text(
+                    listOfNotNull(title.releaseInfo, title.genres.firstOrNull()).joinToString(" · ").ifBlank { "2026 · Ongoing" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = onDiscover) { Text("Discover") }
+                    OutlinedButton(onClick = onSave) { Text("Save") }
+                    Button(onClick = onPlay) { Text("▶") }
+                }
+                if (dotCount > 1) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        repeat(dotCount) { index ->
+                            Surface(
+                                color = if (index == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                shape = RoundedCornerShape(2.dp),
+                                modifier = Modifier.size(width = if (index == 0) 18.dp else 8.dp, height = 4.dp),
+                            ) {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RatingChip(label: String) {
+    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f), shape = RoundedCornerShape(6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ProviderFeedDialog(
+    sources: List<SourceState>,
+    selectedProviderUrl: String?,
+    multiFeedEnabled: Boolean,
+    activeFeedUrls: List<String>,
+    onSelectSingle: (String?) -> Unit,
+    onToggleMulti: (Boolean) -> Unit,
+    onMoveFeed: (Int, Int) -> Unit,
+    onRemoveFeed: (String) -> Unit,
+    onAddFeed: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    var filter by remember { mutableStateOf("All") }
+    Dialog(onDismissRequest = onClose) {
+        Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
+            Column(modifier = Modifier.padding(24.dp).width(640.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text(if (multiFeedEnabled) "Manage Home Screen Feed" else "Select Provider", style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            if (multiFeedEnabled) "Mix, reorder, and customize multiple providers." else "Choose a provider to display on your Home Screen.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Enable Multi-Provider Feed", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = multiFeedEnabled, onCheckedChange = onToggleMulti)
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "Movies", "Series", "Anime", "Docs", "Live").forEach { chip ->
+                        if (filter == chip) Button(onClick = { filter = chip }) { Text(chip) }
+                        else OutlinedButton(onClick = { filter = chip }) { Text(chip) }
+                    }
+                }
+                if (multiFeedEnabled) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Active Providers Feed", style = MaterialTheme.typography.titleSmall)
+                            val ordered = activeFeedUrls.mapNotNull { url -> sources.firstOrNull { it.url == url } }
+                            if (ordered.isEmpty()) Text("No providers in the feed yet — add one with +.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            ordered.forEachIndexed { index, source ->
+                                Card {
+                                    Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("${index + 1}.", fontWeight = FontWeight.Bold)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(source.manifest?.name ?: sourceHost(source.url), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(
+                                                "Catalogs: ${source.manifest?.catalogs?.size ?: 0} active",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        TextButton(onClick = { onMoveFeed(index, index - 1) }, enabled = index > 0) { Text("↑") }
+                                        TextButton(onClick = { onMoveFeed(index, index + 1) }, enabled = index < ordered.lastIndex) { Text("↓") }
+                                        TextButton(onClick = { onRemoveFeed(source.url) }) { Text("✕") }
+                                    }
+                                }
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Available Plugins", style = MaterialTheme.typography.titleSmall)
+                            val available = sources.filter { s -> activeFeedUrls.none { it == s.url } }
+                            if (available.isEmpty()) Text("All plugins are active", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            available.forEach { source ->
+                                Card {
+                                    Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(source.manifest?.name ?: sourceHost(source.url), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(
+                                                "${source.manifest?.catalogs?.size ?: 0} catalogs available",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        OutlinedButton(onClick = { onAddFeed(source.url) }) { Text("+") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    sources.forEach { source ->
+                        val active = source.url == selectedProviderUrl
+                        if (active) {
+                            Button(onClick = { onSelectSingle(source.url) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("${source.manifest?.name ?: sourceHost(source.url)} · ${source.manifest?.catalogs?.size ?: 0} catalogs")
+                            }
+                        } else {
+                            OutlinedButton(onClick = { onSelectSingle(source.url) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("${source.manifest?.name ?: sourceHost(source.url)} · ${source.manifest?.catalogs?.size ?: 0} catalogs")
+                            }
+                        }
+                    }
+                    OutlinedButton(onClick = { onSelectSingle(null) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (selectedProviderUrl == null) "✓ All providers" else "All providers")
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(onClick = onClose) { Text("Save & Close") }
                 }
             }
         }
@@ -1761,116 +2016,213 @@ internal fun DetailScreen(
     onPlay: () -> Unit,
     onToggleSaved: () -> Unit,
     onPlayEpisode: (AddonEpisode) -> Unit,
+    providerName: String = "",
 ) {
     var selectedSeason by remember(title.addonUrl, title.id) { mutableStateOf<Int?>(null) }
     var seasonMenuOpen by remember(title.addonUrl, title.id) { mutableStateOf(false) }
+    var episodeQuery by remember(title.addonUrl, title.id) { mutableStateOf("") }
+    var expandedOverview by remember(title.addonUrl, title.id) { mutableStateOf(false) }
     val episodeState = remember(episodes, selectedSeason) {
         detailEpisodeState(episodes, selectedSeason)
     }
     val seasonLabel = { season: Int -> if (season > 0) "Season $season" else "Specials" }
-    Row(
+    val visibleEpisodes = remember(episodeState.visibleEpisodes, episodeQuery) {
+        if (episodeQuery.isBlank()) episodeState.visibleEpisodes
+        else episodeState.visibleEpisodes.filter {
+            it.title.contains(episodeQuery, ignoreCase = true) || "Episode ${it.number}".contains(episodeQuery, ignoreCase = true) || it.number.toString() == episodeQuery.trim()
+        }
+    }
+    LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(28.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(bottom = 24.dp),
     ) {
-        ArtworkPoster(
-            url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
-            title = title.title,
-            modifier = Modifier.width(252.dp).aspectRatio(0.68f).clip(RoundedCornerShape(16.dp)),
-        )
-        LazyColumn(
-            modifier = Modifier.fillMaxHeight().weight(1f),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(bottom = 24.dp),
-        ) {
-            item {
-                TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)) {
-                    Text("Back")
-                }
-                Text(title.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    buildString {
-                        append(typeLabel(title.type))
-                        title.releaseInfo?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
-                        title.rating?.let { append(" · ★ ").append(it) }
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (title.genres.isNotEmpty()) {
-                    Text(
-                        title.genres.joinToString(" · "),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        item {
+            Card(shape = RoundedCornerShape(18.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().height(380.dp)) {
+                    ArtworkBackdrop(
+                        url = backdropArtworkUrl(title.backgroundUrl, title.posterUrl),
+                        title = title.title,
+                        modifier = Modifier.fillMaxSize(),
                     )
-                }
-                Spacer(Modifier.height(2.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onPlay) {
-                        Text(if (title.type.equals("movie", ignoreCase = true)) "Choose a stream" else "Play the first episode")
-                    }
-                    OutlinedButton(onClick = onToggleSaved) {
-                        Text(if (isSaved) "Remove from library" else "Save to library")
-                    }
-                }
-                libraryError?.let { Text("Library: $it", color = MaterialTheme.colorScheme.error) }
-                if (playbackMessage != null) {
-                    Text(playbackMessage, color = MaterialTheme.colorScheme.primary)
-                }
-                if (loading) ProgressMessage("Loading title details…")
-                if (error != null) MessagePanel(
-                    title = "Couldn't load details",
-                    message = error,
-                    actionLabel = "Back to the catalog",
-                    onAction = onBack,
-                    isError = true,
-                )
-                title.description?.takeIf(String::isNotBlank)?.let { description ->
-                    Text(description, style = MaterialTheme.typography.bodyLarge)
-                }
-            }
-            if (!loading && episodes.isEmpty() && title.type.equals("series", ignoreCase = true)) {
-                item {
-                    Text(
-                        "This add-on doesn't provide an episode list.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (episodes.isNotEmpty()) {
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                    Surface(color = androidx.compose.ui.graphics.Color(0x660B0E1A), modifier = Modifier.fillMaxSize()) {}
+                    TextButton(
+                        onClick = onBack,
+                        modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                    ) { Text("< Back") }
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        verticalArrangement = Arrangement.Bottom,
                     ) {
-                        Text("Episodes (${episodes.size})", style = MaterialTheme.typography.titleLarge)
+                        if (providerName.isNotBlank()) {
+                            Text(providerName, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Text(title.title, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            buildString {
+                                append(title.releaseInfo ?: "2026")
+                                append(" · ").append(typeLabel(title.type))
+                                append(" · 20m")
+                                if (title.genres.isNotEmpty()) append(" · ").append(title.genres.take(3).joinToString(", "))
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        title.rating?.let {
+                            Spacer(Modifier.height(4.dp))
+                            RatingChip("TMDB $it")
+                        }
+                        title.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                desc,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = if (expandedOverview) Int.MAX_VALUE else 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            TextButton(onClick = { expandedOverview = !expandedOverview }, contentPadding = PaddingValues(0.dp)) {
+                                Text(if (expandedOverview) "Less" else "More")
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Button(onClick = onPlay, modifier = Modifier.weight(1f, fill = false)) {
+                                Text(if (title.type.equals("movie", ignoreCase = true)) "▶ Play" else "▶ Play S1 E1")
+                            }
+                            OutlinedButton(onClick = onToggleSaved) { Text(if (isSaved) "♥" else "♡") }
+                            OutlinedButton(onClick = onPlay) { Text("⤓") }
+                        }
+                    }
+                }
+            }
+            libraryError?.let { Text("Library: $it", color = MaterialTheme.colorScheme.error) }
+            if (playbackMessage != null) Text(playbackMessage, color = MaterialTheme.colorScheme.primary)
+            if (loading) ProgressMessage("Loading title details…")
+            if (error != null) MessagePanel(title = "Couldn't load details", message = error, actionLabel = "Back", onAction = onBack, isError = true)
+        }
+        if (!loading && episodes.isEmpty() && title.type.equals("series", ignoreCase = true)) {
+            item {
+                Text("This add-on doesn't provide an episode list.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (episodes.isNotEmpty()) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (episodeState.showsSeasonSelector) {
                             Box {
                                 OutlinedButton(onClick = { seasonMenuOpen = true }) {
-                                    Text(episodeState.activeSeason?.let(seasonLabel) ?: "Choose a season")
+                                    Text(episodeState.activeSeason?.let(seasonLabel) ?: "Season 1")
                                 }
-                                DropdownMenu(
-                                    expanded = seasonMenuOpen,
-                                    onDismissRequest = { seasonMenuOpen = false },
-                                ) {
+                                DropdownMenu(expanded = seasonMenuOpen, onDismissRequest = { seasonMenuOpen = false }) {
                                     episodeState.seasons.forEach { season ->
-                                        DropdownMenuItem(
-                                            text = { Text(seasonLabel(season)) },
-                                            onClick = {
-                                                selectedSeason = season
-                                                seasonMenuOpen = false
-                                            },
-                                        )
+                                        DropdownMenuItem(text = { Text(seasonLabel(season)) }, onClick = { selectedSeason = season; seasonMenuOpen = false })
                                     }
+                                }
+                            }
+                        } else {
+                            Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), shape = RoundedCornerShape(8.dp)) {
+                                Text("Season 1", modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                            }
+                        }
+                        Text("· ${episodes.size} Episodes", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = {}) { Text("Mark Season Watched") }
+                        TextButton(onClick = {}) { Text("Anti-spoiler") }
+                        TextButton(onClick = {}) { Text("Sort ▼") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = episodeQuery,
+                    onValueChange = { episodeQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Find episode by number or name…") },
+                    singleLine = true,
+                )
+            }
+            items(items = visibleEpisodes.chunked(4), key = { row -> row.first().id }) { row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { episode ->
+                        EpisodeThumbCard(title = title, episode = episode, modifier = Modifier.weight(1f), onPlay = { onPlayEpisode(episode) })
+                    }
+                    repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            item {
+                Text("Cast & Crew", style = MaterialTheme.typography.titleMedium)
+                Text("Cast info comes from the provider for this title.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(5) { index ->
+                        Card(modifier = Modifier.width(110.dp)) {
+                            Column {
+                                ArtworkMonogram(title = title.title + " ${index + 1}", modifier = Modifier.fillMaxWidth().aspectRatio(0.75f))
+                                Text("Cast ${index + 1}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(6.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Text("PRODUCTION STUDIOS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp)) {
+                        Text(providerName.ifBlank { typeLabel(title.type) }, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
+                    }
+                    if (title.genres.isNotEmpty()) {
+                        Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp)) {
+                            Text(title.genres.first(), modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+                        }
+                    }
+                }
+            }
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Screenshots", style = MaterialTheme.typography.titleMedium)
+                    Text(title.genres.size.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(6.dp))
+                val shots = listOf(title.backgroundUrl, title.posterUrl, title.backgroundUrl, title.posterUrl, title.backgroundUrl).filter { !it.isNullOrBlank() }
+                Row(modifier = Modifier.fillMaxWidth().height(150.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ArtworkBackdrop(url = shots.getOrNull(0), title = title.title, modifier = Modifier.weight(1.6f).fillMaxHeight().clip(RoundedCornerShape(12.dp)))
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ArtworkBackdrop(url = shots.getOrNull(1), title = title.title, modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp)))
+                            ArtworkBackdrop(url = shots.getOrNull(2), title = title.title, modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp)))
+                        }
+                        Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ArtworkBackdrop(url = shots.getOrNull(3), title = title.title, modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp)))
+                            Box(modifier = Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))) {
+                                ArtworkBackdrop(url = shots.getOrNull(4), title = title.title, modifier = Modifier.fillMaxSize())
+                                Surface(color = androidx.compose.ui.graphics.Color(0xAA0B0E1A), modifier = Modifier.fillMaxSize()) {}
+                                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("+1\nmore", color = androidx.compose.ui.graphics.Color.White, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
                     }
                 }
-                items(items = episodeState.visibleEpisodes, key = { it.id }) { episode ->
-                    EpisodeRow(episode = episode, onPlay = { onPlayEpisode(episode) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun EpisodeThumbCard(title: AddonTitle, episode: AddonEpisode, modifier: Modifier = Modifier, onPlay: () -> Unit) {
+    Card(onClick = onPlay, modifier = modifier) {
+        Column {
+            Box {
+                ArtworkBackdrop(url = backdropArtworkUrl(title.backgroundUrl, title.posterUrl), title = episode.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+                Surface(color = androidx.compose.ui.graphics.Color(0xCC0B0E1A), shape = RoundedCornerShape(6.dp), modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)) {
+                    Text("${episode.number}", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                 }
+            }
+            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("S${episode.season} · EPISODE ${episode.number}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+                Text(episode.title.ifBlank { "Episode ${episode.number}" }, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("No description available.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

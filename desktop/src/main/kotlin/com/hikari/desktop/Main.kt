@@ -201,6 +201,13 @@ private fun HikariDesktopApp() {
     var engineRepoEntries by remember { mutableStateOf(emptyList<EngineRepoEntry>()) }
     var engineReposLoading by remember { mutableStateOf(false) }
     var engineRepoError by remember { mutableStateOf<String?>(null) }
+    var openedRepoUrl by remember { mutableStateOf<String?>(null) }
+    var multiFeedEnabled by remember {
+        mutableStateOf(runCatching { homeProviderSelectionStore.multiFeedEnabled() }.getOrDefault(false))
+    }
+    var activeFeedUrls by remember {
+        mutableStateOf(runCatching { homeProviderSelectionStore.activeFeedUrls() }.getOrDefault(emptyList()))
+    }
     var playerRequest by remember { mutableStateOf<EnginePlayerRequest?>(null) }
     var playerSubtitles by remember { mutableStateOf(emptyList<EngineSubtitle>()) }
     val catalogInventory = homeCatalogInventory(sourceStates, selectedProviderUrl, selectedMediaFilter)
@@ -370,6 +377,31 @@ private fun HikariDesktopApp() {
             engineAddError = "Enter an extension URL or file path first."
             return
         }
+        // Stremio manifests are catalog sources, not engine extensions:
+        // install them as Home sources so catalogues load immediately.
+        if (kind == EngineKind.STREMIO && (url.endsWith("manifest.json") || url.contains("/manifest.json"))) {
+            engineAdding = true
+            engineAddError = null
+            scope.launch {
+                try {
+                    val manifest = client.loadManifest(url)
+                    if (!sourceStore.add(manifest.addonUrl)) {
+                        withContext(Dispatchers.Main) { engineAddError = "This source is already in the list." }
+                    } else {
+                        val fresh = SourceState(manifest.addonUrl, manifest = manifest)
+                        withContext(Dispatchers.Main) {
+                            sourceStates = sourceStates.filterNot { it.url == manifest.addonUrl } + fresh
+                            engineAddUrl = ""
+                        }
+                    }
+                } catch (error: Exception) {
+                    withContext(Dispatchers.Main) { engineAddError = (error.message ?: "could not add this source").take(300) }
+                } finally {
+                    withContext(Dispatchers.Main) { engineAdding = false }
+                }
+            }
+            return
+        }
         engineAdding = true
         engineAddError = null
         scope.launch(Dispatchers.IO) {
@@ -433,7 +465,15 @@ private fun HikariDesktopApp() {
         reloadSavedTitles()
         reloadWatchHistory()
         reloadLibraryCategoryState()
-        loadSources(sourceStore.all())
+        val stored = sourceStore.all()
+        // First run: ship with Cinemeta so Home shows catalogues immediately.
+        if (stored.isEmpty()) {
+            val cinemeta = "https://v3-cinemeta.strem.io/manifest.json"
+            runCatching { sourceStore.add(cinemeta) }
+            loadSources(listOf(cinemeta))
+        } else {
+            loadSources(stored)
+        }
         reloadEngineProviders()
         refreshEngineShelves()
     }
@@ -491,6 +531,21 @@ private fun HikariDesktopApp() {
     fun selectHomeProvider(addonUrl: String?) {
         homeProviderSelectionStore.setSelectedUrl(addonUrl)
         selectedProviderUrl = addonUrl
+    }
+
+    fun toggleMultiFeed(enabled: Boolean) {
+        homeProviderSelectionStore.setMultiFeedEnabled(enabled)
+        multiFeedEnabled = enabled
+        if (enabled && activeFeedUrls.isEmpty()) {
+            val all = sourceStates.map { it.url }
+            homeProviderSelectionStore.setActiveFeedUrls(all)
+            activeFeedUrls = all
+        }
+    }
+
+    fun moveFeed(from: Int, to: Int) {
+        homeProviderSelectionStore.moveInFeed(from, to)
+        activeFeedUrls = runCatching { homeProviderSelectionStore.activeFeedUrls() }.getOrDefault(activeFeedUrls)
     }
 
     fun loadNextCatalogPage() {
@@ -898,6 +953,19 @@ private fun HikariDesktopApp() {
                                 onOpenCatalogDirectory = { page = DesktopPage.CATALOGS },
                                 onOpenSources = { page = DesktopPage.SOURCES },
                                 onRetry = ::reloadSources,
+                                multiFeedEnabled = multiFeedEnabled,
+                                onToggleMultiFeed = ::toggleMultiFeed,
+                                activeFeedUrls = activeFeedUrls,
+                                onMoveFeed = ::moveFeed,
+                                onRemoveFeed = { url ->
+                                    homeProviderSelectionStore.removeFromFeed(url)
+                                    activeFeedUrls = runCatching { homeProviderSelectionStore.activeFeedUrls() }.getOrDefault(activeFeedUrls)
+                                },
+                                onAddFeed = { url ->
+                                    homeProviderSelectionStore.addToFeed(url)
+                                    activeFeedUrls = runCatching { homeProviderSelectionStore.activeFeedUrls() }.getOrDefault(activeFeedUrls)
+                                },
+                                onToggleSaveTitle = ::toggleSavedTitle,
                             )
                             DesktopPage.CATALOGS -> CatalogDirectoryScreen(
                                 catalogs = catalogInventory.allCatalogs,
@@ -1034,7 +1102,7 @@ private fun HikariDesktopApp() {
                                 repoName = engineRepoName,
                                 reposLoading = engineReposLoading,
                                 repoError = engineRepoError,
-                                onLoadRepo = { url, name -> loadEngineRepo(engineRepoKind, url, name) },
+                                onLoadRepo = { url, name -> openedRepoUrl = url; loadEngineRepo(engineRepoKind, url, name) },
                                 onInstallRepoEntry = { installEngineRepoFile(engineRepoKind, it) },
                                 onToggleEnabled = { id, enabled ->
                                     engineRegistry.setEnabled(id, enabled)
@@ -1047,6 +1115,29 @@ private fun HikariDesktopApp() {
                                     refreshEngineShelves()
                                 },
                                 onValidate = ::validateEngineProvider,
+                                openedRepoUrl = openedRepoUrl,
+                                onCloseRepo = { openedRepoUrl = null },
+                                onCopyRepo = { },
+                                onRefreshRepo = { url -> loadEngineRepo(engineRepoKind, url, engineRepoName) },
+                                onDeleteRepo = { openedRepoUrl = null },
+                                installedEntryNames = engineProviders.map { it.name }.toSet(),
+                                multiFeedEnabled = multiFeedEnabled,
+                                onAddToFeed = { name ->
+                                    val stremioMatch = sourceStates.firstOrNull { (it.manifest?.name ?: it.url) == name }
+                                    if (stremioMatch != null) {
+                                        homeProviderSelectionStore.addToFeed(stremioMatch.url)
+                                        activeFeedUrls = runCatching { homeProviderSelectionStore.activeFeedUrls() }.getOrDefault(activeFeedUrls)
+                                    } else {
+                                        // Engine providers feed Home automatically; make sure it is enabled.
+                                        engineProviders.firstOrNull { it.name == name }?.let { provider ->
+                                            if (!provider.enabled) {
+                                                engineRegistry.setEnabled(provider.id, true)
+                                                reloadEngineProviders()
+                                                refreshEngineShelves()
+                                            }
+                                        }
+                                    }
+                                },
                             )
                             DesktopPage.DETAIL -> selectedTitle?.let { selected ->
                                 val detailTitle = titleDetail?.title ?: selected
@@ -1063,6 +1154,9 @@ private fun HikariDesktopApp() {
                                     onPlay = { requestStreams(selected, availableEpisodes = detailEpisodes) },
                                     onToggleSaved = { toggleSavedTitle(detailTitle) },
                                     onPlayEpisode = { requestStreams(selected, it) },
+                                    providerName = sourceStates.firstOrNull { it.url == detailTitle.addonUrl }?.manifest?.name
+                                        ?: engineProviders.firstOrNull { engineAddonUrl(it) == detailTitle.addonUrl }?.name
+                                        ?: "",
                                 )
                             } ?: EmptyDetailScreen(onBack = { page = DesktopPage.HOME })
                         }
@@ -1217,64 +1311,253 @@ internal suspend fun buildEngineProvider(
             source = file.absolutePath,
         )
     }
-    // JS families: fetch or copy the provider script, then validate in V8.
-    val text = if (url.startsWith("http", true)) {
-        EngineHttp.fetchText(url, 5 * 1024 * 1024) ?: error("Could not download that script.")
+    // JS families: resolve to one provider .js (direct .js, Sora manifest.json,
+    // .sky zip, or Vega dist folder), save it, then validate in V8.
+    // Repo installs carry a URL hash so same-named entries from different
+    // repos never overwrite each other; direct adds keep the plain key.
+    val keyBase = if (!nameOverride.isNullOrBlank()) {
+        "${sanitizeEngineKey(nameOverride)}-${shortUrlHash(url)}"
     } else {
-        val local = java.io.File(url)
-        if (!local.exists()) error("File not found: $url")
-        local.readText()
+        sanitizeEngineKey(url)
     }
-    if (text.isBlank()) error("That script is empty.")
-    val id = "${kind.prefix}|${sanitizeEngineKey(url)}"
-    val file = engineFileFor(kind, id, ".js")
-    file.writeText(text)
+    val id = "${kind.prefix}|$keyBase"
+    val jsFile = engineFileFor(kind, id, ".js")
+    when (kind) {
+        EngineKind.SORA -> {
+            val script = resolveSoraScript(url) ?: error("Could not get that module's scriptUrl.")
+            jsFile.writeText(script)
+        }
+        EngineKind.SKYSTREAM -> {
+            val (js, manifest) = resolveSkyPlugin(url)
+                ?: error("Not a SkyStream extension (needs plugin.js + plugin.json).")
+            jsFile.writeBytes(js)
+            val manifestFile = java.io.File(jsFile.parentFile, jsFile.nameWithoutExtension + ".manifest.json")
+            if (!manifest.isNullOrBlank()) runCatching { manifestFile.writeText(manifest) }
+        }
+        EngineKind.VEGA -> {
+            val script = resolveVegaScript(url) ?: error("Not a Vega provider (no posts/stream/meta module).")
+            jsFile.writeText(script)
+        }
+        else -> {
+            val text = if (url.startsWith("http", true)) {
+                EngineHttp.fetchText(url, 5 * 1024 * 1024) ?: error("Could not download that script.")
+            } else {
+                val local = java.io.File(url)
+                if (!local.exists()) error("File not found: $url")
+                local.readText()
+            }
+            if (text.isBlank()) error("That script is empty.")
+            jsFile.writeText(text)
+        }
+    }
     val provider = EngineProvider(
         id = id,
         kind = kind,
-        name = nameOverride?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension,
-        source = file.absolutePath,
+        name = nameOverride?.takeIf { it.isNotBlank() } ?: jsFile.nameWithoutExtension,
+        source = jsFile.absolutePath,
     )
     val engine = registry.engineFor(kind) ?: error("${kind.title} engine is unavailable.")
     val problem = engine.validate(provider)
     if (problem != null) {
-        runCatching { file.delete() }
+        runCatching { jsFile.delete() }
         error(problem)
     }
     return provider
 }
 
+/** Sora manifest.json -> its scriptUrl's .js (or the .js itself when given one). */
+internal fun resolveSoraScript(url: String): String? {
+    val text = if (url.startsWith("http", true)) {
+        EngineHttp.fetchText(url, 2 * 1024 * 1024)
+    } else {
+        runCatching { java.io.File(url).takeIf { it.exists() }?.readText() }.getOrNull()
+    } ?: return null
+    if (!text.contains("scriptUrl")) return text.takeIf { it.isNotBlank() }
+    val manifest = runCatching {
+        com.google.gson.Gson().fromJson(text, com.google.gson.JsonObject::class.java)
+    }.getOrNull() ?: return null
+    val scriptUrl = manifest.get("scriptUrl")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        ?.takeIf { it.isNotBlank() } ?: return null
+    if (scriptUrl.startsWith("http", true)) {
+        return EngineHttp.fetchText(scriptUrl, 5 * 1024 * 1024)?.takeIf { it.isNotBlank() }
+    }
+    val base = url.substringBeforeLast('/').trimEnd('/')
+    if (url.startsWith("http", true)) {
+        return EngineHttp.fetchText("$base/${scriptUrl.trimStart('/')}", 5 * 1024 * 1024)
+            ?.takeIf { it.isNotBlank() }
+    }
+    return runCatching { java.io.File(base, scriptUrl).takeIf { it.exists() }?.readText() }
+        .getOrNull()?.takeIf { it.isNotBlank() }
+}
+
+/** .sky zip (URL or local file) -> (plugin.js bytes, plugin.json text). */
+internal fun resolveSkyPlugin(url: String): Pair<ByteArray, String?>? {
+    val bytes = if (url.startsWith("http", true)) {
+        EngineHttp.fetchBytes(url, 8 * 1024 * 1024)
+    } else {
+        runCatching { java.io.File(url).takeIf { it.exists() }?.readBytes() }.getOrNull()
+    } ?: return null
+    if (bytes.size < 4) return null
+    // Not a zip: a bare plugin.js pasted directly.
+    if (!(bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte())) {
+        val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
+        return if (text.isNullOrBlank()) null else text.toByteArray(Charsets.UTF_8) to null
+    }
+    return unzipSky(bytes)
+}
+
+internal fun unzipSky(bytes: ByteArray): Pair<ByteArray, String?>? {
+    return runCatching {
+        var js: ByteArray? = null
+        var manifest: String? = null
+        java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
+            var entries = 0
+            var entry = zip.nextEntry
+            while (entry != null && entries < 100) {
+                entries++
+                if (!entry.isDirectory) {
+                    val leaf = entry.name.substringAfterLast('/').lowercase()
+                    if (js == null && leaf == "plugin.js") {
+                        val data = zip.readBytes()
+                        if (data.size in 1..(8 * 1024 * 1024)) js = data
+                    } else if (manifest == null && leaf == "plugin.json") {
+                        val data = zip.readBytes()
+                        if (data.size in 1..(2 * 1024 * 1024)) {
+                            manifest = runCatching { String(data, Charsets.UTF_8) }.getOrNull()
+                        }
+                    }
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+        if (js == null) null else js to manifest
+    }.getOrNull()
+}
+
+/** Vega dist folder (or single .js) -> one concatenated provider script. */
+internal fun resolveVegaScript(url: String): String? {
+    val dist = url.trim().trimEnd('/')
+    if (dist.endsWith(".js", ignoreCase = true) || java.io.File(dist).isFile) {
+        val single = if (dist.startsWith("http", true)) EngineHttp.fetchText(dist, 5 * 1024 * 1024)
+        else runCatching { java.io.File(dist).takeIf { it.exists() }?.readText() }.getOrNull()
+        return single?.takeIf { it.isNotBlank() }
+    }
+    val parts = vegaModuleNames.mapNotNull { name ->
+        val body = EngineHttp.fetchText("$dist/$name.js", 2 * 1024 * 1024) ?: return@mapNotNull null
+        name to vegaCompatPatch(name, body)
+    }.toMap()
+    if (parts.keys.none { it == "stream" || it == "posts" || it == "meta" }) return null
+    return vegaModuleNames.filter { parts.containsKey(it) }
+        .joinToString("\n") { name -> "\n;//-module:$name\n" + parts.getValue(name) }
+}
+
+internal val vegaModuleNames = listOf("catalog", "posts", "meta", "stream", "episodes", "settings")
+
+/** Port of VegaPluginManager.compatPatch (broken sourceHeading helper fix). */
+internal fun vegaCompatPatch(fileName: String, text: String): String {
+    if (fileName != "meta" || !text.contains("function sourceHeading(")) return text
+    var out = text
+    out = out.replace(vegaDistBuggy, vegaDistFixed)
+    out = out.replace(vegaTsBuggy, vegaTsFixed)
+    return out
+}
+
+internal const val vegaDistBuggy =
+    "function sourceHeading(\$,anchor){let heading=anchor.closest(\"center, p, div\").prevAll(\"h4, h3, h2\").first();return heading.length||(heading=anchor.prevAll(\"h4, h3, h2\").first()),heading.text().replace(/\\s+/g,\" \").trim()}"
+internal const val vegaDistFixed =
+    "function sourceHeading(\$,anchor){var node=anchor;for(var d=0;d<4&&node&&node.length;d++){var hdg=node.prevAll(\"h4, h3, h2, h5\").first();if(hdg.length)return hdg.text().replace(/\\s+/g,\" \").trim();node=node.parent()}return \"\"}"
+internal const val vegaTsBuggy =
+    "function sourceHeading(\$: any, anchor: any): string {\n  const container = anchor.closest(\"center, p, div\");\n  let heading = container.prevAll(\"h4, h3, h2\").first();\n  if (!heading.length) heading = anchor.prevAll(\"h4, h3, h2\").first();\n  return heading.text().replace(/\\s+/g, \" \").trim();\n}"
+internal const val vegaTsFixed =
+    "function sourceHeading(\$: any, anchor: any): string {\n  let node: any = anchor;\n  for (let d = 0; d < 4 && node && node.length; d++) {\n    const hdg = node.prevAll(\"h4, h3, h2, h5\").first();\n    if (hdg.length) return hdg.text().replace(/\\s+/g, \" \").trim();\n    node = node.parent();\n  }\n  return \"\";\n}"
+
 internal fun fetchEngineRepoEntries(repoUrl: String): List<EngineRepoEntry> {
     val text = EngineHttp.fetchText(repoUrl, 4 * 1024 * 1024) ?: error("Could not download repository index.")
-    val root = runCatching {
+    var root = runCatching {
         com.google.gson.Gson().fromJson(text, com.google.gson.JsonElement::class.java)
     }.getOrNull() ?: error("Not a repository index.")
-    val base = repoUrl.substringBeforeLast('/')
+    var base = repoUrl.substringBeforeLast('/')
+    // SkyStream repo.json points at its plugin list — follow it (one hop).
+    if (root.isJsonObject) {
+        val first = root.asJsonObject.get("pluginLists")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.firstOrNull()?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+            ?.takeIf { it.isNotBlank() }
+        if (first != null) {
+            val listText = EngineHttp.fetchText(first, 4 * 1024 * 1024)
+                ?: error("Could not download the plugin list.")
+            root = runCatching {
+                com.google.gson.Gson().fromJson(listText, com.google.gson.JsonElement::class.java)
+            }.getOrNull() ?: error("Not a repository index.")
+            base = first.substringBeforeLast('/')
+        }
+    }
+    return parseRepoEntries(root, base)
+}
+
+/**
+ * Pure repo-index parser shared by every JS family (unit-tested in
+ * RepoParserTest against the real index shapes):
+ * - Nuvio manifest.json: {"scrapers": [{name, filename: "providers/x.js"}]}
+ * - Anymex index.json: bare array [{name, sourceCodeUrl: "https://…/x.js"}]
+ * - Sora modules.json: {"modules": [{name, manifestUrl}]} (installer then
+ *   resolves the manifest's scriptUrl)
+ * - SkyStream plugins.json: bare array [{name, url: "https://…/x.sky"}]
+ * - Zangetsu index.json: {"sources": [{name, file: "providers/x.js"}]}
+ * - Vega manifest.json: bare array [{display_name, value}] (installer then
+ *   fetches dist/<value>/*.js)
+ */
+internal fun parseRepoEntries(
+    root: com.google.gson.JsonElement,
+    base: String,
+): List<EngineRepoEntry> {
     val out = LinkedHashMap<String, String>()
     fun addEntry(name: String?, url: String?) {
         if (url.isNullOrBlank()) return
-        val absolute = if (url.startsWith("http", true)) url else "$base/${url.trimStart('/')}"
+        val absolute = if (url.startsWith("http", true)) url.trim() else "$base/${url.trimStart('/')}"
         val label = name?.takeIf { it.isNotBlank() }
             ?: absolute.substringAfterLast('/').substringBefore('?').ifBlank { absolute }
         if (absolute.startsWith("http", true)) out[label] = absolute
     }
-    fun objName(o: com.google.gson.JsonObject): String? =
-        listOf("name", "file", "displayName", "title", "fileName", "pluginName")
-            .firstNotNullOfOrNull { k ->
-                o.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+    fun str(o: com.google.gson.JsonObject, vararg keys: String): String? =
+        keys.firstNotNullOfOrNull { k ->
+            o.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+        }
+    fun entryFrom(o: com.google.gson.JsonObject) {
+        // Sora: manifest URL; the installer resolves scriptUrl from it.
+        str(o, "manifestUrl")?.let { addEntry(str(o, "name", "sourceName"), it); return }
+        // Vega: dist folder; the installer fetches its module files.
+        str(o, "value")?.let { v ->
+            addEntry(str(o, "display_name", "displayName", "name") ?: v, "$base/dist/$v")
+            return
+        }
+        // Nuvio / Zangetsu / generic relative script files.
+        str(o, "filename", "file", "path")?.let { rel ->
+            if (rel.endsWith(".js", ignoreCase = true)) {
+                addEntry(str(o, "name", "display_name", "displayName", "title"), rel)
+                return
             }
-    fun objUrl(o: com.google.gson.JsonObject): String? =
-        listOf("url", "downloadUrl", "file", "path", "href", "download_url", "fileUrl")
-            .firstNotNullOfOrNull { k ->
-                o.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
-            }
-    if (root.isJsonObject) {
+        }
+        // Absolute script / archive URLs (Anymex sourceCodeUrl, SkyStream .sky).
+        addEntry(
+            str(o, "name", "display_name", "displayName", "sourceName", "title", "packageName"),
+            str(o, "sourceCodeUrl", "url", "downloadUrl", "href", "download_url", "fileUrl"),
+        )
+    }
+    if (root.isJsonArray) {
+        for (el in root.asJsonArray) {
+            if (el.isJsonObject) entryFrom(el.asJsonObject)
+        }
+    } else if (root.isJsonObject) {
         val o = root.asJsonObject
-        for (key in listOf("files", "plugins", "providers", "extensions", "items", "list", "entries", "modules")) {
+        // One bare Sora manifest IS one module.
+        if (o.has("scriptUrl") && o.get("scriptUrl")?.takeIf { it.isJsonPrimitive }?.asString?.isNotBlank() == true) {
+            entryFrom(o)
+        }
+        for (key in listOf("modules", "scrapers", "sources", "files", "plugins", "providers", "extensions", "items", "list", "entries")) {
             val arr = o.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
             for (el in arr) {
-                if (!el.isJsonObject) continue
-                addEntry(objName(el.asJsonObject), objUrl(el.asJsonObject))
+                if (el.isJsonObject) entryFrom(el.asJsonObject)
             }
         }
         if (out.isEmpty()) {
@@ -1292,7 +1575,117 @@ internal fun fetchEngineRepoEntries(repoUrl: String): List<EngineRepoEntry> {
 }
 
 internal fun repoOptionsFor(kind: EngineKind): List<EngineRepo> = when (kind) {
-    EngineKind.NUVIO -> NuvioEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third) }
-    EngineKind.ANYMEX -> AnymexEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third) }
+    EngineKind.STREMIO -> listOf(
+        EngineRepo(
+            "https://v3-cinemeta.strem.io/manifest.json",
+            "Cinemeta",
+            "The official add-on for movie and series catalogs",
+            pluginCount = 2,
+            badge = "STREMIO",
+            iconText = "C",
+        ),
+    )
+    EngineKind.NUVIO -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/main/manifest.json",
+            "All-in-One-Nuvio",
+            "https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/main/manifest.json",
+            pluginCount = 47,
+            badge = "NUVIO",
+            iconText = "A",
+        ),
+        EngineRepo(
+            "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json",
+            "Yoru's Repo",
+            "https://raw.githubusercontent.com/tapframe/nuvio-providers/main/manifest.json",
+            pluginCount = 29,
+            badge = "NUVIO",
+            iconText = "Y",
+        ),
+        EngineRepo(
+            "https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json",
+            "Gowaru's Repo",
+            "https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json",
+            pluginCount = 27,
+            badge = "NUVIO",
+            iconText = "G",
+        ),
+    ) + NuvioEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third, badge = "NUVIO") }
+    EngineKind.ANYMEX -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/codegeasse1/codegeasse-mihon-extension/repo/index.json",
+            "codegeasse1/codegeasse-mihon-extension",
+            "https://raw.githubusercontent.com/codegeasse1/codegeasse-mihon-extension/repo/index.json",
+            pluginCount = 89,
+            badge = "ANIYOMI",
+            iconText = "H",
+        ),
+    ) + AnymexEngine.DEFAULT_REPOS.map { EngineRepo(it.first, it.second, it.third, badge = "ANYMEX") }
+    EngineKind.SORA -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/xdfkenny/Sora-Modules/main/modules.json",
+            "Sora Modules",
+            "Community Sora video modules (AllAnime, HydraHD, …)",
+            badge = "SORA",
+            iconText = "S",
+        ),
+        EngineRepo(
+            "https://raw.githubusercontent.com/justbbcr/streamex/main/streamex.json",
+            "StreamEx Sora",
+            "StreamEx Sora module collection",
+            badge = "SORA",
+            iconText = "S",
+        ),
+        EngineRepo(
+            "https://raw.githubusercontent.com/CloudStream/cloudstream-extensions/master/repo.json",
+            "CNC Repo (All Language)",
+            "All Language Contents",
+            pluginCount = 47,
+            badge = "CLOUDSTREAM",
+            iconText = "C",
+        ),
+    )
+    EngineKind.SKYSTREAM -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/dist/plugins.json",
+            "Stars Plugins",
+            "SkyStream .sky plugins (4K HD, HDHub4u, MoviesDrive, …)",
+            badge = "SKYSTREAM",
+            iconText = "S",
+        ),
+    )
+    EngineKind.ZANGETSU -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/Spyou/zangetsu-providers/main/index.json",
+            "Zangetsu Providers",
+            "Zangetsu JS providers (AniKoto, HiAnime, VegaMovies, …)",
+            badge = "NUVIO",
+            iconText = "Z",
+        ),
+    )
+    EngineKind.VEGA -> listOf(
+        EngineRepo(
+            "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/main/manifest.json",
+            "Vega Providers",
+            "The official Vega repo (VMovies, MultiStream, MoviesDrive, …)",
+            badge = "VEGA",
+            iconText = "V",
+        ),
+        EngineRepo(
+            "https://raw.githubusercontent.com/DHR-Store/vega-providers/main/manifest.json",
+            "Vega Providers (Vega-Next)",
+            "The Vega-Next fork's provider repo",
+            badge = "VEGA",
+            iconText = "V",
+        ),
+    )
     else -> emptyList()
+}
+
+internal fun shortUrlHash(url: String): String {
+    val digest = runCatching {
+        java.security.MessageDigest.getInstance("SHA-256").digest(url.toByteArray(Charsets.UTF_8))
+    }.getOrNull()
+    val bytes = digest?.take(4)?.toByteArray() ?: url.hashCode().toString().toByteArray()
+    return bytes.joinToString("") { "%02x".format(it) }
 }

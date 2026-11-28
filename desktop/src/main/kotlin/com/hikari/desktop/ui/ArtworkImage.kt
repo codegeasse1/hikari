@@ -30,9 +30,28 @@ import javax.imageio.ImageReader
 
 private val HOST_LIKE_ARTWORK_URL = Regex("^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z]{2,}(/.*)?$")
 
-internal fun posterArtworkUrl(posterUrl: String?, backgroundUrl: String?): String? =
-    posterUrl?.trim()?.takeIf(String::isNotEmpty)
-        ?: backgroundUrl?.trim()?.takeIf(String::isNotEmpty)
+internal fun upgradeArtworkUrl(rawUrl: String): String {
+    var url = rawUrl
+    // Cinemeta/metahub thumbnails: prefer medium over the tiny default.
+    if (url.contains("images.metahub.space/poster/small")) {
+        url = url.replace("images.metahub.space/poster/small", "images.metahub.space/poster/medium")
+    }
+    if (url.contains("images.metahub.space/logo/small")) {
+        url = url.replace("images.metahub.space/logo/small", "images.metahub.space/logo/medium")
+    }
+    return url
+}
+
+internal fun posterArtworkUrl(posterUrl: String?, backgroundUrl: String?): String? {
+    val poster = posterUrl?.trim()?.takeIf(String::isNotEmpty)?.let(::upgradeArtworkUrl)
+    if (poster != null) return poster
+    return backgroundUrl?.trim()?.takeIf(String::isNotEmpty)
+}
+
+/** Hero/detail backdrops prefer the landscape background, then fall back to the poster. */
+internal fun backdropArtworkUrl(backgroundUrl: String?, posterUrl: String?): String? =
+    backgroundUrl?.trim()?.takeIf(String::isNotEmpty)
+        ?: posterUrl?.trim()?.takeIf(String::isNotEmpty)?.let(::upgradeArtworkUrl)
 
 internal fun safeArtworkUri(rawUrl: String?): URI? {
     val value = rawUrl?.trim()?.takeIf(String::isNotEmpty) ?: return null
@@ -61,6 +80,33 @@ private fun isLocalArtworkHost(host: String): Boolean {
 }
 
 @Composable
+internal fun ArtworkMonogram(title: String, modifier: Modifier = Modifier) {
+    val initial = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "•"
+    Box(
+        modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.layout.Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(12.dp),
+        ) {
+            Text(
+                initial,
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                title,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
 internal fun ArtworkPoster(url: String?, title: String, modifier: Modifier = Modifier) {
     val image by produceState<ImageBitmap?>(initialValue = null, key1 = url) {
         value = ArtworkImageLoader.load(url)
@@ -73,25 +119,32 @@ internal fun ArtworkPoster(url: String?, title: String, modifier: Modifier = Mod
             contentScale = ContentScale.Crop,
         )
     } else {
-        Box(
-            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "Poster not available",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(12.dp),
-            )
-        }
+        ArtworkMonogram(title = title, modifier = modifier)
+    }
+}
+
+@Composable
+internal fun ArtworkBackdrop(url: String?, title: String, modifier: Modifier = Modifier) {
+    val image by produceState<ImageBitmap?>(initialValue = null, key1 = url) {
+        value = ArtworkImageLoader.load(url)
+    }
+    if (image != null) {
+        Image(
+            bitmap = image!!,
+            contentDescription = "Backdrop: $title",
+            modifier = modifier,
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        ArtworkMonogram(title = title, modifier = modifier)
     }
 }
 
 private object ArtworkImageLoader {
-    private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+    private const val MAX_RESPONSE_BYTES = 6 * 1024 * 1024
     private const val MAX_IMAGE_DIMENSION = 4096
-    private const val MAX_IMAGE_PIXELS = 12_000_000L
-    private const val MAX_REDIRECTS = 2
+    private const val MAX_IMAGE_PIXELS = 16_000_000L
+    private const val MAX_REDIRECTS = 3
 
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(4))
@@ -106,9 +159,10 @@ private object ArtworkImageLoader {
 
     private fun fetch(uri: URI, redirects: Int): BufferedImage? {
         val request = HttpRequest.newBuilder(uri)
-            .timeout(Duration.ofSeconds(6))
+            .timeout(Duration.ofSeconds(8))
             .header("Accept", "image/png, image/jpeg, image/gif, image/webp, image/*;q=0.8")
-            .header("User-Agent", "Hikari Desktop/0.12.165")
+            .header("Referer", "https://v3-cinemeta.strem.io/")
+            .header("User-Agent", "Hikari Desktop/0.12.166")
             .GET()
             .build()
         val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
