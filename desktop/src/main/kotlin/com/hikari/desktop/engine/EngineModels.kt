@@ -95,6 +95,7 @@ fun EngineMedia.toAddonTitle(provider: EngineProvider): AddonTitle = AddonTitle(
     releaseInfo = year?.toString(),
     genres = genres,
     rating = rating,
+    year = year,
 )
 
 fun EngineEpisode.toAddonEpisode(): AddonEpisode = AddonEpisode(
