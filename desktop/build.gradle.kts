@@ -1,5 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.URL
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -97,7 +98,7 @@ val downloadHikariJs = tasks.register("downloadHikariJs") {
                 attempt++
                 try {
                     dest.parentFile.mkdirs()
-                    java.net.URL("$base/$f").openStream().use { input ->
+                    URL("$base/$f").openStream().use { input ->
                         dest.outputStream().use { output -> input.copyTo(output) }
                     }
                     if (dest.length() > 0) {
