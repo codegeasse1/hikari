@@ -60,6 +60,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -107,11 +109,11 @@ internal enum class DesktopPage {
 internal data class DesktopNavigationDestination(val page: DesktopPage, val label: String)
 
 internal val desktopNavigationDestinations = listOf(
-    DesktopNavigationDestination(DesktopPage.HOME, "Beranda"),
-    DesktopNavigationDestination(DesktopPage.SEARCH, "Cari"),
-    DesktopNavigationDestination(DesktopPage.LIBRARY, "Pustaka"),
-    DesktopNavigationDestination(DesktopPage.HISTORY, "Riwayat"),
-    DesktopNavigationDestination(DesktopPage.SOURCES, "Sumber"),
+    DesktopNavigationDestination(DesktopPage.HOME, "Home"),
+    DesktopNavigationDestination(DesktopPage.SEARCH, "Search"),
+    DesktopNavigationDestination(DesktopPage.LIBRARY, "Library"),
+    DesktopNavigationDestination(DesktopPage.HISTORY, "History"),
+    DesktopNavigationDestination(DesktopPage.SOURCES, "Sources"),
 )
 
 internal fun catalogBrowseReturnDestination(origin: DesktopPage): DesktopPage =
@@ -143,13 +145,19 @@ internal fun DesktopSidebar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp, bottom = 24.dp),
             )
+            Text(
+                text = "Menu",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),
+            )
             desktopNavigationDestinations.forEach { destination ->
                 NavigationItem(destination.label, selectedPage == destination.page) { onNavigate(destination.page) }
             }
             Spacer(Modifier.weight(1f))
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
             Text(
-                text = "Katalog dari add-on Stremio",
+                text = "Catalogs from Stremio add-ons",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
@@ -204,9 +212,9 @@ internal fun HomeScreen(
 ) {
     if (sources.isEmpty()) {
         EmptyState(
-            title = "Belum ada sumber katalog",
-            message = "Tambahkan URL add-on Stremio untuk mulai memuat katalog.",
-            actionLabel = "Kelola sumber",
+            title = "No catalog sources yet",
+            message = "Add a Stremio add-on URL to start loading catalogs.",
+            actionLabel = "Manage sources",
             onAction = onOpenSources,
         )
         return
@@ -225,14 +233,14 @@ internal fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Penyedia", style = MaterialTheme.typography.titleMedium)
+                Text("Provider", style = MaterialTheme.typography.titleMedium)
                 Box {
                     OutlinedButton(onClick = { providerMenuOpen = true }) {
                         Text(
                             selectedProvider?.manifest?.name ?: if (selectedProviderUrl == null) {
-                                "Semua penyedia"
+                                "All providers"
                             } else {
-                                selectedProvider?.let { sourceHost(it.url) } ?: "Penyedia tidak tersedia"
+                                selectedProvider?.let { sourceHost(it.url) } ?: "Provider unavailable"
                             },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -243,7 +251,7 @@ internal fun HomeScreen(
                         onDismissRequest = { providerMenuOpen = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Semua penyedia") },
+                            text = { Text("All providers") },
                             onClick = {
                                 onSelectProvider(null)
                                 providerMenuOpen = false
@@ -264,8 +272,8 @@ internal fun HomeScreen(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TextButton(onClick = onOpenCatalogDirectory) { Text("Semua katalog (${catalogs.size})") }
-                TextButton(onClick = onOpenSources) { Text("Kelola sumber") }
+                TextButton(onClick = onOpenCatalogDirectory) { Text("All catalogs (${catalogs.size})") }
+                TextButton(onClick = onOpenSources) { Text("Manage sources") }
             }
         }
 
@@ -280,11 +288,11 @@ internal fun HomeScreen(
         }
 
         when {
-            loading -> ProgressMessage("Memuat katalog dari penyedia yang dipilih…")
+            loading -> ProgressMessage("Loading catalogs from the selected provider…")
             selectedProvider?.error != null -> MessagePanel(
-                title = "Sumber tidak dapat dimuat",
+                title = "Couldn't load sources",
                 message = selectedProvider.error,
-                actionLabel = "Coba lagi",
+                actionLabel = "Try again",
                 onAction = onRetry,
                 isError = true,
             )
@@ -299,9 +307,9 @@ internal fun HomeScreen(
                 val hasCatalogs = visibleManifests.any { it.catalogs.isNotEmpty() }
                 if (visibleManifests.isEmpty() && sourceErrors.isNotEmpty()) {
                     MessagePanel(
-                        title = "Sumber tidak dapat dimuat",
+                        title = "Couldn't load sources",
                         message = sourceErrors.first().error.orEmpty(),
-                        actionLabel = "Coba lagi",
+                        actionLabel = "Try again",
                         onAction = onRetry,
                         isError = true,
                     )
@@ -309,22 +317,22 @@ internal fun HomeScreen(
                 }
                 EmptyState(
                     title = when {
-                        selectedStreamOnly || allStreamOnly -> "Katalog tidak tersedia"
+                        selectedStreamOnly || allStreamOnly -> "No catalogs available"
                         hasCatalogs && selectedMediaFilter != HomeMediaFilter.ALL ->
-                            "Belum ada katalog ${selectedMediaFilter.label.lowercase()}"
-                        else -> "Belum ada katalog"
+                            "No ${selectedMediaFilter.label.lowercase()} catalogs"
+                        else -> "No catalogs yet"
                     },
                     message = when {
                         selectedStreamOnly ->
-                            "Add-on ini menyediakan stream, bukan katalog. Tambahkan add-on katalog untuk menemukan judul. Saat memutar judul, Hikari akan mencoba stream dari add-on yang cocok."
+                            "This add-on provides streams, not catalogs. Add a catalog add-on to discover titles. When you play a title, Hikari will try streams from matching add-ons."
                         allStreamOnly ->
-                            "Add-on terpasang menyediakan stream, bukan katalog. Tambahkan add-on katalog untuk menemukan judul. Saat memutar judul, Hikari akan mencoba stream dari penyedia yang cocok."
+                            "Installed add-ons provide streams, not catalogs. Add a catalog add-on to discover titles. When you play a title, Hikari will try streams from matching providers."
                         hasCatalogs && selectedMediaFilter != HomeMediaFilter.ALL ->
-                            "Tidak ada katalog ${selectedMediaFilter.label.lowercase()} dari penyedia yang dipilih. Coba Semua atau ubah penyedia."
+                            "No ${selectedMediaFilter.label.lowercase()} catalogs from this provider. Try All or switch providers."
                         else ->
-                            "Add-on terpasang belum menyediakan katalog. Tambahkan add-on katalog untuk menelusuri judul."
+                            "Installed add-ons don't provide any catalogs yet. Add a catalog add-on to browse titles."
                     },
-                    actionLabel = "Kelola sumber",
+                    actionLabel = "Manage sources",
                     onAction = onOpenSources,
                 )
             }
@@ -334,12 +342,12 @@ internal fun HomeScreen(
             ) {
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Katalog", style = MaterialTheme.typography.headlineSmall)
+                            Text("Catalogs", style = MaterialTheme.typography.headlineSmall)
                             Text(
                                 if (selectedProvider == null) {
-                                    "Judul dari semua add-on katalog yang terpasang"
+                                    "Titles from all installed catalog add-ons"
                                 } else {
-                                    "Judul dari ${selectedProvider.manifest?.name ?: sourceHost(selectedProvider.url)}"
+                                    "Titles from ${selectedProvider.manifest?.name ?: sourceHost(selectedProvider.url)}"
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -349,7 +357,7 @@ internal fun HomeScreen(
                     if (sourceErrors.isNotEmpty()) {
                         item {
                             MessagePanel(
-                                title = "Sebagian penyedia tidak dapat dimuat",
+                                title = "Some providers couldn't be loaded",
                                 message = sourceErrors.first().error.orEmpty(),
                                 isError = true,
                             )
@@ -383,31 +391,31 @@ internal fun CatalogDirectoryScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("Kembali") }
+            TextButton(onClick = onBack) { Text("Back") }
             if (!loading && catalogs.isNotEmpty()) {
-                Text("${catalogs.size} katalog", style = MaterialTheme.typography.bodySmall)
+                Text("${catalogs.size} catalogs", style = MaterialTheme.typography.bodySmall)
             }
         }
         if (sourceErrors.isNotEmpty()) {
             MessagePanel(
                 title = catalogDirectoryErrorTitle(sources.size, sourceErrors.size),
                 message = sourceErrors.first().error.orEmpty(),
-                actionLabel = "Coba lagi",
+                actionLabel = "Try again",
                 onAction = onRetry,
                 isError = true,
             )
         }
         when (catalogDirectoryContentState(catalogs.size, loading, sourceErrors.isNotEmpty())) {
-            CatalogDirectoryContentState.LOADING -> ProgressMessage("Memuat sumber katalog…")
+            CatalogDirectoryContentState.LOADING -> ProgressMessage("Loading catalog sources…")
             CatalogDirectoryContentState.SOURCE_ERROR -> Unit
             CatalogDirectoryContentState.EMPTY -> EmptyState(
-                title = if (sources.isEmpty()) "Belum ada sumber katalog" else "Belum ada katalog",
+                title = if (sources.isEmpty()) "No catalog sources yet" else "No catalogs yet",
                 message = if (sources.isEmpty()) {
-                    "Tambahkan add-on Stremio untuk mulai menelusuri katalog."
+                    "Add a Stremio add-on to start browsing catalogs."
                 } else {
-                    "Sumber yang terpasang belum mendeklarasikan katalog untuk ditelusuri."
+                    "Installed sources haven't declared any catalogs to browse."
                 },
-                actionLabel = "Kelola sumber",
+                actionLabel = "Manage sources",
                 onAction = onOpenSources,
             )
             CatalogDirectoryContentState.CONTENT -> LazyColumn(
@@ -435,7 +443,7 @@ internal fun CatalogDirectoryScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            OutlinedButton(onClick = { onOpenCatalog(selection) }) { Text("Buka") }
+                            OutlinedButton(onClick = { onOpenCatalog(selection) }) { Text("Open") }
                         }
                     }
                 }
@@ -445,8 +453,8 @@ internal fun CatalogDirectoryScreen(
 }
 
 private fun catalogMediaLabel(type: String): String = when (type.lowercase()) {
-    "movie", "film" -> "Film"
-    "series", "tv" -> "Serial"
+    "movie", "film" -> "Movie"
+    "series", "tv" -> "Series"
     else -> type
 }
 
@@ -481,22 +489,22 @@ internal fun LibraryScreen(
     }
 
     when {
-        loading -> ProgressMessage("Memuat pustaka…")
+        loading -> ProgressMessage("Loading library…")
         error != null -> MessagePanel(
-            title = "Pustaka tidak dapat dimuat",
+            title = "Couldn't load your library",
             message = error,
-            actionLabel = "Coba lagi",
+            actionLabel = "Try again",
             onAction = onRetry,
             isError = true,
         )
         titles.isEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             EmptyState(
-                title = "Pustaka kosong",
-                message = "Judul yang disimpan dari halaman detail akan muncul di sini.",
-                actionLabel = "Jelajahi beranda",
+                title = "Your library is empty",
+                message = "Titles you save from detail pages will appear here.",
+                actionLabel = "Browse home",
                 onAction = onBrowseHome,
             )
-            TextButton(onClick = { categoryManagerOpen = true }) { Text("Kelola kategori") }
+            TextButton(onClick = { categoryManagerOpen = true }) { Text("Manage categories") }
         }
         else -> Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
@@ -505,14 +513,14 @@ internal fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (selectedCategoryId == null) "${titles.size} judul" else "${visibleTitles.size} dari ${titles.size} judul",
+                    if (selectedCategoryId == null) "${titles.size} titles" else "${visibleTitles.size} of ${titles.size} titles",
                     style = MaterialTheme.typography.bodySmall,
                 )
-                TextButton(onClick = { categoryManagerOpen = true }) { Text("Kelola kategori") }
+                TextButton(onClick = { categoryManagerOpen = true }) { Text("Manage categories") }
             }
             if (categoryError != null) {
                 MessagePanel(
-                    title = "Kategori tidak dapat diperbarui",
+                    title = "Couldn't update categories",
                     message = categoryError,
                     isError = true,
                 )
@@ -522,7 +530,7 @@ internal fun LibraryScreen(
                     FilterChip(
                         selected = selectedCategoryId == null,
                         onClick = { selectedCategoryId = null },
-                        label = { Text("Semua") },
+                        label = { Text("All") },
                     )
                 }
                 items(categories, key = LibraryCategory::id) { category ->
@@ -536,10 +544,10 @@ internal fun LibraryScreen(
             if (visibleTitles.isEmpty()) {
                 val activeCategory = categories.firstOrNull { it.id == selectedCategoryId }
                 EmptyState(
-                    title = "Belum ada judul di kategori ini",
-                    message = activeCategory?.let { "Tambahkan judul ke ${it.name} dari kartu di Pustaka." }
-                        ?: "Pilih kategori lain atau tampilkan semua judul.",
-                    actionLabel = "Tampilkan semua judul",
+                    title = "No titles in this category",
+                    message = activeCategory?.let { "Add titles to ${it.name} from a library card." }
+                        ?: "Pick another category or show all titles.",
+                    actionLabel = "Show all titles",
                     onAction = { selectedCategoryId = null },
                 )
             } else {
@@ -566,8 +574,8 @@ internal fun LibraryScreen(
                                     modifier = Modifier.padding(horizontal = 8.dp),
                                 )
                             }
-                            TextButton(onClick = { categoryTitle = title }) { Text("Atur kategori") }
-                            TextButton(onClick = { onRemoveTitle(title) }) { Text("Hapus dari Pustaka") }
+                            TextButton(onClick = { categoryTitle = title }) { Text("Set categories") }
+                            TextButton(onClick = { onRemoveTitle(title) }) { Text("Remove from library") }
                         }
                     }
                 }
@@ -615,18 +623,18 @@ internal fun WatchHistoryScreen(
     var confirmClear by remember { mutableStateOf(false) }
 
     when {
-        loading -> ProgressMessage("Memuat riwayat…")
+        loading -> ProgressMessage("Loading history…")
         error != null -> MessagePanel(
-            title = "Riwayat tidak dapat dimuat",
+            title = "Couldn't load history",
             message = error,
-            actionLabel = "Coba lagi",
+            actionLabel = "Try again",
             onAction = onRetry,
             isError = true,
         )
         entries.isEmpty() -> EmptyState(
-            title = "Riwayat masih kosong",
-            message = "Judul dan episode yang berhasil dibuka akan muncul di sini. Hikari tidak dapat membaca progres dari pemutar eksternal.",
-            actionLabel = "Jelajahi beranda",
+            title = "No history yet",
+            message = "Titles and episodes you open will appear here. Hikari can't read playback progress from external players.",
+            actionLabel = "Browse home",
             onAction = onBrowseHome,
         )
         else -> Column(
@@ -638,11 +646,11 @@ internal fun WatchHistoryScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("${entries.size} peluncuran", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { confirmClear = true }) { Text("Hapus semua") }
+                Text(if (entries.size == 1) "1 launch" else "${entries.size} launches", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { confirmClear = true }) { Text("Clear all") }
             }
             Text(
-                "Hanya waktu peluncuran berhasil yang dicatat; progres pemutaran di aplikasi eksternal tidak tersedia.",
+                "Only successful launch times are recorded; playback progress in external apps stays unavailable.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -666,18 +674,18 @@ internal fun WatchHistoryScreen(
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            title = { Text("Hapus semua riwayat?") },
-            text = { Text("Semua catatan peluncuran di perangkat ini akan dihapus.") },
+            title = { Text("Clear all history?") },
+            text = { Text("Every launch record on this device will be deleted.") },
             confirmButton = {
                 TextButton(
                     onClick = {
                         onClear()
                         confirmClear = false
                     },
-                ) { Text("Hapus semua") }
+                ) { Text("Clear all") }
             },
             dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("Batal") }
+                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
             },
         )
     }
@@ -721,14 +729,14 @@ private fun WatchHistoryRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "Berhasil dibuka ${historyTimestampLabel(entry.launchedAtMillis)}",
+                    "Opened ${historyTimestampLabel(entry.launchedAtMillis)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onPlayAgain) { Text("Putar lagi") }
-                    TextButton(onClick = onOpenTitle) { Text("Buka detail") }
-                    TextButton(onClick = onRemove) { Text("Hapus") }
+                    OutlinedButton(onClick = onPlayAgain) { Text("Play again") }
+                    TextButton(onClick = onOpenTitle) { Text("Open details") }
+                    TextButton(onClick = onRemove) { Text("Delete") }
                 }
             }
         }
@@ -738,8 +746,8 @@ private fun WatchHistoryRow(
 private fun historyTimestampLabel(timestampMillis: Long): String = runCatching {
     Instant.ofEpochMilli(timestampMillis)
         .atZone(ZoneId.systemDefault())
-        .format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.forLanguageTag("id-ID")))
-}.getOrDefault("waktu tidak diketahui")
+        .format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.ENGLISH))
+}.getOrDefault("unknown time")
 
 @Composable
 private fun LibraryCategoryAssignmentDialog(
@@ -758,7 +766,7 @@ private fun LibraryCategoryAssignmentDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Kategori Pustaka") },
+        title = { Text("Library categories") },
         text = {
             Column(
                 modifier = Modifier.widthIn(max = 480.dp),
@@ -766,7 +774,7 @@ private fun LibraryCategoryAssignmentDialog(
             ) {
                 Text(title.title, style = MaterialTheme.typography.bodyMedium)
                 if (categories.isEmpty()) {
-                    Text("Belum ada kategori. Buat kategori baru di bawah.")
+                    Text("No categories yet. Create one below.")
                 } else {
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 240.dp),
@@ -801,7 +809,7 @@ private fun LibraryCategoryAssignmentDialog(
                             inputError = null
                         },
                         singleLine = true,
-                        label = { Text("Kategori baru") },
+                        label = { Text("New category") },
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(
@@ -817,21 +825,21 @@ private fun LibraryCategoryAssignmentDialog(
                                         newName = ""
                                         inputError = null
                                     }
-                                    .onFailure { inputError = "Kategori tidak dapat dibuat." }
+                                    .onFailure { inputError = "Couldn't create the category." }
                             }
                         },
                     ) {
-                        Text("Tambah")
+                        Text("Add")
                     }
                 }
                 inputError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(selected) }) { Text("Simpan") }
+            TextButton(onClick = { onConfirm(selected) }) { Text("Save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Batal") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
 }
@@ -853,13 +861,13 @@ private fun LibraryCategoryManagerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Kelola kategori") },
+        title = { Text("Manage categories") },
         text = {
             Column(
                 modifier = Modifier.widthIn(max = 560.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("Kategori dapat dipakai untuk mengelompokkan beberapa judul.")
+                Text("Categories group titles together across your library.")
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 300.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -876,7 +884,7 @@ private fun LibraryCategoryManagerDialog(
                                             message = null
                                         },
                                         singleLine = true,
-                                        label = { Text("Nama kategori") },
+                                        label = { Text("Category name") },
                                         modifier = Modifier.weight(1f),
                                     )
                                     TextButton(
@@ -887,10 +895,10 @@ private fun LibraryCategoryManagerDialog(
                                                     editingId = null
                                                     message = null
                                                 }
-                                                .onFailure { message = "Kategori tidak dapat diubah." }
+                                                .onFailure { message = "Couldn't update the category." }
                                         },
-                                    ) { Text("Simpan") }
-                                    TextButton(onClick = { editingId = null }) { Text("Batal") }
+                                    ) { Text("Save") }
+                                    TextButton(onClick = { editingId = null }) { Text("Cancel") }
                                 }
                                 if (nameError != null) Text(nameError, color = MaterialTheme.colorScheme.error)
                             }
@@ -901,7 +909,7 @@ private fun LibraryCategoryManagerDialog(
                                         Text(category.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         if (category.builtIn) {
                                             Text(
-                                                "Bawaan",
+                                                "Built-in",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
@@ -910,19 +918,19 @@ private fun LibraryCategoryManagerDialog(
                                     TextButton(
                                         enabled = categories.firstOrNull()?.id != category.id,
                                         onClick = { onMoveCategory(category.id, -1) },
-                                    ) { Text("Naik") }
+                                    ) { Text("Move up") }
                                     TextButton(
                                         enabled = categories.lastOrNull()?.id != category.id,
                                         onClick = { onMoveCategory(category.id, 1) },
-                                    ) { Text("Turun") }
+                                    ) { Text("Move down") }
                                     TextButton(
                                         onClick = {
                                             editingId = category.id
                                             editingName = category.name
                                             message = null
                                         },
-                                    ) { Text("Ubah") }
-                                    TextButton(onClick = { pendingDelete = category }) { Text("Hapus") }
+                                    ) { Text("Rename") }
+                                    TextButton(onClick = { pendingDelete = category }) { Text("Delete") }
                                 }
                                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                             }
@@ -937,7 +945,7 @@ private fun LibraryCategoryManagerDialog(
                             message = null
                         },
                         singleLine = true,
-                        label = { Text("Kategori baru") },
+                        label = { Text("New category") },
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(
@@ -948,37 +956,37 @@ private fun LibraryCategoryManagerDialog(
                                     newName = ""
                                     message = null
                                 }
-                                .onFailure { message = "Kategori tidak dapat dibuat." }
+                                .onFailure { message = "Couldn't create the category." }
                         },
-                    ) { Text("Tambah") }
+                    ) { Text("Add") }
                 }
                 message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Tutup") }
+            TextButton(onClick = onDismiss) { Text("Close") }
         },
     )
 
     pendingDelete?.let { category ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("Hapus kategori ${category.name}?") },
+            title = { Text("Delete category ${category.name}?") },
             text = {
-                Text("Judul yang disimpan tetap ada, tetapi akan dikeluarkan dari kategori ini.")
+                Text("Saved titles stay in your library but leave this category.")
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         runCatching { onDeleteCategory(category.id) }
                             .onSuccess { message = null }
-                            .onFailure { message = "Kategori tidak dapat dihapus." }
+                            .onFailure { message = "Couldn't delete the category." }
                         pendingDelete = null
                     },
-                ) { Text("Hapus") }
+                ) { Text("Delete") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Batal") }
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
             },
         )
     }
@@ -989,9 +997,9 @@ private fun categoryNameError(
     categories: List<LibraryCategory>,
     excludingId: String? = null,
 ): String? = when {
-    name.isBlank() -> "Masukkan nama kategori."
+    name.isBlank() -> "Enter a category name."
     categories.any { it.id != excludingId && it.name.equals(name.trim(), ignoreCase = true) } ->
-        "Nama kategori sudah digunakan."
+        "That category name is already used."
     else -> null
 }
 
@@ -1017,23 +1025,23 @@ private fun CatalogShelf(
                 onClick = {
                     onOpenCatalog(HomeCatalogSelection(shelf.addonUrl, shelf.addonName, shelf.catalog))
                 },
-            ) { Text("Lihat semua") }
+            ) { Text("See all") }
         }
         when {
             shelf.loading -> Text(
-                "Memuat judul…",
+                "Loading titles…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             shelf.error != null -> MessagePanel(
-                title = "Katalog ini gagal dimuat",
+                title = "Couldn't load the catalog",
                 message = shelf.error,
-                actionLabel = "Muat ulang sumber",
+                actionLabel = "Reload sources",
                 onAction = onRetry,
                 isError = true,
             )
             shelf.titles.isEmpty() -> Text(
-                "Belum ada judul di katalog ini.",
+                "No titles in this catalog yet.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1067,9 +1075,9 @@ internal fun CatalogBrowseScreen(
     val target = state.target
     if (target == null) {
         EmptyState(
-            title = "Katalog tidak tersedia",
-            message = "Pilih katalog dari beranda untuk menelusuri judul.",
-            actionLabel = "Kembali ke beranda",
+            title = "Catalog unavailable",
+            message = "Pick a catalog from Home to browse titles.",
+            actionLabel = "Back to Home",
             onAction = onBack,
         )
         return
@@ -1102,9 +1110,9 @@ internal fun CatalogBrowseScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("Kembali") }
+            TextButton(onClick = onBack) { Text("Back") }
             if (state.canShowManualLoadAction()) {
-                OutlinedButton(onClick = onLoadNextPage) { Text("Muat lebih banyak") }
+                OutlinedButton(onClick = onLoadNextPage) { Text("Load more") }
             }
         }
         if (target.supportsSearch) {
@@ -1118,7 +1126,7 @@ internal fun CatalogBrowseScreen(
                     value = state.searchText,
                     onValueChange = onSearchTextChange,
                     modifier = Modifier.weight(1f),
-                    label = { Text("Cari di katalog") },
+                    label = { Text("Search this catalog") },
                     singleLine = true,
                     enabled = !state.loading,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -1128,35 +1136,35 @@ internal fun CatalogBrowseScreen(
                     onClick = onSearch,
                     enabled = !state.loading && requestedSearchQuery != state.appliedSearchQuery,
                 ) {
-                    Text(if (requestedSearchQuery == null && state.appliedSearchQuery != null) "Tampilkan semua" else "Cari")
+                    Text(if (requestedSearchQuery == null && state.appliedSearchQuery != null) "Show all" else "Search")
                 }
             }
         } else {
             Text(
-                "Add-on ini tidak menyatakan dukungan pencarian untuk katalog ini.",
+                "This add-on doesn't advertise search for this catalog.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         when {
             state.loading && state.titles.isEmpty() -> ProgressMessage(
-                if (state.appliedSearchQuery == null) "Memuat judul dari katalog…" else "Mencari di katalog…",
+                if (state.appliedSearchQuery == null) "Loading catalog titles…" else "Searching this catalog…",
             )
             state.error != null && state.titles.isEmpty() -> MessagePanel(
-                title = if (state.appliedSearchQuery == null) "Katalog gagal dimuat" else "Pencarian katalog gagal",
+                title = if (state.appliedSearchQuery == null) "Couldn't load the catalog" else "Catalog search failed",
                 message = state.error,
-                actionLabel = "Coba lagi",
+                actionLabel = "Try again",
                 onAction = onLoadNextPage,
                 isError = true,
             )
             state.titles.isEmpty() && state.appliedSearchQuery != null -> EmptyState(
-                title = "Tidak ada hasil untuk pencarian ini",
-                message = "Coba kata lain, atau kosongkan kolom pencarian dan pilih Tampilkan semua.",
+                title = "No results for this search",
+                message = "Try different words, or clear the search field and choose Show all.",
             )
             state.titles.isEmpty() -> EmptyState(
-                title = "Katalog ini belum memiliki judul",
-                message = "Add-on belum mengembalikan judul untuk katalog ini.",
-                actionLabel = "Kembali ke beranda",
+                title = "This catalog has no titles yet",
+                message = "The add-on didn't return any titles for this catalog.",
+                actionLabel = "Back to Home",
                 onAction = onBack,
             )
             else -> LazyVerticalGrid(
@@ -1186,24 +1194,24 @@ internal fun CatalogBrowseScreen(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp))
                             Text(
-                                if (state.appliedSearchQuery == null) "  Memuat judul berikutnya…" else "  Memuat hasil berikutnya…",
+                                if (state.appliedSearchQuery == null) "  Loading more titles…" else "  Loading more results…",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         state.error != null -> MessagePanel(
                             title = if (state.appliedSearchQuery == null) {
-                                "Halaman berikutnya gagal dimuat"
+                                "Couldn't load the next page"
                             } else {
-                                "Halaman hasil pencarian gagal dimuat"
+                                "Couldn't load the next results page"
                             },
                             message = state.error,
-                            actionLabel = "Coba lagi",
+                            actionLabel = "Try again",
                             onAction = onLoadNextPage,
                             isError = true,
                         )
                         state.hasMore -> Spacer(Modifier.height(8.dp))
                         else -> Text(
-                            if (state.appliedSearchQuery == null) "Sudah mencapai akhir katalog." else "Sudah mencapai akhir hasil pencarian.",
+                            if (state.appliedSearchQuery == null) "You've reached the end of the catalog." else "You've reached the end of the search results.",
                             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1243,9 +1251,9 @@ internal fun SearchScreen(
     var draftSelectedSearchSourceUrls by remember { mutableStateOf(emptySet<String>()) }
     val selectedSources = searchSources.filter { it.url in selectedSearchSourceUrls }
     val sourceScopeLabel = when {
-        selectedSearchSourceUrls.isEmpty() || selectedSources.isEmpty() -> "Semua sumber"
+        selectedSearchSourceUrls.isEmpty() || selectedSources.isEmpty() -> "All sources"
         selectedSources.size == 1 -> selectedSources.single().name
-        else -> "${selectedSources.size} sumber"
+        else -> "${selectedSources.size} sources"
     }
     Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(
@@ -1257,14 +1265,14 @@ internal fun SearchScreen(
                 value = query,
                 onValueChange = onQueryChange,
                 modifier = Modifier.weight(1f),
-                label = { Text("Nama film atau serial") },
+                label = { Text("Movie or series title") },
                 singleLine = true,
                 enabled = !loading && hasSources,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { if (!loading && hasSources) onSearch() }),
             )
             Button(onClick = onSearch, enabled = !loading && hasSources && query.isNotBlank()) {
-                if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Cari")
+                if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Search")
             }
         }
 
@@ -1274,7 +1282,7 @@ internal fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    "Sumber",
+                    "Sources",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1300,7 +1308,7 @@ internal fun SearchScreen(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     RadioButton(selected = draftSelectedSearchSourceUrls.isEmpty(), onClick = null)
-                                    Text("Semua sumber")
+                                    Text("All sources")
                                 }
                             },
                             onClick = {
@@ -1324,7 +1332,7 @@ internal fun SearchScreen(
                             )
                         }
                         DropdownMenuItem(
-                            text = { Text("Terapkan") },
+                            text = { Text("Apply") },
                             onClick = {
                                 onSearchSourcesSelected(draftSelectedSearchSourceUrls)
                                 sourceMenuOpen = false
@@ -1348,16 +1356,16 @@ internal fun SearchScreen(
 
         if (!hasSources) {
             EmptyState(
-                title = "Tambahkan sumber sebelum mencari",
-                message = "Pencarian memakai katalog add-on Stremio yang Anda pasang.",
-                actionLabel = "Kelola sumber",
+                title = "Add sources before searching",
+                message = "Search uses the catalogs of your installed Stremio add-ons.",
+                actionLabel = "Manage sources",
                 onAction = onOpenSources,
             )
         } else if (loading) {
-            ProgressMessage("Mencari di katalog…")
+            ProgressMessage("Searching catalogs…")
         } else {
             if (error != null) MessagePanel(
-                title = if (partialFailure) "Pencarian belum lengkap" else "Pencarian gagal",
+                title = if (partialFailure) "Search is incomplete" else "Search failed",
                 message = error,
                 isError = true,
             )
@@ -1366,13 +1374,13 @@ internal fun SearchScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("Hasil pencarian", style = MaterialTheme.typography.titleLarge)
+                    Text("Search results (${visibleResults.size})", style = MaterialTheme.typography.titleLarge)
                     SearchResultFilters(results, searchFilters) { searchFilters = it }
                     if (visibleResults.isEmpty()) {
                         EmptyState(
-                            title = "Tidak ada hasil sesuai filter",
-                            message = "Ubah filter atau reset untuk melihat hasil lainnya.",
-                            actionLabel = "Reset filter",
+                            title = "No results match the filters",
+                            message = "Adjust the filters or reset to see more results.",
+                            actionLabel = "Reset filters",
                             onAction = { searchFilters = SearchFilters() },
                         )
                     } else {
@@ -1398,19 +1406,19 @@ internal fun SearchScreen(
                 }
             } else when (searchResultsPresentation(query, results, error, partialFailure)) {
                 SearchResultsPresentation.PARTIAL_FAILURE_WITHOUT_MATCH -> EmptyState(
-                    title = "Belum ada hasil yang cocok",
-                    message = "Sumber yang merespons tidak menemukan judul ini. Periksa ejaan, atau pilih satu sumber untuk mengisolasi add-on yang bermasalah.",
+                    title = "No matching results yet",
+                    message = "Responding sources didn't find this title. Check the spelling, or select a single source to isolate the problem add-on.",
                 )
                 SearchResultsPresentation.SOURCE_FAILURE_WITHOUT_MATCH -> EmptyState(
-                    title = "Hasil pencarian tidak tersedia",
-                    message = "Lihat pesan error di atas, periksa koneksi atau endpoint sumber, lalu coba lagi.",
+                    title = "Search results unavailable",
+                    message = "See the error above, check your connection or the source endpoint, then try again.",
                 )
                 SearchResultsPresentation.NO_MATCH -> EmptyState(
-                    title = "Tidak ada judul yang cocok",
-                    message = "Coba kata kunci lain atau periksa apakah sumber mendukung pencarian.",
+                    title = "No matching titles",
+                    message = "Try different keywords, or check whether the source supports search.",
                 )
                 SearchResultsPresentation.QUERY_REQUIRED -> Text(
-                    "Masukkan judul, lalu tekan Cari atau Enter.",
+                    "Enter a title, then press Search or Enter.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1434,7 +1442,7 @@ private fun SearchResultFilters(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "Tipe",
+                "Type",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1464,7 +1472,7 @@ private fun SearchResultFilters(
                 },
             )
             MultiSelectSearchFilterChip(
-                label = "Tahun",
+                label = "Year",
                 options = years,
                 selected = filters.years,
                 optionLabel = Int::toString,
@@ -1477,7 +1485,7 @@ private fun SearchResultFilters(
                 onFiltersChange(filters.copy(minimumRating = rating))
             }
             if (filters.isActive) {
-                TextButton(onClick = { onFiltersChange(SearchFilters()) }) { Text("Reset filter") }
+                TextButton(onClick = { onFiltersChange(SearchFilters()) }) { Text("Reset filters") }
             }
         }
         Row(
@@ -1486,7 +1494,7 @@ private fun SearchResultFilters(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Sertakan rilisan mendatang",
+                "Include upcoming releases",
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1494,7 +1502,7 @@ private fun SearchResultFilters(
             Switch(
                 checked = filters.includeUpcoming,
                 onCheckedChange = { onFiltersChange(filters.copy(includeUpcoming = it)) },
-                modifier = Modifier.semantics { contentDescription = "Sertakan rilisan mendatang" },
+                modifier = Modifier.semantics { contentDescription = "Include upcoming releases" },
             )
         }
     }
@@ -1546,7 +1554,7 @@ private fun RatingSearchFilterChip(
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
-                text = { Text("Semua rating") },
+                text = { Text("All ratings") },
                 onClick = {
                     onRatingSelected(null)
                     expanded = false
@@ -1554,7 +1562,7 @@ private fun RatingSearchFilterChip(
             )
             listOf(6.0, 7.0, 8.0, 9.0).forEach { rating ->
                 DropdownMenuItem(
-                    text = { Text("${rating.toInt()} ke atas") },
+                    text = { Text("${rating.toInt()} and up") },
                     onClick = {
                         onRatingSelected(rating)
                         expanded = false
@@ -1582,8 +1590,8 @@ private fun RecentSearches(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("Pencarian terakhir", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onClear) { Text("Hapus semua") }
+                Text("Recent searches", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onClear) { Text("Clear all") }
             }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(queries, key = { it.lowercase() }) { query ->
@@ -1601,10 +1609,10 @@ private fun RecentSearches(
                         }
                         TextButton(
                             onClick = { onRemove(query) },
-                            modifier = Modifier.semantics { contentDescription = "Hapus pencarian: $query" },
+                            modifier = Modifier.semantics { contentDescription = "Remove search: $query" },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                         ) {
-                            Text("Hapus")
+                            Text("Delete")
                         }
                     }
                 }
@@ -1635,9 +1643,9 @@ internal fun SourceManagerScreen(
                 modifier = Modifier.fillMaxWidth().padding(22.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Tambahkan add-on", style = MaterialTheme.typography.titleLarge)
+                Text("Add an add-on", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "Tempel URL manifest atau alamat add-on Stremio. Hikari memeriksa manifest sebelum menyimpannya.",
+                    "Paste a manifest URL or Stremio add-on address. Hikari checks the manifest before saving it.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1650,15 +1658,15 @@ internal fun SourceManagerScreen(
                         value = url,
                         onValueChange = onUrlChange,
                         modifier = Modifier.weight(1f),
-                        label = { Text("URL sumber") },
-                        placeholder = { Text("https://contoh.addon/manifest.json") },
+                        label = { Text("Source URL") },
+                        placeholder = { Text("https://example.addon/manifest.json") },
                         singleLine = true,
                         enabled = !adding,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { if (!adding) onAdd() }),
                     )
                     Button(onClick = onAdd, enabled = !adding && url.isNotBlank()) {
-                        if (adding) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Tambah")
+                        if (adding) CircularProgressIndicator(modifier = Modifier.size(18.dp)) else Text("Add")
                     }
                 }
                 if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
@@ -1670,14 +1678,14 @@ internal fun SourceManagerScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Sumber terpasang", style = MaterialTheme.typography.titleLarge)
-            if (sources.any { it.error != null }) TextButton(onClick = onRetry) { Text("Periksa ulang") }
+            Text("Installed sources", style = MaterialTheme.typography.titleLarge)
+            if (sources.any { it.error != null }) TextButton(onClick = onRetry) { Text("Recheck") }
         }
 
         if (sources.isEmpty()) {
             EmptyState(
-                title = "Daftar sumber masih kosong",
-                message = "Sumber yang berhasil ditambahkan akan muncul di sini.",
+                title = "No sources yet",
+                message = "Sources you add will appear here.",
             )
         } else {
             sources.forEach { source ->
@@ -1724,15 +1732,15 @@ private fun SourceCard(
                 }
                 when {
                     source.loading -> CircularProgressIndicator(modifier = Modifier.size(20.dp))
-                    source.error != null -> Text("Perlu diperiksa", color = MaterialTheme.colorScheme.error)
-                    source.manifest != null -> Text("Siap", color = MaterialTheme.colorScheme.primary)
+                    source.error != null -> Text("Needs attention", color = MaterialTheme.colorScheme.error)
+                    source.manifest != null -> Text("Ready", color = MaterialTheme.colorScheme.primary)
                 }
             }
             source.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (source.manifest != null) OutlinedButton(onClick = onUse) { Text("Gunakan") }
-                if (source.error != null) OutlinedButton(onClick = onRetry) { Text("Coba lagi") }
-                TextButton(onClick = onRemove) { Text("Hapus") }
+                if (source.manifest != null) OutlinedButton(onClick = onUse) { Text("Use") }
+                if (source.error != null) OutlinedButton(onClick = onRetry) { Text("Try again") }
+                TextButton(onClick = onRemove) { Text("Delete") }
             }
         }
     }
@@ -1757,7 +1765,7 @@ internal fun DetailScreen(
     val episodeState = remember(episodes, selectedSeason) {
         detailEpisodeState(episodes, selectedSeason)
     }
-    val seasonLabel = { season: Int -> if (season > 0) "Musim $season" else "Spesial" }
+    val seasonLabel = { season: Int -> if (season > 0) "Season $season" else "Specials" }
     Row(
         modifier = Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -1765,7 +1773,7 @@ internal fun DetailScreen(
         ArtworkPoster(
             url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
             title = title.title,
-            modifier = Modifier.width(252.dp).aspectRatio(0.68f),
+            modifier = Modifier.width(252.dp).aspectRatio(0.68f).clip(RoundedCornerShape(16.dp)),
         )
         LazyColumn(
             modifier = Modifier.fillMaxHeight().weight(1f),
@@ -1774,13 +1782,14 @@ internal fun DetailScreen(
         ) {
             item {
                 TextButton(onClick = onBack, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)) {
-                    Text("Kembali")
+                    Text("Back")
                 }
                 Text(title.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
                 Text(
                     buildString {
                         append(typeLabel(title.type))
                         title.releaseInfo?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
+                        title.rating?.let { append(" · ★ ").append(it) }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1795,21 +1804,21 @@ internal fun DetailScreen(
                 Spacer(Modifier.height(2.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = onPlay) {
-                        Text(if (title.type.equals("movie", ignoreCase = true)) "Pilih pemutar" else "Putar episode pertama")
+                        Text(if (title.type.equals("movie", ignoreCase = true)) "Choose a stream" else "Play the first episode")
                     }
                     OutlinedButton(onClick = onToggleSaved) {
-                        Text(if (isSaved) "Hapus dari Pustaka" else "Simpan ke Pustaka")
+                        Text(if (isSaved) "Remove from library" else "Save to library")
                     }
                 }
-                libraryError?.let { Text("Pustaka: $it", color = MaterialTheme.colorScheme.error) }
+                libraryError?.let { Text("Library: $it", color = MaterialTheme.colorScheme.error) }
                 if (playbackMessage != null) {
                     Text(playbackMessage, color = MaterialTheme.colorScheme.primary)
                 }
-                if (loading) ProgressMessage("Memuat detail judul…")
+                if (loading) ProgressMessage("Loading title details…")
                 if (error != null) MessagePanel(
-                    title = "Detail tidak dapat dimuat",
+                    title = "Couldn't load details",
                     message = error,
-                    actionLabel = "Kembali ke katalog",
+                    actionLabel = "Back to the catalog",
                     onAction = onBack,
                     isError = true,
                 )
@@ -1820,7 +1829,7 @@ internal fun DetailScreen(
             if (!loading && episodes.isEmpty() && title.type.equals("series", ignoreCase = true)) {
                 item {
                     Text(
-                        "Daftar episode tidak disediakan oleh add-on ini.",
+                        "This add-on doesn't provide an episode list.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1833,11 +1842,11 @@ internal fun DetailScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Episode", style = MaterialTheme.typography.titleLarge)
+                        Text("Episodes (${episodes.size})", style = MaterialTheme.typography.titleLarge)
                         if (episodeState.showsSeasonSelector) {
                             Box {
                                 OutlinedButton(onClick = { seasonMenuOpen = true }) {
-                                    Text(episodeState.activeSeason?.let(seasonLabel) ?: "Pilih musim")
+                                    Text(episodeState.activeSeason?.let(seasonLabel) ?: "Choose a season")
                                 }
                                 DropdownMenu(
                                     expanded = seasonMenuOpen,
@@ -1877,7 +1886,7 @@ private fun EpisodeRow(episode: AddonEpisode, onPlay: () -> Unit) {
                 Text("S${episode.season} · E${episode.number}", color = MaterialTheme.colorScheme.primary)
                 Text(episode.title, style = MaterialTheme.typography.titleMedium)
             }
-            OutlinedButton(onClick = onPlay) { Text("Pilih stream") }
+            OutlinedButton(onClick = onPlay) { Text("Choose a stream") }
         }
     }
 }
@@ -1891,11 +1900,26 @@ private fun TitleCard(title: AddonTitle, modifier: Modifier = Modifier, onClick:
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column {
-            ArtworkPoster(
-                url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
-                title = title.title,
-                modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
-            )
+            Box {
+                ArtworkPoster(
+                    url = posterArtworkUrl(title.posterUrl, title.backgroundUrl),
+                    title = title.title,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(0.7f),
+                )
+                Surface(
+                    color = Color(0xCC0B0E1A),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                ) {
+                    Text(
+                        typeLabel(title.type),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -1907,8 +1931,10 @@ private fun TitleCard(title: AddonTitle, modifier: Modifier = Modifier, onClick:
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    listOfNotNull(typeLabel(title.type), title.releaseInfo?.takeIf(String::isNotBlank))
-                        .joinToString(" · "),
+                    listOfNotNull(
+                        title.releaseInfo?.takeIf(String::isNotBlank),
+                        title.rating?.let { "★ $it" },
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1938,18 +1964,18 @@ internal fun StreamPickerDialog(
                 modifier = Modifier.padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                Text("Pilih stream", style = MaterialTheme.typography.titleLarge)
+                Text("Choose a stream", style = MaterialTheme.typography.titleLarge)
                 Text(title, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 when {
-                    loading -> ProgressMessage("Meminta stream dari add-on…")
+                    loading -> ProgressMessage("Requesting streams from the add-on…")
                     error != null -> MessagePanel(
-                        title = "Stream belum tersedia",
+                        title = "Stream unavailable",
                         message = error,
                         isError = true,
                     )
                     streams.isEmpty() -> Text(
-                        "Add-on belum mengembalikan pilihan stream.",
+                        "The add-on didn't return any stream options.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     else -> LazyColumn(
@@ -1966,9 +1992,9 @@ internal fun StreamPickerDialog(
                                     Text(stream.name.ifBlank { "Stream" }, fontWeight = FontWeight.SemiBold)
                                     Text(
                                         if (stream.kind == StreamKind.DIRECT) {
-                                            "Video langsung · VLC/MPV jika tersedia, selain itu browser"
+                                            "Direct video · VLC/MPV when available, otherwise browser"
                                         } else {
-                                            "Dibuka di browser"
+                                            "Opens in the browser"
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                     )
@@ -1978,7 +2004,7 @@ internal fun StreamPickerDialog(
                     }
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) { Text("Tutup") }
+                    TextButton(onClick = onDismiss) { Text("Close") }
                 }
             }
         }
@@ -2048,7 +2074,7 @@ private fun sourceHost(url: String): String =
     runCatching { URI(url).host }.getOrNull()?.takeIf(String::isNotBlank) ?: url
 
 private fun typeLabel(type: String): String = when (type.lowercase()) {
-    "movie" -> "Film"
-    "series" -> "Serial"
+    "movie" -> "Movie"
+    "series" -> "Series"
     else -> type.replaceFirstChar { it.uppercase() }
 }

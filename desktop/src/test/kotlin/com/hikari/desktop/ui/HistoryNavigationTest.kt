@@ -8,6 +8,6 @@ class HistoryNavigationTest {
     fun watchHistoryIsReachableFromTheDesktopSidebar() {
         val destination = desktopNavigationDestinations.single { it.page == DesktopPage.HISTORY }
 
-        assertEquals("Riwayat", destination.label)
+        assertEquals("History", destination.label)
     }
 }

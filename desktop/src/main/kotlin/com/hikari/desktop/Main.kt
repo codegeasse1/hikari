@@ -398,7 +398,7 @@ private fun HikariDesktopApp() {
     fun addSource() {
         val rawUrl = sourceUrlInput.trim()
         if (rawUrl.isBlank()) {
-            addSourceError = "Masukkan URL add-on terlebih dahulu."
+            addSourceError = "Enter an add-on URL first."
             return
         }
         scope.launch {
@@ -407,7 +407,7 @@ private fun HikariDesktopApp() {
             try {
                 val manifest = client.loadManifest(rawUrl)
                 if (!sourceStore.add(manifest.addonUrl)) {
-                    addSourceError = "Sumber ini sudah ada di daftar."
+                    addSourceError = "This source is already in the list."
                 } else {
                     sourceStates = sourceStates.filterNot { it.url == manifest.addonUrl } +
                         SourceState(manifest.addonUrl, manifest = manifest)
@@ -445,7 +445,7 @@ private fun HikariDesktopApp() {
         scope.launch {
             try {
                 titleDetail = client.detail(title)
-                if (titleDetail == null) detailError = "Add-on ini belum menyediakan metadata lengkap untuk judul ini."
+                if (titleDetail == null) detailError = "This add-on doesn't provide full metadata for this title yet."
             } catch (error: Exception) {
                 detailError = error.userMessage()
             } finally {
@@ -478,7 +478,7 @@ private fun HikariDesktopApp() {
                     installedAddons = sourceStates.mapNotNull { it.manifest },
                 )
                 if (streams.isEmpty()) {
-                    streamError = "Tidak ada stream HTTP yang didukung dari add-on yang cocok. Pemutaran torrent belum tersedia di MVP ini."
+                    streamError = "No supported HTTP streams from matching add-ons. Torrent playback isn't in this build yet."
                 }
             } catch (error: Exception) {
                 streamError = error.userMessage()
@@ -493,7 +493,7 @@ private fun HikariDesktopApp() {
             try {
                 val titleEntry = streamDialogTitleEntry
                 if (titleEntry == null) {
-                    streamError = "Judul tidak tersedia untuk menyimpan riwayat."
+                    streamError = "Title unavailable, history wasn't saved."
                     return@launch
                 }
                 val outcome = launchAndRecordHistory(
@@ -506,9 +506,9 @@ private fun HikariDesktopApp() {
                 outcome.entries?.let { watchHistory = it }
                 watchHistoryError = outcome.historyError?.userMessage()
                 playbackMessage = if (outcome.destination == "browser") {
-                    "Tautan dibuka di browser."
+                    "Link opened in the browser."
                 } else {
-                    "Tautan dikirim ke ${outcome.destination}."
+                    "Link sent to ${outcome.destination}."
                 }
                 streamDialogOpen = false
                 streamDialogTitleEntry = null
@@ -528,7 +528,7 @@ private fun HikariDesktopApp() {
                 searchHistoryError = null
             }
             .onFailure {
-                searchHistoryError = "Riwayat pencarian tidak dapat diperbarui."
+                searchHistoryError = "Couldn't update search history."
             }
     }
 
@@ -543,13 +543,13 @@ private fun HikariDesktopApp() {
     fun search(queryOverride: String? = null) {
         val query = (queryOverride ?: searchQuery).trim()
         if (query.isBlank()) {
-            searchError = "Ketik judul yang ingin dicari."
+            searchError = "Type a title to search for."
             searchPartialFailure = false
             return
         }
         val urls = selectSearchSourceUrls(sourceStates.map { it.url }, selectedSearchSourceUrls)
         if (urls.isEmpty()) {
-            searchError = "Tambahkan sumber Stremio sebelum mencari."
+            searchError = "Add Stremio sources before searching."
             searchPartialFailure = false
             return
         }
@@ -569,9 +569,9 @@ private fun HikariDesktopApp() {
                     .distinctBy { "${it.addonUrl}:${it.type}:${it.id}" }
                 if (batches.all { it.isFailure }) {
                     searchError = batches.firstOrNull()?.exceptionOrNull()?.userMessage()
-                        ?: "Pencarian dari sumber ini gagal."
+                        ?: "Search failed on this source."
                 } else if (batches.any { it.isFailure }) {
-                    searchError = "Sebagian sumber tidak merespons; hasil yang berhasil tetap ditampilkan."
+                    searchError = "Some sources didn't respond; showing the results that arrived."
                     searchPartialFailure = true
                 }
             } finally {
@@ -581,24 +581,24 @@ private fun HikariDesktopApp() {
     }
 
     val title = when (page) {
-        DesktopPage.HOME -> "Beranda"
-        DesktopPage.SEARCH -> "Cari judul"
-        DesktopPage.LIBRARY -> "Pustaka"
-        DesktopPage.HISTORY -> "Riwayat"
-        DesktopPage.SOURCES -> "Sumber"
-        DesktopPage.CATALOGS -> "Semua katalog"
-        DesktopPage.CATALOG -> catalogBrowse.target?.catalogName ?: "Katalog"
-        DesktopPage.DETAIL -> "Detail"
+        DesktopPage.HOME -> "Home"
+        DesktopPage.SEARCH -> "Search titles"
+        DesktopPage.LIBRARY -> "Library"
+        DesktopPage.HISTORY -> "History"
+        DesktopPage.SOURCES -> "Sources"
+        DesktopPage.CATALOGS -> "All catalogs"
+        DesktopPage.CATALOG -> catalogBrowse.target?.catalogName ?: "Catalog"
+        DesktopPage.DETAIL -> "Details"
     }
     val subtitle = when (page) {
-        DesktopPage.HOME -> "Katalog dari add-on Stremio yang sudah ditambahkan"
-        DesktopPage.SEARCH -> "Cari lintas katalog yang menyediakan pencarian"
-        DesktopPage.LIBRARY -> "Judul yang disimpan dari halaman detail"
-        DesktopPage.HISTORY -> "Judul dan episode yang berhasil diluncurkan"
-        DesktopPage.SOURCES -> "Tambah dan kelola sumber katalog Stremio"
-        DesktopPage.CATALOGS -> "Katalog dari semua add-on Stremio yang dipasang"
-        DesktopPage.CATALOG -> catalogBrowse.target?.sourceName ?: "Semua judul dalam katalog"
-        DesktopPage.DETAIL -> "Informasi judul dan pilihan pemutaran"
+        DesktopPage.HOME -> "Catalogs from your installed Stremio add-ons"
+        DesktopPage.SEARCH -> "Search across catalogs that support it"
+        DesktopPage.LIBRARY -> "Titles you saved from detail pages"
+        DesktopPage.HISTORY -> "Titles and episodes you launched"
+        DesktopPage.SOURCES -> "Add and manage Stremio catalog sources"
+        DesktopPage.CATALOGS -> "Catalogs from every installed Stremio add-on"
+        DesktopPage.CATALOG -> catalogBrowse.target?.sourceName ?: "Every title in the catalog"
+        DesktopPage.DETAIL -> "Title info and playback options"
     }
 
     Row(Modifier.fillMaxSize()) {
@@ -800,14 +800,14 @@ private fun PageHeader(title: String, subtitle: String) {
 @Composable
 private fun EmptyDetailScreen(onBack: () -> Unit) {
     Column {
-        androidx.compose.material3.TextButton(onClick = onBack) { androidx.compose.material3.Text("Kembali") }
-        androidx.compose.material3.Text("Judul tidak tersedia.")
+        androidx.compose.material3.TextButton(onClick = onBack) { androidx.compose.material3.Text("Back") }
+        androidx.compose.material3.Text("Title unavailable.")
     }
 }
 
 private fun Throwable.userMessage(): String = when (this) {
-    is AddonClientException -> message ?: "Permintaan ke add-on gagal."
-    else -> message?.takeIf(String::isNotBlank) ?: "Terjadi kesalahan. Coba lagi."
+    is AddonClientException -> message ?: "Add-on request failed."
+    else -> message?.takeIf(String::isNotBlank) ?: "Something went wrong. Try again."
 }
 
 private const val MAX_HOME_CATALOGS = 8

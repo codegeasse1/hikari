@@ -38,11 +38,11 @@ class CatalogDirectoryContentStateTest {
 
     @Test
     fun totalSourceFailureDoesNotClaimThatOnlySomeSourcesFailed() {
-        assertEquals("Sumber tidak dapat dimuat", catalogDirectoryErrorTitle(sourceCount = 1, failedSourceCount = 1))
+        assertEquals("Couldn't load sources", catalogDirectoryErrorTitle(sourceCount = 1, failedSourceCount = 1))
     }
 
     @Test
     fun partialSourceFailureIsClearlyMarkedAsPartial() {
-        assertEquals("Sebagian sumber tidak dapat dimuat", catalogDirectoryErrorTitle(sourceCount = 3, failedSourceCount = 1))
+        assertEquals("Some sources couldn't be loaded", catalogDirectoryErrorTitle(sourceCount = 3, failedSourceCount = 1))
     }
 }

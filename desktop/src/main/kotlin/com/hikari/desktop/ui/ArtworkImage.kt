@@ -78,7 +78,7 @@ internal fun ArtworkPoster(url: String?, title: String, modifier: Modifier = Mod
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                "Poster belum tersedia",
+                "Poster not available",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(12.dp),
@@ -108,7 +108,7 @@ private object ArtworkImageLoader {
         val request = HttpRequest.newBuilder(uri)
             .timeout(Duration.ofSeconds(6))
             .header("Accept", "image/png, image/jpeg, image/gif, image/webp, image/*;q=0.8")
-            .header("User-Agent", "Hikari Desktop/0.12.162")
+            .header("User-Agent", "Hikari Desktop/0.12.165")
             .GET()
             .build()
         val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())

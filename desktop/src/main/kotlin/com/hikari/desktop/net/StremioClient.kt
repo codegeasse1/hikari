@@ -339,7 +339,7 @@ private suspend fun fetchTextOverHttp(url: String): String = withContext(Dispatc
         val request = HttpRequest.newBuilder(URI(url))
             .timeout(Duration.ofSeconds(20))
             .header("Accept", "application/json, text/plain, */*")
-            .header("User-Agent", "Hikari Desktop/0.12.162")
+            .header("User-Agent", "Hikari Desktop/0.12.165")
             .GET()
             .build()
         val response = defaultHttpClient.send(request, HttpResponse.BodyHandlers.ofString())

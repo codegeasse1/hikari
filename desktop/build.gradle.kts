@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.hikari"
-version = "0.12.162"
+version = "0.12.165"
 
 java {
     sourceCompatibility = org.gradle.api.JavaVersion.VERSION_17
@@ -40,7 +40,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Hikari"
-            packageVersion = "0.12.162"
+            packageVersion = "0.12.165"
             description = "Hikari desktop media browser"
             vendor = "Codegeasse"
             modules("java.desktop", "java.net.http", "java.prefs")

@@ -5,9 +5,9 @@ import java.net.URI
 import java.time.Year
 
 internal enum class SearchTypeFilter(val label: String) {
-    ALL("Semua"),
-    MOVIES("Film"),
-    SERIES("Serial"),
+    ALL("All"),
+    MOVIES("Movies"),
+    SERIES("Series"),
     ANIME("Anime"),
 }
 

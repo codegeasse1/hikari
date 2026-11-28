@@ -5,15 +5,15 @@ This is a separate native desktop MVP. It does not wrap or require the Android A
 The first milestone supports Stremio add-on catalogs, searching, title details, and handing direct stream URLs to VLC/MPV or the default browser. Other provider ecosystems and an embedded media player are outside this milestone.
 Series details show one season at a time when an add-on returns multiple seasons. The selector defaults to the first real season; one-season series keep their full episode list visible.
 
-Home shows up to eight catalog shelves as a preview. Open **Semua katalog** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
+Home shows up to eight catalog shelves as a preview. Open **All catalogs** to browse every catalog declared by installed Stremio add-ons. Catalog pages use Stremio's paged responses. The APK's separate TMDB detail and stream-resolution paths are not ported yet, so this slice is not full APK parity.
 
 Catalog browsing also supports a scoped query when that catalog's manifest explicitly advertises the `search` extra. A new query restarts at page one, and later pages keep the query with Stremio's skip offset. Catalogs without that declaration do not show the in-catalog search control. This is another incremental parity slice, not full APK parity.
 
-Search keeps the 20 most recent submitted queries locally. A query can be run again from its chip, removed by itself, or cleared with the rest of the history. Loaded results can be filtered locally by media type (Semua, Film, Serial, Anime), genre, year, and minimum rating. Unrated titles remain visible when a rating threshold is active. Filter choices use metadata returned by the installed add-ons, so they only cover loaded search results. Search can target all installed add-ons, one add-on, or a selected group; changing the scope runs the current query against that selection. The source picker supports multi-select, but not Android's full provider-filter UI. TMDB-backed discovery and its broader filters are not ported. Desktop is not at full APK parity.
+Search keeps the 20 most recent submitted queries locally. A query can be run again from its chip, removed by itself, or cleared with the rest of the history. Loaded results can be filtered locally by media type (All, Movies, Series, Anime), genre, year, and minimum rating. Unrated titles remain visible when a rating threshold is active. Filter choices use metadata returned by the installed add-ons, so they only cover loaded search results. Search can target all installed add-ons, one add-on, or a selected group; changing the scope runs the current query against that selection. The source picker supports multi-select, but not Android's full provider-filter UI. TMDB-backed discovery and its broader filters are not ported. Desktop is not at full APK parity.
 
-Desktop **Pustaka** stores compact title snapshots in this Windows account's local preferences, newest first. It includes the four Android default categories, custom category creation, rename and delete, multi-category assignment, category filtering, and persistent ordering with keyboard-operable **Naik** and **Turun** actions.
+Desktop Library stores compact title snapshots in this Windows account's local preferences, newest first. It includes the four Android default categories, custom category creation, rename and delete, multi-category assignment, category filtering, and persistent ordering with keyboard-operable **Move up** and **Move down** actions.
 
-Desktop **Riwayat** stores up to 200 compact local entries after Hikari successfully launches a stream URL in an external app. Entries identify the title or episode, record launch time, and offer detail reopening, requesting streams again, per-entry removal, or clearing the list. This records successful launch only; playback progress in external players is unavailable. Trackers, manga, and continue-watching remain missing, so desktop is not at full APK parity.
+Desktop History stores up to 200 compact local entries after Hikari successfully launches a stream URL in an external app. Entries identify the title or episode, record launch time, and offer detail reopening, requesting streams again, per-entry removal, or clearing the list. This records successful launch only; playback progress in external players is unavailable. Trackers, manga, and continue-watching remain missing, so desktop is not at full APK parity.
 
 ## Build and run
 
@@ -26,4 +26,4 @@ gradle :desktop:packageMsi
 gradle :desktop:packageExe
 ```
 
-The MSI and EXE installers must be generated on a Windows runner. CI builds both from `windows-latest` and uploads them as workflow artifacts; no Android build or release is changed by that workflow.
+The MSI and EXE installers must be generated on a Windows runner. CI builds both from `windows-latest` and uploads them as workflow artifacts and publishes them to the continuous release; no Android build or release is changed by that workflow.

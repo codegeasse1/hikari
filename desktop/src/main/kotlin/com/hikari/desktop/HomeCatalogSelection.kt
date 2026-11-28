@@ -3,9 +3,9 @@ package com.hikari.desktop
 import com.hikari.desktop.data.AddonCatalog
 
 internal enum class HomeMediaFilter(val label: String) {
-    ALL("Semua"),
-    MOVIES("Film"),
-    SERIES("Serial");
+    ALL("All"),
+    MOVIES("Movies"),
+    SERIES("Series");
 
     fun includes(type: String): Boolean = when (this) {
         ALL -> true
@@ -56,9 +56,9 @@ internal fun catalogDirectoryErrorTitle(sourceCount: Int, failedSourceCount: Int
     require(sourceCount > 0) { "sourceCount must be greater than zero" }
     require(failedSourceCount in 1..sourceCount) { "failedSourceCount must be between one and sourceCount" }
     return if (failedSourceCount == sourceCount) {
-        "Sumber tidak dapat dimuat"
+        "Couldn't load sources"
     } else {
-        "Sebagian sumber tidak dapat dimuat"
+        "Some sources couldn't be loaded"
     }
 }
 

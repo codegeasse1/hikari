@@ -8,6 +8,6 @@ class LibraryNavigationTest {
     fun libraryIsReachableFromTheDesktopSidebar() {
         val destination = desktopNavigationDestinations.single { it.page == DesktopPage.LIBRARY }
 
-        assertEquals("Pustaka", destination.label)
+        assertEquals("Library", destination.label)
     }
 }
