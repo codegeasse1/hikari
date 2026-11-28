@@ -126,6 +126,12 @@ object EngineHttp {
 
     /** Plain-text GET for installers/manifests/M3U (best-effort, capped). */
     fun fetchText(url: String, maxBytes: Int = 8 * 1024 * 1024): String? {
+        val bytes = fetchBytes(url, maxBytes) ?: return null
+        return String(bytes, Charsets.UTF_8)
+    }
+
+    /** Raw bytes GET for .sky zips and provider scripts (best-effort, capped). */
+    fun fetchBytes(url: String, maxBytes: Int = 8 * 1024 * 1024): ByteArray? {
         return runCatching {
             val req = HttpRequest.newBuilder(URI.create(url.trim()))
                 .timeout(Duration.ofSeconds(45))
@@ -136,8 +142,7 @@ object EngineHttp {
             val resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray())
             if (resp.statusCode() !in 200..299) return null
             val raw = resp.body() ?: return null
-            val bytes = if (raw.size > maxBytes) raw.copyOf(maxBytes) else raw
-            String(bytes, Charsets.UTF_8)
+            if (raw.size > maxBytes) raw.copyOf(maxBytes) else raw
         }.getOrNull()
     }
 

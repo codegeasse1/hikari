@@ -1505,7 +1505,7 @@ internal fun fetchEngineRepoEntries(repoUrl: String): List<EngineRepoEntry> {
  * - SkyStream plugins.json: bare array [{name, url: "https://…/x.sky"}]
  * - Zangetsu index.json: {"sources": [{name, file: "providers/x.js"}]}
  * - Vega manifest.json: bare array [{display_name, value}] (installer then
- *   fetches dist/<value>/*.js)
+ *   fetches provider files under dist/<value>/)
  */
 internal fun parseRepoEntries(
     root: com.google.gson.JsonElement,
