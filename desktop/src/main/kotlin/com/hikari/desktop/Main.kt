@@ -56,6 +56,7 @@ import com.hikari.desktop.engine.StremioEngineAdapter
 import com.hikari.desktop.engine.engineAddonUrl
 import com.hikari.desktop.engine.isInternalPlayerUrl
 import com.hikari.desktop.engine.parseEngineRef
+import com.hikari.desktop.engine.toAddonEpisode
 import com.hikari.desktop.engine.toAddonStream
 import com.hikari.desktop.engine.toAddonTitle
 import com.hikari.desktop.net.AddonClientException
@@ -331,6 +332,103 @@ private fun HikariDesktopApp() {
         }
     }
 
+    // ---- Extension engines (Stremio + JS + IPTV) ----
+
+    fun reloadEngineProviders() {
+        engineProviders = engineRegistry.all()
+        engineTmdbKeyInput = engineRegistry.tmdbKey()
+    }
+
+    fun refreshEngineShelves() {
+        scope.launch(Dispatchers.IO) {
+            val providers = engineRegistry.enabled()
+            if (providers.isEmpty()) {
+                engineShelves = emptyList()
+                engineShelvesLoading = false
+                return@launch
+            }
+            engineShelvesLoading = true
+            try {
+                val fresh = engineRegistry.homeShelves()
+                engineShelves = fresh.map { shelf ->
+                    ShelfState(
+                        addonUrl = engineAddonUrl(shelf.provider),
+                        addonName = shelf.provider.name,
+                        catalog = AddonCatalog(type = "*", id = shelf.catalog.id, name = shelf.catalog.title),
+                        titles = shelf.items.map { it.toAddonTitle(shelf.provider) },
+                    )
+                }
+            } finally {
+                engineShelvesLoading = false
+            }
+        }
+    }
+
+    fun installEngineProvider(kind: EngineKind, raw: String, nameOverride: String? = null) {
+        val url = raw.trim()
+        if (url.isEmpty()) {
+            engineAddError = "Enter an extension URL or file path first."
+            return
+        }
+        engineAdding = true
+        engineAddError = null
+        scope.launch(Dispatchers.IO) {
+            try {
+                val provider = buildEngineProvider(engineRegistry, kind, url, nameOverride)
+                engineRegistry.upsert(provider)
+                withContext(Dispatchers.Main) {
+                    reloadEngineProviders()
+                    engineAddUrl = ""
+                    refreshEngineShelves()
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    engineAddError = (error.message ?: "could not add this extension").take(300)
+                }
+            } finally {
+                withContext(Dispatchers.Main) { engineAdding = false }
+            }
+        }
+    }
+
+    fun installEngineRepoFile(kind: EngineKind, entry: EngineRepoEntry) {
+        installEngineProvider(kind, entry.url, entry.name)
+    }
+
+    fun validateEngineProvider(id: String) {
+        scope.launch(Dispatchers.IO) {
+            val provider = engineRegistry.all().firstOrNull { it.id == id } ?: return@launch
+            val engine = engineRegistry.engineFor(provider.kind) ?: return@launch
+            val problem = runCatching { engine.validate(provider) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                engineRegistry.setNote(id, problem)
+                reloadEngineProviders()
+            }
+        }
+    }
+
+    fun loadEngineRepo(kind: EngineKind, repoUrl: String, repoName: String) {
+        engineReposLoading = true
+        engineRepoError = null
+        engineRepoName = repoName
+        engineRepoEntries = emptyList()
+        scope.launch(Dispatchers.IO) {
+            try {
+                val entries = fetchEngineRepoEntries(repoUrl)
+                withContext(Dispatchers.Main) {
+                    engineRepoEntries = entries
+                    if (entries.isEmpty()) engineRepoError = "No installable files in this repository."
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    engineRepoError = (error.message ?: "could not load this repository").take(300)
+                }
+            } finally {
+                withContext(Dispatchers.Main) { engineReposLoading = false }
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         reloadSavedTitles()
         reloadWatchHistory()
@@ -483,102 +581,6 @@ private fun HikariDesktopApp() {
         }
     }
 
-    // ---- Extension engines (Stremio + JS + IPTV) ----
-
-    fun reloadEngineProviders() {
-        engineProviders = engineRegistry.all()
-        engineTmdbKeyInput = engineRegistry.tmdbKey()
-    }
-
-    fun refreshEngineShelves() {
-        scope.launch(Dispatchers.IO) {
-            val providers = engineRegistry.enabled()
-            if (providers.isEmpty()) {
-                engineShelves = emptyList()
-                engineShelvesLoading = false
-                return@launch
-            }
-            engineShelvesLoading = true
-            try {
-                val fresh = engineRegistry.homeShelves()
-                engineShelves = fresh.map { shelf ->
-                    ShelfState(
-                        addonUrl = engineAddonUrl(shelf.provider),
-                        addonName = shelf.provider.name,
-                        catalog = AddonCatalog(type = "*", id = shelf.catalog.id, name = shelf.catalog.title),
-                        titles = shelf.items.map { it.toAddonTitle(shelf.provider) },
-                    )
-                }
-            } finally {
-                engineShelvesLoading = false
-            }
-        }
-    }
-
-    fun installEngineProvider(kind: EngineKind, raw: String, nameOverride: String? = null) {
-        val url = raw.trim()
-        if (url.isEmpty()) {
-            engineAddError = "Enter an extension URL or file path first."
-            return
-        }
-        engineAdding = true
-        engineAddError = null
-        scope.launch(Dispatchers.IO) {
-            try {
-                val provider = buildEngineProvider(engineRegistry, kind, url, nameOverride)
-                engineRegistry.upsert(provider)
-                withContext(Dispatchers.Main) {
-                    reloadEngineProviders()
-                    engineAddUrl = ""
-                    refreshEngineShelves()
-                }
-            } catch (error: Exception) {
-                withContext(Dispatchers.Main) {
-                    engineAddError = (error.message ?: "could not add this extension").take(300)
-                }
-            } finally {
-                withContext(Dispatchers.Main) { engineAdding = false }
-            }
-        }
-    }
-
-    fun installEngineRepoFile(kind: EngineKind, entry: EngineRepoEntry) {
-        installEngineProvider(kind, entry.url, entry.name)
-    }
-
-    fun validateEngineProvider(id: String) {
-        scope.launch(Dispatchers.IO) {
-            val provider = engineRegistry.all().firstOrNull { it.id == id } ?: return@launch
-            val engine = engineRegistry.engineFor(provider.kind) ?: return@launch
-            val problem = runCatching { engine.validate(provider) }.getOrNull()
-            withContext(Dispatchers.Main) {
-                engineRegistry.setNote(id, problem)
-                reloadEngineProviders()
-            }
-        }
-    }
-
-    fun loadEngineRepo(kind: EngineKind, repoUrl: String, repoName: String) {
-        engineReposLoading = true
-        engineRepoError = null
-        engineRepoName = repoName
-        engineRepoEntries = emptyList()
-        scope.launch(Dispatchers.IO) {
-            try {
-                val entries = fetchEngineRepoEntries(repoUrl)
-                withContext(Dispatchers.Main) {
-                    engineRepoEntries = entries
-                    if (entries.isEmpty()) engineRepoError = "No installable files in this repository."
-                }
-            } catch (error: Exception) {
-                withContext(Dispatchers.Main) {
-                    engineRepoError = (error.message ?: "could not load this repository").take(300)
-                }
-            } finally {
-                withContext(Dispatchers.Main) { engineReposLoading = false }
-            }
-        }
-    }
 
     fun engineMediaOf(provider: EngineProvider, title: AddonTitle): EngineMedia =
         EngineMedia(

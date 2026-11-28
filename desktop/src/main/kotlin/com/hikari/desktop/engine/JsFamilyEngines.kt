@@ -10,7 +10,7 @@ import kotlinx.coroutines.withContext
  * Entries are exact ports of each family's Android runtime; unknown edges
  * fall back to first-ok candidate lists (see FamilySpecs lenient parsers).
  */
-private abstract class BaseJsEngine(
+abstract class BaseJsEngine(
     private val familyKind: EngineKind,
     private val host: JavetJsHost,
     private val startTimeoutMs: Long = 75_000,
@@ -292,7 +292,9 @@ class SkyStreamEngine(host: JavetJsHost = JavetJsHost()) : BaseJsEngine(EngineKi
                     ?: emptyList()
             }
         } else {
-            val row = data.asJsonArray.getOrNull(idx)?.takeIf { it.isJsonObject }?.asJsonObject
+            val arr = data.asJsonArray
+            val el = if (idx >= 0 && idx < arr.size()) arr.get(idx) else null
+            val row = el?.takeIf { it.isJsonObject }?.asJsonObject
                 ?: return emptyList()
             (row.get("items")?.takeIf { it.isJsonArray }?.asJsonArray?.toList()
                 ?: row.get("list")?.takeIf { it.isJsonArray }?.asJsonArray?.toList()
